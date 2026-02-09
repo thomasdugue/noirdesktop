@@ -20,10 +20,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // === AUDIO ENGINE STATE (Player Audiophile Rust) ===
 // Le moteur audio tourne côté Rust, on ne fait que l'interface ici
+// NOTE: HTML5 audio fallback has been REMOVED - all audio goes through Rust/CPAL
 let audioIsPlaying = false;
 let audioDurationFromRust = 0;
 let audioPositionFromRust = 0;
-let useHtmlAudioFallback = false;  // True si on utilise le fallback HTML5 au lieu de Rust
 
 // === FAVORIS ===
 // Set des chemins de tracks favorites (pour lookup O(1))
@@ -183,7 +183,7 @@ const welcomeDiv = document.getElementById('welcome')
 const albumsViewDiv = document.getElementById('albums-view')
 const albumsGridDiv = document.getElementById('albums-grid')
 const playerDiv = document.getElementById('player')
-const audioElement = document.getElementById('audio')
+// audioElement removed - all audio handled by Rust/CPAL
 const trackNameEl = document.getElementById('track-name')
 const trackFolderEl = document.getElementById('track-folder')
 const playPauseBtn = document.getElementById('play-pause')
@@ -551,7 +551,17 @@ function groupTracksIntoAlbumsAndArtists() {
   // Trie les morceaux de chaque album par numéro de piste
   // Et détermine l'artiste affiché
   for (const albumKey in albums) {
-    albums[albumKey].tracks.sort((a, b) => (a.metadata.track || 0) - (b.metadata.track || 0))
+    // Trie par numéro de disque, puis par numéro de track, puis par nom de fichier
+    albums[albumKey].tracks.sort((a, b) => {
+      const discA = a.metadata?.disc || 1
+      const discB = b.metadata?.disc || 1
+      if (discA !== discB) return discA - discB
+      const trackA = a.metadata?.track || 0
+      const trackB = b.metadata?.track || 0
+      if (trackA !== trackB) return trackA - trackB
+      // Fallback: tri alphabétique par nom de fichier
+      return (a.name || '').localeCompare(b.name || '')
+    })
 
     const artistsArray = Array.from(albums[albumKey].artistsSet)
     const totalTracks = albums[albumKey].tracks.length
@@ -1037,7 +1047,7 @@ function displayAlbumPage(albumKey) {
 
   // Qualité de l'album
   const firstTrack = album.tracks[0]
-  const quality = formatQuality(firstTrack?.metadata)
+  const quality = formatQuality(firstTrack?.metadata, firstTrack?.path)
 
   const qualityTag = quality.label && quality.label !== '-'
     ? `<span class="quality-tag ${quality.class}">${quality.label}</span>`
@@ -1272,24 +1282,15 @@ document.addEventListener('keydown', (e) => {
       e.preventDefault()
       if (currentTrackIndex !== -1) {
         if (!audioIsPlaying) {
-          if (useHtmlAudioFallback) {
-            audioElement.play()
-          } else {
-            invoke('audio_resume').catch((e) => {
-              console.error('audio_resume error:', e)
-              // Ne bascule PAS vers HTML5 automatiquement pour éviter les flux parallèles
-            })
-          }
+          invoke('audio_resume').catch((e) => {
+            console.error('audio_resume error:', e)
+          })
           audioIsPlaying = true
           playPauseBtn.textContent = '⏸'
         } else {
-          if (useHtmlAudioFallback) {
-            audioElement.pause()
-          } else {
-            invoke('audio_pause').catch((e) => {
-              console.error('audio_pause error:', e)
-            })
-          }
+          invoke('audio_pause').catch((e) => {
+            console.error('audio_pause error:', e)
+          })
           audioIsPlaying = false
           playPauseBtn.textContent = '▶'
         }
@@ -1301,13 +1302,9 @@ document.addEventListener('keydown', (e) => {
       // Si > 3 secondes dans la chanson, restart. Sinon, track précédente
       const currentPosition = audioPositionFromRust > 0 ? audioPositionFromRust : 0
       if (currentPosition > 3) {
-        if (useHtmlAudioFallback) {
-          audioElement.currentTime = 0
-        } else {
-          invoke('audio_seek', { time: 0.0 }).catch((e) => {
-            console.error('audio_seek error:', e)
-          })
-        }
+        invoke('audio_seek', { time: 0.0 }).catch((e) => {
+          console.error('audio_seek error:', e)
+        })
       } else if (currentTrackIndex > 0) {
         playTrack(currentTrackIndex - 1)
       }
@@ -2077,7 +2074,7 @@ async function displayHomeView() {
       const hiResTrack = album.tracks.find(t =>
         (t.metadata?.bitDepth >= 24) || (t.metadata?.sampleRate >= 88200)
       )
-      const quality = formatQuality(hiResTrack?.metadata)
+      const quality = formatQuality(hiResTrack?.metadata, hiResTrack?.path)
 
       const item = document.createElement('div')
       item.className = 'carousel-item hires-carousel-item'
@@ -2137,36 +2134,22 @@ async function displayHomeView() {
       e.stopPropagation()
       // Toggle play/pause
       if (audioIsPlaying) {
-        if (useHtmlAudioFallback) {
-          audioElement.pause()
-        } else {
-          try {
-            await invoke('audio_pause')
-          } catch (err) {
-            console.error('audio_pause error:', err)
-          }
+        try {
+          await invoke('audio_pause')
+        } catch (err) {
+          console.error('audio_pause error:', err)
         }
         audioIsPlaying = false
         playPauseBtn.textContent = '▶'
         playBtn.textContent = '▶'
       } else if (currentTrackIndex >= 0) {
-        if (useHtmlAudioFallback) {
-          // Mode fallback HTML5 : joue directement
-          audioElement.play()
+        try {
+          await invoke('audio_resume')
           audioIsPlaying = true
           playPauseBtn.textContent = '⏸'
           playBtn.textContent = '⏸'
-        } else {
-          // Mode Rust : essaie de reprendre
-          try {
-            await invoke('audio_resume')
-            audioIsPlaying = true
-            playPauseBtn.textContent = '⏸'
-            playBtn.textContent = '⏸'
-          } catch (err) {
-            console.error('audio_resume error:', err)
-            // Ne bascule PAS automatiquement vers HTML5 pour éviter les flux parallèles
-          }
+        } catch (err) {
+          console.error('audio_resume error:', err)
         }
       }
       return
@@ -2840,7 +2823,7 @@ function createTrackItemHTML(track, index) {
   const artist = track.metadata?.artist || 'Artiste inconnu'
   const album = track.metadata?.album || ''
   const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
-  const quality = formatQuality(track.metadata)
+  const quality = formatQuality(track.metadata, track.path)
   const isInQueue = queue.some(q => q.path === track.path)
   const inQueueClass = isInQueue ? 'in-queue' : ''
   const selectedClass = virtualScrollState.selectedTrackPaths.has(track.path) ? 'selected' : ''
@@ -3137,12 +3120,30 @@ function displayTracksGrid() {
 }
 
 // Formate la qualité audio
-function formatQuality(metadata) {
+// Lossy (MP3, AAC, OGG) → "320 kbps"
+// Lossless (FLAC, ALAC, WAV, AIFF) → "24-bit / 96kHz"
+function formatQuality(metadata, filePath = null) {
   if (!metadata) return { label: '-', class: '' }
 
   const bitDepth = metadata.bitDepth
   const sampleRate = metadata.sampleRate
+  const bitrate = metadata.bitrate
 
+  // Détecte si c'est un format lossy basé sur l'extension du fichier ou l'absence de bitDepth
+  const isLossy = filePath
+    ? /\.(mp3|aac|ogg|m4a|wma|opus)$/i.test(filePath)
+    : (!bitDepth && bitrate)
+
+  if (isLossy) {
+    // Format lossy : affiche le bitrate en kbps
+    if (bitrate) {
+      const kbps = Math.round(bitrate)
+      return { label: `${kbps} kbps`, class: 'quality-lossy' }
+    }
+    return { label: 'Lossy', class: 'quality-lossy' }
+  }
+
+  // Format lossless : affiche bit-depth / sample rate
   if (!bitDepth && !sampleRate) return { label: '-', class: '' }
 
   // Détermine la classe de qualité
@@ -3153,10 +3154,10 @@ function formatQuality(metadata) {
     qualityClass = 'quality-lossless'
   }
 
-  // Format: "24bit/96kHz" ou "16bit/44.1kHz"
-  const bits = bitDepth ? `${bitDepth}bit` : ''
+  // Format: "24-bit / 96kHz" ou "16-bit / 44.1kHz"
+  const bits = bitDepth ? `${bitDepth}-bit` : ''
   const rate = sampleRate ? `${sampleRate >= 1000 ? (sampleRate / 1000).toFixed(1).replace('.0', '') : sampleRate}kHz` : ''
-  const label = [bits, rate].filter(Boolean).join('/')
+  const label = [bits, rate].filter(Boolean).join(' / ')
 
   return { label: label || '-', class: qualityClass }
 }
@@ -3179,16 +3180,13 @@ function showAlbumDetail(albumKey, cover, clickedCard) {
 
   // Qualité de l'album (basée sur la première track)
   const firstTrack = album.tracks[0]
-  const albumQuality = formatQuality(firstTrack?.metadata)
+  const albumQuality = formatQuality(firstTrack?.metadata, firstTrack?.path)
   const qualityTag = albumQuality.label !== '-'
     ? `<span class="quality-tag ${albumQuality.class}">${albumQuality.label}</span>`
     : ''
 
-  // Bitrate de l'album
-  const bitrate = firstTrack?.metadata?.bitrate
-  const bitrateTag = bitrate
-    ? `<span class="quality-tag quality-bitrate">${Math.round(bitrate / 1000)} kbps</span>`
-    : ''
+  // Note: le bitrate est maintenant inclus dans formatQuality pour les formats lossy
+  // Plus besoin d'un tag bitrate séparé
 
   // Contenu du panel
   albumDetailDiv.innerHTML = `
@@ -3204,7 +3202,7 @@ function showAlbumDetail(albumKey, cover, clickedCard) {
         <p class="album-detail-artist">${album.artist}</p>
         <p class="album-detail-meta">
           ${album.tracks.length} titres • ${formatTime(totalDuration)}
-          ${qualityTag ? `<span class="album-detail-tags">${qualityTag}${bitrateTag}</span>` : ''}
+          ${qualityTag ? `<span class="album-detail-tags">${qualityTag}</span>` : ''}
         </p>
         <div class="album-detail-buttons">
           <button class="btn-primary-small play-album-btn">
@@ -3479,7 +3477,7 @@ async function playTrack(index) {
   // Affiche les specs techniques (bitrate/sample rate)
   const trackQualityEl = document.getElementById('track-quality')
   if (trackQualityEl) {
-    const quality = formatQuality(track.metadata)
+    const quality = formatQuality(track.metadata, track.path)
     trackQualityEl.textContent = quality.label !== '-' ? quality.label : ''
   }
 
@@ -3517,7 +3515,6 @@ async function playTrack(index) {
     // Joue via le moteur Rust (non-bloquant, démarre après ~100ms de buffer)
     await invoke('audio_play', { path: track.path })
     audioIsPlaying = true
-    useHtmlAudioFallback = false
     // La durée sera mise à jour via l'événement playback_progress
     // Utilise la durée des métadonnées comme estimation initiale
     const estimatedDuration = track.metadata?.duration || 0
@@ -3526,14 +3523,10 @@ async function playTrack(index) {
     console.log('Streaming started (Rust):', track.path)
   } catch (e) {
     console.error('Rust audio_play error:', e)
-    // Fallback sur audioElement si le moteur Rust échoue
-    useHtmlAudioFallback = true
-    audioElement.src = convertFileSrc(track.path)
-    audioElement.play()
-    audioIsPlaying = true
-    console.log('Streaming started (HTML5 fallback):', track.path)
+    // No HTML5 fallback - Rust is the only audio path
+    audioIsPlaying = false
   }
-  playPauseBtn.textContent = '⏸'
+  playPauseBtn.textContent = audioIsPlaying ? '⏸' : '▶'
 
   // Note: resetPlayerUI() est appelé en début de fonction
 
@@ -3578,46 +3571,26 @@ playPauseBtn.addEventListener('click', async () => {
   const currentTrack = tracks[currentTrackIndex]
 
   if (!audioIsPlaying) {
-    // PLAY / RESUME
-    if (useHtmlAudioFallback) {
-      // Utilise HTML5 audio
-      audioElement.play()
+    // PLAY / RESUME via Rust
+    try {
+      await invoke('audio_resume')
       audioIsPlaying = true
       playPauseBtn.textContent = '⏸'
-    } else {
-      // Utilise Rust
-      try {
-        await invoke('audio_resume')
-        audioIsPlaying = true
-        playPauseBtn.textContent = '⏸'
-      } catch (e) {
-        console.error('audio_resume error:', e)
-        // Ne bascule PAS automatiquement vers HTML5 pour éviter les flux parallèles
-        // L'utilisateur doit relancer la piste si Rust a vraiment planté
-      }
+    } catch (e) {
+      console.error('audio_resume error:', e)
     }
     // Met à jour le composant Home si visible
     updateHomeNowPlayingSection()
   } else {
-    // PAUSE
-    if (useHtmlAudioFallback) {
-      // Utilise HTML5 audio
-      audioElement.pause()
+    // PAUSE via Rust
+    try {
+      await invoke('audio_pause')
       audioIsPlaying = false
       playPauseBtn.textContent = '▶'
-    } else {
-      // Utilise Rust
-      try {
-        await invoke('audio_pause')
-        audioIsPlaying = false
-        playPauseBtn.textContent = '▶'
-      } catch (e) {
-        console.error('audio_pause error:', e)
-        // Ne pas appeler audioElement.pause() si on n'est pas en mode fallback
-        // pour éviter les états incohérents
-        audioIsPlaying = false
-        playPauseBtn.textContent = '▶'
-      }
+    } catch (e) {
+      console.error('audio_pause error:', e)
+      audioIsPlaying = false
+      playPauseBtn.textContent = '▶'
     }
     // Met à jour le composant Home si visible
     updateHomeNowPlayingSection()
@@ -3626,6 +3599,51 @@ playPauseBtn.addEventListener('click', async () => {
 
 // Morceau précédent
 prevBtn.addEventListener('click', () => {
+  const currentTrack = tracks[currentTrackIndex]
+  const currentFolder = currentTrack?.path ? currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/')) : null
+
+  // Filtre les tracks qui sont dans le même dossier ET ont le même album metadata
+  const albumTracks = currentFolder ? tracks.filter(t => {
+    const folder = t.path.substring(0, t.path.lastIndexOf('/'))
+    return folder === currentFolder && t.metadata?.album === currentTrack?.metadata?.album
+  }).sort((a, b) => {
+    const discA = a.metadata?.disc || 1
+    const discB = b.metadata?.disc || 1
+    if (discA !== discB) return discA - discB
+    const trackA = a.metadata?.track || 0
+    const trackB = b.metadata?.track || 0
+    if (trackA !== trackB) return trackA - trackB
+    return (a.name || '').localeCompare(b.name || '')
+  }) : []
+
+  const currentAlbumTrackIndex = albumTracks.findIndex(t => t.path === currentTrack?.path)
+
+  console.log('prevBtn DEBUG:', {
+    currentAlbumTrackIndex,
+    albumTracksCount: albumTracks.length,
+    currentFolder
+  })
+
+  if (albumTracks.length > 0 && currentAlbumTrackIndex > 0) {
+    // Track précédente dans l'album
+    const prevAlbumTrack = albumTracks[currentAlbumTrackIndex - 1]
+    const globalIndex = tracks.findIndex(t => t.path === prevAlbumTrack.path)
+    console.log('Playing previous album track:', { prevTrack: prevAlbumTrack?.metadata?.title, globalIndex })
+    if (globalIndex !== -1) {
+      playTrack(globalIndex)
+      return
+    }
+  } else if (albumTracks.length > 0 && currentAlbumTrackIndex === 0 && repeatMode === 'all') {
+    // Début de l'album + repeat all = va à la dernière track de l'album
+    const lastTrack = albumTracks[albumTracks.length - 1]
+    const globalIndex = tracks.findIndex(t => t.path === lastTrack.path)
+    if (globalIndex !== -1) {
+      playTrack(globalIndex)
+      return
+    }
+  }
+
+  // Fallback: comportement global
   if (currentTrackIndex > 0) {
     playTrack(currentTrackIndex - 1)
   }
@@ -3664,18 +3682,32 @@ function playNextTrack() {
     }
   }
 
-  // 2. Récupère les tracks de l'album en cours (si on joue un album)
-  const currentAlbum = currentPlayingAlbumKey ? albums[currentPlayingAlbumKey] : null
-  const albumTracks = currentAlbum?.tracks || []
+  // 2. Récupère les tracks de l'album en cours
+  // IMPORTANT: On utilise le dossier parent pour identifier les tracks du même album physique
+  // car le nom d'album seul peut créer des collisions entre artistes différents
+  const currentTrack = tracks[currentTrackIndex]
+  const currentFolder = currentTrack?.path ? currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/')) : null
+
+  // Filtre les tracks qui sont dans le même dossier ET ont le même album metadata
+  const albumTracks = currentFolder ? tracks.filter(t => {
+    const folder = t.path.substring(0, t.path.lastIndexOf('/'))
+    return folder === currentFolder && t.metadata?.album === currentTrack?.metadata?.album
+  }).sort((a, b) => {
+    const discA = a.metadata?.disc || 1
+    const discB = b.metadata?.disc || 1
+    if (discA !== discB) return discA - discB
+    const trackA = a.metadata?.track || 0
+    const trackB = b.metadata?.track || 0
+    if (trackA !== trackB) return trackA - trackB
+    return (a.name || '').localeCompare(b.name || '')
+  }) : []
 
   // Trouve l'index du track actuel dans l'album
-  const currentTrack = tracks[currentTrackIndex]
   const currentAlbumTrackIndex = albumTracks.findIndex(t => t.path === currentTrack?.path)
 
   // DEBUG
   console.log('playNextTrack DEBUG:', {
-    currentPlayingAlbumKey,
-    albumExists: !!currentAlbum,
+    currentFolder,
     albumTracksCount: albumTracks.length,
     currentTrackPath: currentTrack?.path,
     currentAlbumTrackIndex,
@@ -3708,12 +3740,18 @@ function playNextTrack() {
   }
 
   // 4. Mode séquentiel : track suivante dans l'album
-  if (currentAlbum && currentAlbumTrackIndex !== -1) {
+  if (albumTracks.length > 0 && currentAlbumTrackIndex !== -1) {
     // On est dans un album, on joue le track suivant de l'album
     if (currentAlbumTrackIndex < albumTracks.length - 1) {
       // Track suivante dans l'album
       const nextAlbumTrack = albumTracks[currentAlbumTrackIndex + 1]
       const globalIndex = tracks.findIndex(t => t.path === nextAlbumTrack.path)
+      console.log('playNextTrack: playing next album track', {
+        nextAlbumTrack: nextAlbumTrack?.name,
+        globalIndex,
+        currentAlbumTrackIndex,
+        albumTracksLength: albumTracks.length
+      })
       if (globalIndex !== -1) {
         playTrack(globalIndex)
         return
@@ -3722,23 +3760,36 @@ function playNextTrack() {
       // Fin de l'album + repeat all = retour au début de l'album
       const firstTrack = albumTracks[0]
       const globalIndex = tracks.findIndex(t => t.path === firstTrack.path)
+      console.log('playNextTrack: repeat all - back to first track', { globalIndex })
       if (globalIndex !== -1) {
         playTrack(globalIndex)
         return
       }
+    } else {
+      // Fin de l'album, pas de repeat
+      console.log('playNextTrack: end of album, no repeat - stopping')
     }
   } else {
-    // Pas d'album, comportement séquentiel global
+    // Pas d'album ou track non trouvé dans l'album - comportement séquentiel global
+    console.log('playNextTrack: fallback to global sequential', {
+      hasAlbum: !!currentAlbum,
+      currentAlbumTrackIndex,
+      currentTrackIndex,
+      tracksLength: tracks.length
+    })
     if (currentTrackIndex < tracks.length - 1) {
+      console.log('playNextTrack: playing global next track', { nextIndex: currentTrackIndex + 1 })
       playTrack(currentTrackIndex + 1)
       return
     } else if (repeatMode === 'all') {
+      console.log('playNextTrack: repeat all - back to track 0')
       playTrack(0)
       return
     }
   }
 
   // Fin de lecture
+  console.log('playNextTrack: END OF PLAYBACK - no next track to play')
   playPauseBtn.textContent = '▶'
 }
 
@@ -3749,13 +3800,7 @@ function getCurrentTrackDuration() {
     return audioDurationFromRust
   }
 
-  // Fallback : audio element
-  const audioDuration = audioElement.duration
-  if (audioDuration && isFinite(audioDuration) && audioDuration > 0) {
-    return audioDuration
-  }
-
-  // Dernier recours : métadonnées
+  // Fallback : métadonnées
   const track = tracks[currentTrackIndex]
   const metadataDuration = track?.metadata?.duration
   if (metadataDuration && metadataDuration > 0) {
@@ -3779,6 +3824,7 @@ let lastDisplayedPosition = 0      // Dernière position affichée (pour lissage
 let seekTimeoutId = null           // Timeout de sécurité pour réactiver l'interpolation après seek
 let seekPending = false            // True si un seek est en attente (évite les doubles)
 let isUserDragging = false         // True pendant que l'utilisateur drag la progress bar
+let seekTargetPosition = 0         // Position demandée lors du seek (ne change pas pendant l'attente)
 
 // Constantes de lissage
 const MAX_INTERPOLATION_DELTA = 0.15  // Max 150ms d'interpolation (évite les sauts)
@@ -3840,15 +3886,14 @@ function stopPositionInterpolation() {
 // Synchronise immédiatement avec une position Rust (appelé sur événement)
 // IMPORTANT: Ignore les updates pendant un seek pour éviter le "snap back"
 function syncToRustPosition(position) {
-  // Si on est en seek, ignore les positions venant de Rust
-  // car elles peuvent être "en retard" par rapport à la position demandée
+  // Si on est en seek, vérifie si la position Rust correspond à notre seek
   if (isSeekingUI) {
-    // Vérifie si la position Rust est proche de notre position de seek
-    // (tolérance de 0.5 seconde = le seek a abouti)
-    const seekDelta = Math.abs(position - lastRustPosition)
-    if (seekDelta < 0.5) {
+    // Compare avec seekTargetPosition (la position DEMANDÉE, pas interpolée)
+    // Tolérance de 1 seconde car le décodeur peut seek légèrement avant/après
+    const seekDelta = Math.abs(position - seekTargetPosition)
+    if (seekDelta < 1.0) {
       // La position Rust correspond à notre seek → le seek a abouti !
-      console.log(`[Sync] Seek confirmed: Rust at ${position.toFixed(2)}s (delta: ${seekDelta.toFixed(3)}s)`)
+      console.log(`[Sync] Seek confirmed: Rust at ${position.toFixed(2)}s (target was ${seekTargetPosition.toFixed(2)}s, delta: ${seekDelta.toFixed(3)}s)`)
 
       // Réactive l'interpolation immédiatement maintenant que le seek est confirmé
       isSeekingUI = false
@@ -3859,31 +3904,27 @@ function syncToRustPosition(position) {
         clearTimeout(seekTimeoutId)
         seekTimeoutId = null
       }
+
+      // Met à jour la position avec la vraie position de Rust
+      lastRustPosition = position
+      lastRustTimestamp = performance.now()
+      lastDisplayedPosition = position
     } else {
       // La position Rust est loin de notre seek → ignorer (ancienne position)
-      console.log(`[Sync] Ignoring stale position: ${position.toFixed(2)}s (expected ~${lastRustPosition.toFixed(2)}s)`)
+      console.log(`[Sync] Ignoring stale position: ${position.toFixed(2)}s (seek target: ${seekTargetPosition.toFixed(2)}s)`)
       return
     }
+  } else {
+    // Pas en seek, synchronisation normale
+    lastRustPosition = position
+    lastRustTimestamp = performance.now()
+    lastDisplayedPosition = position
   }
-
-  lastRustPosition = position
-  lastRustTimestamp = performance.now()
-  lastDisplayedPosition = position
 }
 
 // === RESET UI COMPLET (appelé à chaque changement de piste) ===
 // Remet tous les compteurs et l'affichage à zéro
 function resetPlayerUI() {
-  // CRITIQUE: Stoppe TOUJOURS l'élément HTML5 audio pour éviter deux flux audio en parallèle
-  // Même si useHtmlAudioFallback est false, l'audioElement pourrait encore jouer d'un état précédent
-  try {
-    audioElement.pause()
-    audioElement.currentTime = 0
-    audioElement.src = ''  // Libère complètement la ressource
-  } catch (e) {
-    // Ignore les erreurs (élément peut ne pas exister ou être dans un état invalide)
-  }
-
   // Reset des variables d'interpolation
   lastRustPosition = 0
   lastRustTimestamp = 0
@@ -3907,7 +3948,7 @@ function resetPlayerUI() {
   // Reset du moniteur audio specs
   resetAudioSpecs()
 
-  console.log('Player UI reset complete (HTML5 audio stopped)')
+  console.log('Player UI reset complete')
 }
 
 // === MONITEUR AUDIO SPECS (SOURCE vs OUTPUT) ===
@@ -4052,34 +4093,11 @@ async function initRustAudioListeners() {
 // Initialise au chargement
 document.addEventListener('DOMContentLoaded', initRustAudioListeners)
 
-// Fallback: Mise à jour via audioElement (si Rust échoue)
-audioElement.addEventListener('timeupdate', () => {
-  // Ne fait rien si Rust gère l'audio
-  if (audioDurationFromRust > 0) return
-
-  const duration = getCurrentTrackDuration()
-  if (duration > 0) {
-    const percent = (audioElement.currentTime / duration) * 100
-    progressBar.value = Math.min(percent, 100)
-    currentTimeEl.textContent = formatTime(audioElement.currentTime)
-    updateProgressBarStyle(percent)
-  }
-})
-
 // Met à jour visuellement la barre de progression (couleur de remplissage)
 function updateProgressBarStyle(percent) {
   const clampedPercent = Math.min(Math.max(percent, 0), 100)
   progressBar.style.background = `linear-gradient(to right, #1db954 0%, #1db954 ${clampedPercent}%, #333 ${clampedPercent}%, #333 100%)`
 }
-
-// Fallback: Quand les métadonnées sont chargées (audio element)
-audioElement.addEventListener('loadedmetadata', () => {
-  // Ne fait rien si Rust gère l'audio
-  if (audioDurationFromRust > 0) return
-
-  const duration = getCurrentTrackDuration()
-  durationEl.textContent = formatTime(duration)
-})
 
 // === SEEK DEBOUNCE ===
 // Note: isUserDragging, seekPending et seekTimeoutId sont déclarés en haut
@@ -4100,6 +4118,10 @@ async function performSeek() {
       clearTimeout(seekTimeoutId)
       seekTimeoutId = null
     }
+
+    // IMPORTANT: Stocke la position demandée pour la comparaison dans syncToRustPosition
+    // Cette valeur ne changera pas pendant l'attente du seek
+    seekTargetPosition = time
 
     // FORCE la position visuelle immédiatement
     // Ces valeurs seront utilisées par l'interpolation même si le seek prend du temps
@@ -4179,26 +4201,6 @@ progressBar.addEventListener('change', () => {
   }
 })
 
-// Fallback: Quand un morceau se termine (audio element - utilisé si Rust échoue)
-audioElement.addEventListener('ended', () => {
-  // Ignore si Rust gère l'audio (l'événement playback_ended s'en occupe)
-  if (audioDurationFromRust > 0) {
-    console.log('audioElement ended ignored (Rust handles playback)')
-    return
-  }
-
-  console.log('audioElement ended, repeatMode:', repeatMode)
-  if (repeatMode === 'one') {
-    // Répète le même morceau
-    const currentSrc = audioElement.src
-    audioElement.src = currentSrc
-    audioElement.load()
-    audioElement.play().catch(e => console.error('Play error:', e))
-  } else {
-    playNextTrack()
-  }
-})
-
 // === SHUFFLE & REPEAT ===
 shuffleBtn.addEventListener('click', () => {
   // Cycle : off → album → library → off
@@ -4245,13 +4247,11 @@ volumeBar.addEventListener('input', async () => {
   const volume = volumeBar.value / 100
   currentVolume = volume
 
-  // Volume via Rust
+  // Volume via Rust only
   try {
     await invoke('audio_set_volume', { volume })
   } catch (e) {
     console.error('audio_set_volume error:', e)
-    // Fallback
-    audioElement.volume = volume
   }
 
   updateVolumeIcon(volume)
@@ -4268,7 +4268,7 @@ volumeBtn.addEventListener('click', async () => {
     try {
       await invoke('audio_set_volume', { volume: 0.0 })
     } catch (e) {
-      audioElement.volume = 0
+      console.error('audio_set_volume error:', e)
     }
 
     updateVolumeIcon(0)
@@ -4280,7 +4280,7 @@ volumeBtn.addEventListener('click', async () => {
     try {
       await invoke('audio_set_volume', { volume: currentVolume })
     } catch (e) {
-      audioElement.volume = currentVolume
+      console.error('audio_set_volume error:', e)
     }
 
     updateVolumeIcon(currentVolume)

@@ -2432,6 +2432,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.21.7",
  "core-foundation 0.9.4",
+ "coreaudio-rs",
  "coreaudio-sys",
  "cpal",
  "crossbeam-channel",

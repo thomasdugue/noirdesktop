@@ -50,6 +50,8 @@ rubato = "0.14"
 
 # === PLATFORM-SPECIFIC AUDIO BACKENDS ===
 [target.'cfg(target_os = "macos")'.dependencies]
+# CoreAudio safe wrapper for AudioUnit streaming (replaces CPAL for output)
+coreaudio-rs = "0.11"
 # CoreAudio HAL bindings for bit-perfect sample rate control and Hog Mode
 coreaudio-sys = "0.2"
 # Core Foundation bindings for CFString conversion

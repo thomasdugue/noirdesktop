@@ -1,44 +1,51 @@
 //! Audio backend abstraction layer for Noir
 //!
-//! This module provides a cross-platform abstraction for audio device management,
-//! sample rate control, and exclusive mode. The actual audio streaming is handled
-//! by CPAL for cross-platform compatibility.
+//! This module provides:
+//! 1. AudioBackend trait - device control (sample rate, hog mode, device selection)
+//! 2. AudioOutputStream trait - audio streaming with instant seek via reset()
 //!
 //! # Architecture
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────┐
 //! │              Noir (AudioEngine)              │
-//! │  Uses trait AudioBackend, doesn't know      │
-//! │  which platform implementation is used      │
+//! │  Uses AudioBackend for device control        │
+//! │  Uses AudioOutputStream for streaming        │
 //! └─────────────┬───────────────────────────────┘
 //!               │
-//!               ▼
-//! ┌─────────────────────────────────────────────┐
-//! │         trait AudioBackend                   │
-//! │  list_devices(), set_sample_rate()           │
-//! │  set_exclusive_mode(), get_cpal_device()     │
-//! └──────┬──────────────────────┬───────────────┘
-//!        ▼                      ▼
-//! ┌──────────────┐    ┌──────────────┐
-//! │ CoreAudio    │    │ WASAPI       │
-//! │ Backend      │    │ Backend      │
-//! │ (macOS)      │    │ (Windows)    │
-//! └──────────────┘    └──────────────┘
+//!       ┌───────┴───────┐
+//!       ▼               ▼
+//! ┌───────────┐  ┌───────────────┐
+//! │ Backend   │  │ OutputStream  │
+//! │ (device)  │  │ (streaming)   │
+//! └─────┬─────┘  └───────┬───────┘
+//!       │                │
+//!       ▼                ▼
+//! ┌──────────────────────────────┐
+//! │  CoreAudio (macOS)           │
+//! │  - coreaudio_backend.rs      │
+//! │  - coreaudio_stream.rs       │
+//! └──────────────────────────────┘
 //! ```
 
 pub mod backend;
 pub mod error;
 pub mod types;
+pub mod stream;
 
 #[cfg(target_os = "macos")]
 pub mod coreaudio_backend;
 
+#[cfg(target_os = "macos")]
+pub mod coreaudio_stream;
+
 // Future: Windows WASAPI backend
 // #[cfg(target_os = "windows")]
 // pub mod wasapi_backend;
+// pub mod wasapi_stream;
 
 // Re-exports for convenience
 pub use backend::{create_backend, AudioBackend};
 pub use error::{AudioBackendError, Result};
 pub use types::*;
+pub use stream::{AudioOutputStream, AudioStreamConfig, create_audio_stream};

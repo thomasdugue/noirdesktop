@@ -7,14 +7,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
-use ringbuf::traits::Consumer;
 use tauri::{AppHandle, Emitter};
 
-use crate::audio_decoder::{start_streaming_with_config, AudioConsumer, StreamingState};
+use crate::audio_decoder::{start_streaming_with_config, StreamingState};
 use crate::audio::{AudioBackend, create_backend, ExclusiveMode, StreamConfig};
+use crate::audio::{AudioOutputStream, AudioStreamConfig, create_audio_stream};
 
 // === DEVICE CAPABILITIES ===
 // Structures pour auditer et sélectionner la configuration optimale
@@ -407,8 +407,8 @@ impl AudioEngine {
         // État de streaming partagé
         let current_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>> =
             Arc::new(Mutex::new(None));
-        // Stream cpal actuel
-        let current_stream: Arc<Mutex<Option<cpal::Stream>>> = Arc::new(Mutex::new(None));
+        // Stream audio actuel (CoreAudio sur macOS, WASAPI sur Windows)
+        let current_stream: Arc<Mutex<Option<Box<dyn AudioOutputStream>>>> = Arc::new(Mutex::new(None));
         // Chemin du fichier actuel (pour relancer après seek)
         let current_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
@@ -433,15 +433,11 @@ impl AudioEngine {
                     // Stop le stream précédent AVANT tout
                     {
                         let mut stream_guard = current_stream.lock();
-                        if let Some(stream) = stream_guard.take() {
-                            println!("[DEBUG-H] Stopping previous stream...");
-                            let _ = stream.pause(); // Pause d'abord pour éviter les glitches
+                        if let Some(mut stream) = stream_guard.take() {
+                            println!("[AudioEngine] Stopping previous stream...");
+                            let _ = stream.stop();
                             drop(stream);
-                            println!("[DEBUG-H] Previous stream dropped");
-                            // IMPORTANT: Attendre que CPAL libère vraiment le device
-                            // Le drop() est asynchrone, le callback peut encore tourner
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                            println!("[DEBUG-H] Stream cleanup complete");
+                            println!("[AudioEngine] Previous stream stopped and dropped");
                         }
                     }
                     // Stop la session précédente (décodeur)
@@ -544,22 +540,27 @@ impl AudioEngine {
                                 *current_session_cmd.lock() = Some(session.command_tx.clone());
                                 *current_streaming_state.lock() = Some(Arc::clone(&session.state));
 
-                                // Crée le stream de sortie avec le OUTPUT rate
-                                let stream = Self::create_output_stream(
-                                    &device,
+                                // Crée le stream de sortie CoreAudio
+                                let stream_config = AudioStreamConfig::new(output_sample_rate, channels as u16);
+                                let stream_result = create_audio_stream(
+                                    stream_config,
                                     consumer,
                                     Arc::clone(&session.state),
-                                    Arc::clone(&state),
+                                    Arc::clone(&state.volume),
+                                    Arc::clone(&state.position),
+                                    Arc::clone(&state.is_playing),
                                     app_handle.clone(),
+                                    session.state.info.duration_seconds,
                                 );
 
-                                if let Some(s) = stream {
-                                    if let Err(e) = s.play() {
-                                        eprintln!("Failed to start stream: {}", e);
-                                    } else {
-                                        state.is_playing.store(true, Ordering::Relaxed);
-                                        state.is_paused.store(false, Ordering::Relaxed);
-                                        *current_stream.lock() = Some(s);
+                                match stream_result {
+                                    Ok(mut s) => {
+                                        if let Err(e) = s.start() {
+                                            eprintln!("Failed to start stream: {}", e);
+                                        } else {
+                                            state.is_playing.store(true, Ordering::Relaxed);
+                                            state.is_paused.store(false, Ordering::Relaxed);
+                                            *current_stream.lock() = Some(s);
                                         println!("=== Playback started in {:?} ===", start_time.elapsed());
 
                                         // Émet les specs audio SOURCE vs OUTPUT (vraies valeurs!)
@@ -578,6 +579,10 @@ impl AudioEngine {
                                             println!("AudioSpecs emitted: SRC {}Hz/{}bit → OUT {}Hz (mismatch: {})",
                                                 source_sr, session.state.info.bit_depth, output_sr, source_sr != output_sr);
                                         }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to create audio stream: {}", e);
                                     }
                                 }
                             } else {
@@ -598,7 +603,7 @@ impl AudioEngine {
                 }
 
                 Ok(AudioCommand::Pause) => {
-                    if let Some(stream) = current_stream.lock().as_ref() {
+                    if let Some(ref mut stream) = *current_stream.lock() {
                         let _ = stream.pause();
                         state.is_paused.store(true, Ordering::Relaxed);
                         // Notifie le frontend
@@ -609,8 +614,8 @@ impl AudioEngine {
                 }
 
                 Ok(AudioCommand::Resume) => {
-                    if let Some(stream) = current_stream.lock().as_ref() {
-                        let _ = stream.play();
+                    if let Some(ref mut stream) = *current_stream.lock() {
+                        let _ = stream.resume();
                         state.is_paused.store(false, Ordering::Relaxed);
                         // Notifie le frontend
                         if let Some(ref app) = app_handle {
@@ -622,12 +627,11 @@ impl AudioEngine {
                 Ok(AudioCommand::Stop) => {
                     {
                         let mut stream_guard = current_stream.lock();
-                        if let Some(stream) = stream_guard.take() {
-                            println!("[DEBUG-H] Stop: Stopping stream...");
-                            let _ = stream.pause();
+                        if let Some(mut stream) = stream_guard.take() {
+                            println!("[AudioEngine] Stop: Stopping stream...");
+                            let _ = stream.stop();
                             drop(stream);
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                            println!("[DEBUG-H] Stop: Stream cleanup complete");
+                            println!("[AudioEngine] Stop: Stream cleanup complete");
                         }
                     }
                     {
@@ -684,12 +688,11 @@ impl AudioEngine {
                             // Stop le stream actuel
                             {
                                 let mut stream_guard = current_stream.lock();
-                                if let Some(stream) = stream_guard.take() {
-                                    println!("[DEBUG-H] Restart: Stopping stream...");
-                                    let _ = stream.pause();
+                                if let Some(mut stream) = stream_guard.take() {
+                                    println!("[AudioEngine] Restart: Stopping stream...");
+                                    let _ = stream.stop();
                                     drop(stream);
-                                    std::thread::sleep(std::time::Duration::from_millis(50));
-                                    println!("[DEBUG-H] Restart: Stream cleanup complete");
+                                    println!("[AudioEngine] Restart: Stream cleanup complete");
                                 }
                             }
                             *current_session_cmd.lock() = None;
@@ -755,32 +758,42 @@ impl AudioEngine {
                                         *current_session_cmd.lock() = Some(session.command_tx.clone());
                                         *current_streaming_state.lock() = Some(Arc::clone(&session.state));
 
-                                        if let Some(s) = Self::create_output_stream(
-                                            &device,
+                                        // Crée le stream CoreAudio
+                                        let stream_config = AudioStreamConfig::new(output_sample_rate, channels as u16);
+                                        match create_audio_stream(
+                                            stream_config,
                                             consumer,
                                             Arc::clone(&session.state),
-                                            Arc::clone(&state),
+                                            Arc::clone(&state.volume),
+                                            Arc::clone(&state.position),
+                                            Arc::clone(&state.is_playing),
                                             app_handle.clone(),
+                                            session.state.info.duration_seconds,
                                         ) {
-                                            if let Err(e) = s.play() {
-                                                eprintln!("Failed to restart stream: {}", e);
-                                            } else {
-                                                state.is_playing.store(true, Ordering::Relaxed);
-                                                state.is_paused.store(false, Ordering::Relaxed);
-                                                *current_stream.lock() = Some(s);
+                                            Ok(mut s) => {
+                                                if let Err(e) = s.start() {
+                                                    eprintln!("Failed to restart stream: {}", e);
+                                                } else {
+                                                    state.is_playing.store(true, Ordering::Relaxed);
+                                                    state.is_paused.store(false, Ordering::Relaxed);
+                                                    *current_stream.lock() = Some(s);
 
-                                                // Émet les specs audio après seek/restart
-                                                if let Some(ref app) = app_handle {
-                                                    let specs = AudioSpecs {
-                                                        source_sample_rate,
-                                                        source_bit_depth: session.state.info.bit_depth,
-                                                        source_channels: session.state.info.channels as u16,
-                                                        output_sample_rate,
-                                                        output_channels: channels as u16,
-                                                        is_mismatch: source_sample_rate != output_sample_rate,
-                                                    };
-                                                    let _ = app.emit("playback_audio_specs", specs);
+                                                    // Émet les specs audio après seek/restart
+                                                    if let Some(ref app) = app_handle {
+                                                        let specs = AudioSpecs {
+                                                            source_sample_rate,
+                                                            source_bit_depth: session.state.info.bit_depth,
+                                                            source_channels: session.state.info.channels as u16,
+                                                            output_sample_rate,
+                                                            output_channels: channels as u16,
+                                                            is_mismatch: source_sample_rate != output_sample_rate,
+                                                        };
+                                                        let _ = app.emit("playback_audio_specs", specs);
+                                                    }
                                                 }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Failed to create restart stream: {}", e);
                                             }
                                         }
                                     }
@@ -806,6 +819,17 @@ impl AudioEngine {
                     // Met à jour la position immédiatement pour le frontend
                     let target_ms = (time_seconds * 1000.0) as u64;
                     state.position.store(target_ms, Ordering::Relaxed);
+
+                    // === CRUCIAL: Reset CoreAudio buffers for instant seek ===
+                    // This flushes ~50ms of internal CoreAudio buffers that CPAL couldn't access
+                    {
+                        if let Some(ref mut stream) = *current_stream.lock() {
+                            println!("[AudioEngine] Calling stream.reset() to flush CoreAudio buffers...");
+                            if let Err(e) = stream.reset() {
+                                eprintln!("[AudioEngine] stream.reset() failed: {}", e);
+                            }
+                        }
+                    }
 
                     // IMPORTANT: Mettre seeking=true AVANT d'envoyer la commande pour éviter la race condition
                     // où on attend seeking mais le décodeur n'a pas encore traité la commande
@@ -878,266 +902,6 @@ impl AudioEngine {
                 }
 
                 Err(_) => break,
-            }
-        }
-    }
-
-    /// Crée le stream de sortie cpal avec le consumer (propriété transférée)
-    fn create_output_stream(
-        device: &cpal::Device,
-        mut consumer: AudioConsumer,
-        streaming_state: Arc<StreamingState>,
-        playback_state: Arc<PlaybackState>,
-        app_handle: Option<AppHandle>,
-    ) -> Option<cpal::Stream> {
-        // IMPORTANT: Utilise le OUTPUT sample rate (après resampling éventuel)
-        let sample_rate = streaming_state.info.output_sample_rate;
-        let channels = streaming_state.info.channels as u16;
-
-        let config = cpal::StreamConfig {
-            channels,
-            sample_rate: cpal::SampleRate(sample_rate),
-            buffer_size: cpal::BufferSize::Default,
-        };
-
-        println!(
-            "Stream config: {}Hz, {} ch (source was {}Hz, resampled: {})",
-            sample_rate, channels,
-            streaming_state.info.sample_rate,
-            streaming_state.info.is_resampled
-        );
-
-        let volume_atomic = Arc::clone(&playback_state.volume);
-        let position_state = Arc::clone(&playback_state.position);
-        let is_playing = Arc::clone(&playback_state.is_playing);
-
-        // Position de lecture en samples
-        let mut playback_samples: u64 = streaming_state.playback_position.load(Ordering::Relaxed);
-        let channels_count = channels as u64;
-        let sample_rate_f64 = sample_rate as f64;
-
-        // Compteur pour émission de progression (tous les ~33ms = 30 FPS)
-        let mut emit_counter: u32 = 0;
-        let emit_interval = sample_rate / 30; // ~30 fps = 33ms pour une timeline fluide
-
-        // Clone l'état pour la closure (Arc, pas les atomics individuels)
-        let streaming_state_clone = Arc::clone(&streaming_state);
-        let duration_seconds = streaming_state.info.duration_seconds;
-        // total_frames = frames (pas samples), et chaque frame a 'channels' samples
-        // Donc duration_samples = total_frames * channels
-        let duration_samples = streaming_state.info.total_frames * channels_count;
-
-        // Flag pour éviter d'émettre playback_ended plusieurs fois
-        let mut end_emitted = false;
-        // Compteur de callbacks vides consécutifs (pour détecter une vraie fin)
-        let mut empty_callbacks = 0;
-        const EMPTY_CALLBACKS_THRESHOLD: u32 = 3; // 3 callbacks vides = fin confirmée
-
-        // [DEBUG-C] Flag pour logger le premier read après un seek
-        let mut first_read_after_seek = false;
-        let mut debug_seek_target: f64 = 0.0;
-
-        // [DEBUG-E] Compteur pour les progress ticks après seek
-        let mut progress_ticks_after_seek: u32 = 0;
-        let mut debug_last_seek_target: f64 = 0.0;
-
-        // [DEBUG-F] Compteur pour logger les samples réels après seek (3 callbacks)
-        let mut debug_sample_log_countdown: u32 = 0;
-
-        // [DEBUG-H] Générer un ID unique pour ce stream
-        static STREAM_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let stream_id = STREAM_COUNTER.fetch_add(1, Ordering::Relaxed);
-        println!("[DEBUG-H] Stream created: stream_id={}", stream_id);
-
-        let stream = device.build_output_stream(
-            &config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                // Récupère le volume
-                let volume = f32::from_bits(volume_atomic.load(Ordering::Relaxed) as u32);
-
-                // Si la fin a déjà été émise, sort du silence
-                if end_emitted {
-                    for sample in data.iter_mut() {
-                        *sample = 0.0;
-                    }
-                    return;
-                }
-
-                // Vérifie si le buffer doit être vidé (après un seek)
-                if streaming_state_clone.flush_buffer.load(Ordering::Acquire) {
-                    // [DEBUG-H] Log stream ID during seek
-                    println!("[DEBUG-H] Seek flush: executing on stream_id={}", stream_id);
-
-                    // [DEBUG-C] Préparer le log du premier read après seek
-                    let seek_pos = streaming_state_clone.seek_position.load(Ordering::Relaxed);
-                    debug_seek_target = seek_pos as f64 / channels_count as f64 / sample_rate_f64;
-                    first_read_after_seek = true;
-                    debug_last_seek_target = debug_seek_target;
-                    progress_ticks_after_seek = 0;
-
-                    // [DEBUG-F] Activer le log des samples réels pour les 3 prochains callbacks
-                    debug_sample_log_countdown = 3;
-
-                    // VIDE le RingBuffer en consommant tous les samples restants
-                    // C'est la seule façon de "flush" un RingBuffer lock-free depuis le consumer
-                    let mut flush_buf = [0.0f32; 4096];
-                    let mut total_flushed = 0usize;
-                    loop {
-                        let flushed = consumer.pop_slice(&mut flush_buf);
-                        if flushed == 0 {
-                            break;
-                        }
-                        total_flushed += flushed;
-                    }
-                    println!("[Audio] Buffer flushed: {} samples discarded", total_flushed);
-
-                    // [DEBUG-G] Vérifier l'état du buffer après flush
-                    // Note: consumer.len() donne le nombre de samples disponibles
-                    use ringbuf::traits::Observer;
-                    let available_after_flush = consumer.occupied_len();
-                    println!("[DEBUG-G] Buffer after flush: available={} samples", available_after_flush);
-
-                    // Désactive le flag de flush
-                    streaming_state_clone.flush_buffer.store(false, Ordering::Release);
-
-                    // IMPORTANT: Signaler au décodeur que le flush est terminé
-                    streaming_state_clone.flush_complete.store(true, Ordering::Release);
-
-                    // Met à jour notre position locale avec la position cible
-                    playback_samples = streaming_state_clone.seek_position.load(Ordering::Relaxed);
-                    empty_callbacks = 0;
-
-                    // Sort du silence pour ce callback (les nouveaux samples arrivent)
-                    for sample in data.iter_mut() {
-                        *sample = 0.0;
-                    }
-                    return;
-                }
-
-                // Vérifie si un seek est en cours (pre-roll pas encore terminé)
-                if streaming_state_clone.seeking.load(Ordering::Acquire) {
-                    // Pendant le seek, on sort du silence et on synchronise la position
-                    for sample in data.iter_mut() {
-                        *sample = 0.0;
-                    }
-                    // Met à jour notre position locale avec la position cible
-                    playback_samples = streaming_state_clone.seek_position.load(Ordering::Relaxed);
-                    empty_callbacks = 0; // Reset le compteur
-                    return;
-                }
-
-                // Pop les samples du RingBuffer
-                let read = consumer.pop_slice(data);
-
-                // [DEBUG-C] Log first read after seek
-                if first_read_after_seek && read > 0 {
-                    let current_pos_time = playback_samples as f64 / channels_count as f64 / sample_rate_f64;
-                    println!("[DEBUG-C] First callback read after seek: playback_samples={}, current_pos={:.3}s, expected={:.3}s, read={} samples",
-                        playback_samples, current_pos_time, debug_seek_target, read);
-                    first_read_after_seek = false;
-                }
-
-                // [DEBUG-F] Log les samples réels après un seek (3 callbacks)
-                if debug_sample_log_countdown > 0 && read >= 8 {
-                    println!("[DEBUG-F] Callback #{} samples (seek to {:.2}s): [{:.6}, {:.6}, {:.6}, {:.6}, {:.6}, {:.6}, {:.6}, {:.6}]",
-                        4 - debug_sample_log_countdown,
-                        debug_last_seek_target,
-                        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
-                    debug_sample_log_countdown -= 1;
-                }
-
-                // [DEBUG-I] Log l'adresse du buffer de sortie (une seule fois après seek)
-                if debug_sample_log_countdown == 2 && read > 0 {
-                    println!("[DEBUG-I] Callback output buffer: ptr={:p}, len={}", data.as_ptr(), data.len());
-                }
-
-                // [DEBUG-G] Log buffer state après pre-fill (une fois)
-                if debug_sample_log_countdown == 2 {
-                    use ringbuf::traits::Observer;
-                    let available = consumer.occupied_len();
-                    println!("[DEBUG-G] Buffer after pre-fill (in callback): available={} samples", available);
-                }
-
-                // Applique le volume et compte les samples lus
-                for sample in data[..read].iter_mut() {
-                    *sample *= volume;
-                }
-
-                // Si on n'a pas assez de données, remplit de silence
-                if read < data.len() {
-                    for sample in data[read..].iter_mut() {
-                        *sample = 0.0;
-                    }
-                }
-
-                // Met à jour la position (en samples) - mais ne dépasse pas la durée
-                if read > 0 {
-                    playback_samples += read as u64;
-                    // Clamp à la durée maximale
-                    if playback_samples > duration_samples {
-                        playback_samples = duration_samples;
-                    }
-                    empty_callbacks = 0; // Reset car on a lu des données
-                } else {
-                    // Callback vide
-                    empty_callbacks += 1;
-                }
-
-                // Détection de fin de piste : décodage terminé + plusieurs callbacks vides
-                if streaming_state_clone.decoding_complete.load(Ordering::Relaxed)
-                    && empty_callbacks >= EMPTY_CALLBACKS_THRESHOLD
-                    && !end_emitted
-                {
-                    end_emitted = true;
-                    is_playing.store(false, Ordering::Relaxed);
-                    let actual_position = playback_samples as f64 / channels_count as f64 / sample_rate_f64;
-                    println!("=== Track finished ===\n  actual position: {:.3}s\n  duration_seconds (metadata): {:.3}s\n  playback_samples: {}\n  duration_samples (calculated): {}",
-                        actual_position,
-                        duration_seconds,
-                        playback_samples,
-                        duration_samples);
-                    // Émet l'événement de fin UNE SEULE FOIS
-                    if let Some(ref app) = app_handle {
-                        let _ = app.emit("playback_ended", ());
-                    }
-                }
-
-                // Émet la progression toutes les ~33ms (30 FPS)
-                emit_counter += data.len() as u32 / channels as u32;
-                if emit_counter >= emit_interval {
-                    emit_counter = 0;
-
-                    // Calcule la position en secondes (clamped à la durée)
-                    let position_seconds = playback_samples as f64 / channels_count as f64 / sample_rate_f64;
-                    // Clamp pour ne JAMAIS dépasser la durée (évite 100% alors que l'audio continue)
-                    let clamped_position = position_seconds.min(duration_seconds * 0.999);
-                    let position_ms = (clamped_position * 1000.0) as u64;
-                    position_state.store(position_ms, Ordering::Relaxed);
-
-                    // [DEBUG-E] Log first 5 progress ticks after seek
-                    if progress_ticks_after_seek < 5 {
-                        progress_ticks_after_seek += 1;
-                        println!("[DEBUG-E] Progress tick #{} after seek: position={:.3}s (seek target was {:.3}s)",
-                            progress_ticks_after_seek, clamped_position, debug_last_seek_target);
-                    }
-
-                    if let Some(ref app) = app_handle {
-                        let _ = app.emit("playback_progress", PlaybackProgress {
-                            position: clamped_position,
-                            duration: duration_seconds,
-                        });
-                    }
-                }
-            },
-            |err| eprintln!("Audio stream error: {}", err),
-            None,
-        );
-
-        match stream {
-            Ok(s) => Some(s),
-            Err(e) => {
-                eprintln!("Failed to create output stream: {}", e);
-                None
             }
         }
     }

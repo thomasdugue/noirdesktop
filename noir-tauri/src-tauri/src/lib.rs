@@ -42,6 +42,7 @@ struct Metadata {
     artist: String,
     album: String,
     track: u32,
+    disc: Option<u32>,
     year: Option<u32>,
     duration: f64,
     #[serde(rename = "bitDepth")]
@@ -838,6 +839,7 @@ fn get_metadata_internal(path: &str) -> Metadata {
         artist: "Artiste inconnu".to_string(),
         album: "Album inconnu".to_string(),
         track: 0,
+        disc: None,
         year: None,
         duration: 0.0,
         bit_depth: None,
@@ -865,6 +867,9 @@ fn get_metadata_internal(path: &str) -> Metadata {
             }
             if let Some(track) = tag.track() {
                 metadata.track = track;
+            }
+            if let Some(disc) = tag.disk() {
+                metadata.disc = Some(disc);
             }
             if let Some(year) = tag.year() {
                 metadata.year = Some(year);
@@ -1019,6 +1024,7 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
         };
 
         let mut all_tracks: Vec<TrackWithMetadata> = Vec::new();
+        let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
         let total_folders = library_paths.len();
 
         for (folder_idx, folder_path) in library_paths.iter().enumerate() {
@@ -1038,7 +1044,12 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
 
             // Scanne le dossier avec métadonnées
             let tracks = scan_folder_with_metadata(folder_path);
-            all_tracks.extend(tracks);
+            // Déduplique par chemin de fichier
+            for track in tracks {
+                if seen_paths.insert(track.path.clone()) {
+                    all_tracks.push(track);
+                }
+            }
         }
 
         // Calcule les différences
@@ -1112,6 +1123,7 @@ fn get_metadata(path: &str) -> Metadata {
         artist: "Artiste inconnu".to_string(),
         album: "Album inconnu".to_string(),
         track: 0,
+        disc: None,
         year: None,
         duration: 0.0,
         bit_depth: None,
