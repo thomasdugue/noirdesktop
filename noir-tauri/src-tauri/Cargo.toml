@@ -1,0 +1,57 @@
+[package]
+name = "noir-tauri"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "noir_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2"
+lofty = "0.18"
+base64 = "0.21"
+dirs = "5"
+once_cell = "1.18"
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+# === AUDIO ENGINE (Player Audiophile) ===
+# Décodeur audio pur Rust (FLAC, WAV, MP3, AAC, ALAC, Vorbis)
+symphonia = { version = "0.5", features = ["all"] }
+# Audio I/O bas niveau - accès DAC exclusif (Hog Mode)
+cpal = "0.15"
+# Gestion threads audio
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+# RingBuffer lock-free pour streaming audio sans glitch
+ringbuf = "0.4"
+# Parallélisation pour scan de bibliothèque rapide
+rayon = "1.8"
+# Resampler haute qualité FFT pour conversion sample rate
+rubato = "0.14"
+# FFT pour visualisations (optionnel, pour plus tard)
+# rustfft = "6.1"
+
+# === PLATFORM-SPECIFIC AUDIO BACKENDS ===
+[target.'cfg(target_os = "macos")'.dependencies]
+# CoreAudio HAL bindings for bit-perfect sample rate control and Hog Mode
+coreaudio-sys = "0.2"
+# Core Foundation bindings for CFString conversion
+core-foundation = "0.9"
+

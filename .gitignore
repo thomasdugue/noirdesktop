@@ -1,0 +1,20 @@
+# Rust build artifacts
+noir-tauri/src-tauri/target/
+
+# Node modules
+noir-tauri/node_modules/
+
+# OS files
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Backups
+backups/

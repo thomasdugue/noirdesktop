@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noir</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Zone de drag pour déplacer la fenêtre (barre de titre macOS) -->
+  <div class="titlebar"></div>
+
+  <!-- Conteneur principal -->
+  <div class="app">
+    <!-- Sidebar : navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>Noir</h2>
+        <button id="select-folder" class="btn-icon" title="Ajouter un dossier">+</button>
+      </div>
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="albums">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/>
+          </svg>
+          Albums
+        </button>
+        <button class="nav-item" data-view="artists">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+          </svg>
+          Artistes
+        </button>
+        <button class="nav-item" data-view="tracks">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+          </svg>
+          Titres
+        </button>
+      </nav>
+      <div class="search-container">
+        <input type="text" id="search-input" class="search-input" placeholder="Rechercher...">
+      </div>
+    </aside>
+
+    <!-- Zone principale -->
+    <main class="main-content">
+      <!-- Message de bienvenue -->
+      <div id="welcome" class="welcome">
+        <h1>Noir</h1>
+        <p>Lecteur audio minimaliste</p>
+        <button id="open-folder-welcome" class="btn-primary">
+          Choisir un dossier de musique
+        </button>
+      </div>
+
+      <!-- Grille d'albums -->
+      <div id="albums-view" class="albums-view hidden">
+        <div id="albums-grid" class="albums-grid"></div>
+      </div>
+
+      <!-- Lecteur (en bas) -->
+      <div id="player" class="player hidden">
+        <div id="cover-art" class="cover-art">
+          <div class="cover-placeholder">♪</div>
+        </div>
+        <div class="now-playing">
+          <span id="track-name">-</span>
+          <span id="track-folder" class="track-folder">-</span>
+        </div>
+        <div class="player-controls">
+          <button id="shuffle" class="btn-mode" title="Lecture aléatoire">⤮</button>
+          <button id="prev" class="btn-control btn-small">⏮</button>
+          <button id="play-pause" class="btn-control">▶</button>
+          <button id="next" class="btn-control btn-small">⏭</button>
+          <button id="repeat" class="btn-mode" title="Répéter">⟳</button>
+          <div class="progress-container">
+            <span id="current-time">0:00</span>
+            <input type="range" id="progress" class="progress-bar" value="0" min="0" max="100">
+            <span id="duration">0:00</span>
+          </div>
+        </div>
+        <div class="volume-container">
+          <button id="volume-btn" class="btn-volume" title="Volume">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path id="volume-icon-path" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+            </svg>
+          </button>
+          <input type="range" id="volume" class="volume-bar" value="100" min="0" max="100">
+        </div>
+        <audio id="audio"></audio>
+      </div>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
