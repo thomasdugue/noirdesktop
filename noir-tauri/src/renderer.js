@@ -260,6 +260,10 @@ let lastVolume = 100       // Dernier volume avant mute
 let queue = []             // File d'attente des morceaux à jouer
 let isQueuePanelOpen = false // État du panel queue
 
+// === PANEL INFORMATIONS TRACK ===
+let isTrackInfoPanelOpen = false // État du panel d'informations
+let trackInfoCurrentTrack = null // Track actuellement affichée dans le panel
+
 // === TRI DES COLONNES (vue Titres) ===
 let sortColumn = 'title'   // Colonne de tri : 'title', 'artist', 'album', 'duration'
 let sortDirection = 'asc'  // Direction : 'asc' ou 'desc'
@@ -5868,14 +5872,18 @@ function showContextMenu(e, track, trackIndex) {
   // Met à jour la visibilité des options selon le contexte
   const goToAlbumBtn = menu.querySelector('[data-action="go-to-album"]')
   const goToArtistBtn = menu.querySelector('[data-action="go-to-artist"]')
+  const showInfoBtn = menu.querySelector('[data-action="show-info"]')
   const isMulti = contextMenuTracks.length > 1
 
-  // Cache "Voir l'album" et "Voir l'artiste" en multi-sélection
+  // Cache "Voir l'album", "Voir l'artiste" et "Informations" en multi-sélection
   if (goToAlbumBtn) {
     goToAlbumBtn.style.display = (isMulti || (currentView === 'albums' && selectedAlbumKey)) ? 'none' : 'flex'
   }
   if (goToArtistBtn) {
     goToArtistBtn.style.display = (isMulti || currentView === 'artists') ? 'none' : 'flex'
+  }
+  if (showInfoBtn) {
+    showInfoBtn.style.display = isMulti ? 'none' : 'flex'
   }
 }
 
@@ -5954,6 +5962,12 @@ function handleContextMenuAction(action) {
       }
       break
 
+    case 'show-info':
+      if (!isMulti) {
+        showTrackInfoPanel(contextMenuTracks[0])
+      }
+      break
+
     case 'remove-from-library':
       removeTracksFromLibrary(contextMenuTracks)
       break
@@ -5986,6 +6000,210 @@ function goToTrackArtist(track) {
   // Passe en vue artistes filtrée par albums de cet artiste
   showArtistAlbums(artistName)
 }
+
+// === PANEL INFORMATIONS TRACK ===
+
+// Affiche le panel d'informations pour un track
+async function showTrackInfoPanel(track) {
+  const panel = document.getElementById('track-info-panel')
+  const content = document.getElementById('track-info-content')
+  if (!panel || !content) return
+
+  // Ferme le queue panel s'il est ouvert
+  if (isQueuePanelOpen) {
+    toggleQueuePanel()
+  }
+
+  trackInfoCurrentTrack = track
+  isTrackInfoPanelOpen = true
+  panel.classList.add('open')
+
+  // Metadata
+  const meta = track.metadata || {}
+  const title = meta.title || track.name || 'Titre inconnu'
+  const artist = meta.artist || 'Artiste inconnu'
+  const album = meta.album || 'Album inconnu'
+  const year = meta.year || null
+  const trackNum = meta.track || null
+  const disc = meta.disc || null
+  const duration = meta.duration ? formatTime(meta.duration) : '-'
+  const bitDepth = meta.bitDepth || null
+  const sampleRate = meta.sampleRate || null
+  const bitrate = meta.bitrate || null
+  const codec = meta.codec || null
+
+  // Détermine le format de fichier depuis le path
+  const fileExt = track.path ? track.path.split('.').pop().toUpperCase() : null
+
+  // Qualité audio
+  const quality = formatQuality(meta, track.path)
+
+  // Icône de qualité
+  const qualityIcon = quality.class === 'quality-hires'
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>'
+    : quality.class === 'quality-lossless'
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'
+
+  // Construit le HTML
+  let html = `
+    <div class="track-info-artwork-section">
+      <div class="track-info-artwork-container">
+        <img class="track-info-artwork" id="track-info-artwork-img" src="" alt="Artwork" style="display: none;">
+        <div class="track-info-artwork-placeholder" id="track-info-artwork-placeholder">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="track-info-title-section">
+      <h2 class="track-info-title">${escapeHtml(title)}</h2>
+      <p class="track-info-artist">${escapeHtml(artist)}</p>
+      <p class="track-info-album">${escapeHtml(album)}</p>
+      <div class="track-info-quality-badge ${quality.class}">
+        ${qualityIcon}
+        <span>${quality.label}</span>
+      </div>
+    </div>
+
+    <div class="track-info-specs">
+      <h4 class="track-info-specs-title">Caractéristiques Audio</h4>
+      <div class="track-info-specs-grid">
+        ${sampleRate ? `
+        <div class="track-info-spec">
+          <svg class="track-info-spec-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>
+          </svg>
+          <span class="track-info-spec-value">${formatSampleRate(sampleRate)}</span>
+          <span class="track-info-spec-label">Fréquence</span>
+        </div>
+        ` : ''}
+        ${bitDepth ? `
+        <div class="track-info-spec">
+          <svg class="track-info-spec-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M7 7h10"/><path d="M7 12h10"/><path d="M7 17h10"/>
+          </svg>
+          <span class="track-info-spec-value">${bitDepth}-bit</span>
+          <span class="track-info-spec-label">Profondeur</span>
+        </div>
+        ` : ''}
+        ${bitrate ? `
+        <div class="track-info-spec">
+          <svg class="track-info-spec-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+          </svg>
+          <span class="track-info-spec-value">${Math.round(bitrate)} kbps</span>
+          <span class="track-info-spec-label">Débit</span>
+        </div>
+        ` : ''}
+      </div>
+    </div>
+
+    <div class="track-info-metadata">
+      <div class="track-info-metadata-grid">
+        <div class="track-info-metadata-item">
+          <span class="track-info-metadata-label">Durée</span>
+          <span class="track-info-metadata-value">${duration}</span>
+        </div>
+        ${fileExt ? `
+        <div class="track-info-metadata-item">
+          <span class="track-info-metadata-label">Format</span>
+          <span class="track-info-metadata-value">${fileExt}</span>
+        </div>
+        ` : ''}
+        ${year ? `
+        <div class="track-info-metadata-item">
+          <span class="track-info-metadata-label">Année</span>
+          <span class="track-info-metadata-value">${year}</span>
+        </div>
+        ` : ''}
+        ${trackNum ? `
+        <div class="track-info-metadata-item">
+          <span class="track-info-metadata-label">Piste</span>
+          <span class="track-info-metadata-value">${disc ? `${disc}-` : ''}${trackNum}</span>
+        </div>
+        ` : ''}
+        ${codec ? `
+        <div class="track-info-metadata-item">
+          <span class="track-info-metadata-label">Codec</span>
+          <span class="track-info-metadata-value">${codec}</span>
+        </div>
+        ` : ''}
+      </div>
+    </div>
+
+    <div class="track-info-file">
+      <span class="track-info-metadata-label">Fichier</span>
+      <div class="track-info-file-path">${escapeHtml(track.path || '')}</div>
+    </div>
+  `
+
+  content.innerHTML = html
+
+  // Charge l'artwork de façon asynchrone
+  const imgEl = document.getElementById('track-info-artwork-img')
+  const placeholderEl = document.getElementById('track-info-artwork-placeholder')
+
+  if (imgEl && placeholderEl) {
+    try {
+      // Tente d'abord le cache mémoire
+      if (coverCache.has(track.path)) {
+        imgEl.src = coverCache.get(track.path)
+        imgEl.style.display = 'block'
+        placeholderEl.style.display = 'none'
+      } else {
+        // Sinon, charge depuis le backend
+        const cover = await invoke('get_cover', { path: track.path })
+        if (cover) {
+          const src = `data:image/jpeg;base64,${cover}`
+          imgEl.src = src
+          imgEl.style.display = 'block'
+          placeholderEl.style.display = 'none'
+          coverCache.set(track.path, src)
+        }
+      }
+    } catch (e) {
+      console.warn('Impossible de charger la pochette:', e)
+    }
+  }
+}
+
+// Ferme le panel d'informations
+function closeTrackInfoPanel() {
+  const panel = document.getElementById('track-info-panel')
+  if (panel) {
+    panel.classList.remove('open')
+  }
+  isTrackInfoPanelOpen = false
+  trackInfoCurrentTrack = null
+}
+
+// Toggle le panel d'informations
+function toggleTrackInfoPanel() {
+  if (isTrackInfoPanelOpen) {
+    closeTrackInfoPanel()
+  }
+}
+
+// Initialise les événements du panel d'informations
+function initTrackInfoPanelListeners() {
+  const closeBtn = document.getElementById('close-track-info')
+  if (closeBtn) {
+    closeBtn.addEventListener('click', closeTrackInfoPanel)
+  }
+
+  // Ferme avec Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isTrackInfoPanelOpen) {
+      closeTrackInfoPanel()
+    }
+  })
+}
+
+// Initialise au chargement du DOM
+document.addEventListener('DOMContentLoaded', initTrackInfoPanelListeners)
 
 // Supprime un track de la bibliothèque
 function removeTrackFromLibrary(track) {
