@@ -277,6 +277,9 @@ const thumbnailCache = new Map()  // Cache des thumbnails 150x150 { path: base64
 let metadataLoaded = false        // Indique si les métadonnées ont été chargées
 let trackAddedDates = {}          // Dates d'ajout des tracks { path: timestamp }
 
+// === INDEX DE RECHERCHE ===
+const searchIndex = new Map()     // Index inversé : mot → Set<index de track>
+
 // === DIAGNOSTIC PERFORMANCE ===
 const PERF = {
   thumbnailCalls: 0,
@@ -696,6 +699,72 @@ function groupTracksIntoAlbumsAndArtists() {
   }
 
   metadataLoaded = true
+
+  // Reconstruit l'index de recherche
+  buildSearchIndex()
+}
+
+// Construit un index inversé pour la recherche rapide
+function buildSearchIndex() {
+  searchIndex.clear()
+
+  tracks.forEach((track, i) => {
+    const text = [
+      track.metadata?.title || track.name || '',
+      track.metadata?.artist || '',
+      track.metadata?.album || ''
+    ].join(' ').toLowerCase()
+
+    // Tokenize : sépare par espaces et caractères spéciaux
+    const words = text.split(/[\s\-_.,;:!?'"()\[\]{}]+/)
+
+    for (const word of words) {
+      if (word.length < 2) continue // Ignore les mots trop courts
+
+      // Ajoute l'index du track pour ce mot
+      if (!searchIndex.has(word)) {
+        searchIndex.set(word, new Set())
+      }
+      searchIndex.get(word).add(i)
+    }
+  })
+
+  console.log(`[Search] Index built: ${searchIndex.size} unique words for ${tracks.length} tracks`)
+}
+
+// Recherche rapide utilisant l'index inversé
+function searchTracksWithIndex(query) {
+  if (!query || query.length < 2) return null // Fallback vers recherche classique
+
+  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length >= 2)
+  if (queryWords.length === 0) return null
+
+  let resultSet = null
+
+  for (const queryWord of queryWords) {
+    const wordMatches = new Set()
+
+    // Cherche tous les mots de l'index qui commencent par queryWord (prefix match)
+    for (const [indexWord, trackIndices] of searchIndex.entries()) {
+      if (indexWord.startsWith(queryWord) || indexWord.includes(queryWord)) {
+        for (const idx of trackIndices) {
+          wordMatches.add(idx)
+        }
+      }
+    }
+
+    // Intersection des résultats (tous les mots doivent matcher)
+    if (resultSet === null) {
+      resultSet = wordMatches
+    } else {
+      resultSet = new Set([...resultSet].filter(x => wordMatches.has(x)))
+    }
+
+    // Si plus aucun résultat, on peut arrêter
+    if (resultSet.size === 0) break
+  }
+
+  return resultSet
 }
 
 // === MODULE INDEXATION ===
@@ -1105,6 +1174,9 @@ function displayCurrentView() {
   albumsGridDiv.textContent = ''
   albumsViewDiv.classList.remove('hidden')
 
+  // Toggle la classe home-visible pour pauser les animations wave quand hors de la home
+  albumsViewDiv.classList.toggle('home-visible', currentView === 'home')
+
   switch (currentView) {
     case 'home':
       displayHomeView()
@@ -1437,11 +1509,11 @@ searchInput.addEventListener('input', (e) => {
   const query = e.target.value.trim()
   searchQuery = query.toLowerCase()
 
-  // Debounce : attend 100ms après la dernière frappe
+  // Debounce : attend 200ms après la dernière frappe (optimisation pour grosses bibliothèques)
   clearTimeout(searchDebounceTimer)
   searchDebounceTimer = setTimeout(() => {
     updateSearchResultsPanel(query)
-  }, 100)
+  }, 200)
 })
 
 // Ferme le panel si on clique ailleurs
@@ -3526,12 +3598,24 @@ function getSortedAndFilteredTracks() {
 
   // Filtre par recherche
   if (searchQuery) {
-    sortedTracks = sortedTracks.filter(track => {
-      const title = (track.metadata?.title || track.name).toLowerCase()
-      const artist = (track.metadata?.artist || '').toLowerCase()
-      const album = (track.metadata?.album || '').toLowerCase()
-      return title.includes(searchQuery) || artist.includes(searchQuery) || album.includes(searchQuery)
-    })
+    // Tente d'abord la recherche par index (rapide)
+    const indexedResults = searchTracksWithIndex(searchQuery)
+
+    if (indexedResults && indexedResults.size > 0) {
+      // Filtre les tracks triées selon l'index
+      sortedTracks = sortedTracks.filter(track => {
+        const trackIndex = tracks.indexOf(track)
+        return indexedResults.has(trackIndex)
+      })
+    } else {
+      // Fallback : recherche classique par includes (pour sous-chaînes au milieu)
+      sortedTracks = sortedTracks.filter(track => {
+        const title = (track.metadata?.title || track.name).toLowerCase()
+        const artist = (track.metadata?.artist || '').toLowerCase()
+        const album = (track.metadata?.album || '').toLowerCase()
+        return title.includes(searchQuery) || artist.includes(searchQuery) || album.includes(searchQuery)
+      })
+    }
   }
 
   return sortedTracks
@@ -4854,6 +4938,11 @@ async function initRustAudioListeners() {
 
     // Marque qu'on n'est pas en pause (on reçoit des updates)
     isPausedFromRust = false
+
+    // Filet de sécurité : redémarre la boucle RAF si elle a été stoppée
+    if (!interpolationAnimationId) {
+      startPositionInterpolation()
+    }
   })
 
   // Seeking en cours (émis par Rust quand un seek démarre)
@@ -4889,6 +4978,8 @@ async function initRustAudioListeners() {
     isPausedFromRust = true
     audioIsPlaying = false
     playPauseBtn.textContent = '▶'
+    // Stoppe la boucle RAF pour économiser le CPU
+    stopPositionInterpolation()
   })
 
   await listen('playback_resumed', () => {
@@ -4897,6 +4988,8 @@ async function initRustAudioListeners() {
     playPauseBtn.textContent = '⏸'
     // Re-synchronise le timestamp pour éviter un saut
     lastRustTimestamp = performance.now()
+    // Redémarre la boucle RAF
+    startPositionInterpolation()
   })
 
   // Fin de lecture (émis par Rust quand le track est terminé)
@@ -4912,6 +5005,9 @@ async function initRustAudioListeners() {
 
     // Reset immédiat de l'UI pour la transition
     resetPlayerUI()
+
+    // Stoppe la boucle RAF (sera redémarrée par playTrack si nécessaire)
+    stopPositionInterpolation()
 
     // Petit délai pour laisser Rust nettoyer son état avant de lancer la suite
     setTimeout(() => {

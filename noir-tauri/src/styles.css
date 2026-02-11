@@ -181,7 +181,7 @@ body.dragging-active * {
   height: 24px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -211,7 +211,7 @@ body.dragging-active * {
   height: 20px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -337,7 +337,7 @@ body.dragging-active * {
   padding: 6px 12px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   -webkit-app-region: no-drag;
 }
 
@@ -370,7 +370,7 @@ body.dragging-active * {
   padding: 6px 12px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   -webkit-app-region: no-drag;
 }
 
@@ -442,7 +442,7 @@ body.dragging-active * {
   font-size: 13px;
   opacity: 0;
   pointer-events: none;
-  transition: all 0.3s ease;
+  transition: opacity 0.3s ease, transform 0.3s ease;
   z-index: 1100;
   border: 1px solid #333;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
@@ -536,7 +536,7 @@ body.dragging-active * {
   text-align: left;
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
@@ -575,7 +575,7 @@ body.dragging-active * {
   border-radius: 6px;
   font-size: 18px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: color 0.2s, background-color 0.2s, opacity 0.2s, border-color 0.2s;
   -webkit-app-region: no-drag;
 }
 
@@ -999,7 +999,7 @@ body.dragging-active * {
   cursor: pointer;
   outline: none;
   -webkit-app-region: no-drag;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
 }
 
 .btn-sort-icon:hover {
@@ -1105,13 +1105,13 @@ body.dragging-active * {
   user-select: none;  /* Empêche la sélection de texte */
   -webkit-user-select: none;
   contain: layout style; /* Optimisation : isole le layout */
+  will-change: transform; /* Optimisation pour le virtual scroll */
 }
 
 /* État sélectionné (multi-sélection supportée) */
 .tracks-list-item.selected {
   background: #1a1a1a;
-  border-left: 3px solid #4a9;
-  padding-left: 13px; /* Compense la bordure (16px - 3px) */
+  box-shadow: inset 3px 0 0 #4a9; /* Remplace border-left pour éviter le recalcul layout */
 }
 
 /* Indicateur de drag (icône visible au hover) */
@@ -1224,7 +1224,7 @@ body.dragging-active * {
   border-radius: 50%;
   color: #888;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
   flex-shrink: 0;
 }
 
@@ -1504,7 +1504,7 @@ body.dragging-active * {
   height: 36px;
   cursor: pointer;
   border-radius: 4px;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1642,7 +1642,7 @@ body.dragging-active * {
   cursor: pointer;
   border-radius: 4px;
   opacity: 0;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1689,7 +1689,7 @@ body.dragging-active * {
   font-weight: 500;
   border-radius: 8px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
   -webkit-app-region: no-drag;
 }
 
@@ -1838,6 +1838,12 @@ body.dragging-active * {
 .home-resume-tile > *:not(.sine-wave-animation) {
   position: relative;
   z-index: 1;
+}
+
+/* Pause les animations wave quand la home n'est pas visible (économie CPU) */
+.home-hidden .sine-wave-animation,
+.albums-view:not(.home-visible) .sine-wave-animation {
+  animation-play-state: paused;
 }
 
 .home-resume-tile:hover {
@@ -2568,7 +2574,7 @@ body.player-visible .app {
   border-radius: 50%;
   font-size: 16px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
   -webkit-app-region: no-drag;
   flex-shrink: 0;
 }
@@ -2624,7 +2630,7 @@ body.player-visible .app {
   width: 36px;
   height: 36px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   -webkit-app-region: no-drag;
   border-radius: 4px;
 }
@@ -2884,7 +2890,7 @@ body.player-visible .app {
   background: #2a2a2a;
   border: 1px solid #3a3a3a;
   border-radius: 24px;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .hog-mode-slider::before {
@@ -2896,7 +2902,7 @@ body.player-visible .app {
   bottom: 2px;
   background: #666;
   border-radius: 50%;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
@@ -2957,7 +2963,7 @@ body.player-visible .app {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
   flex-shrink: 0;
 }
 
@@ -2991,7 +2997,7 @@ body.player-visible .app {
   opacity: 0;
   visibility: hidden;
   transform: translateY(8px);
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.25s, transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 100;
 }
 
@@ -3141,7 +3147,7 @@ body:not(.player-visible) .queue-panel {
   cursor: pointer;
   padding: 6px;
   border-radius: 4px;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3172,7 +3178,7 @@ body:not(.player-visible) .queue-panel {
   cursor: pointer;
   padding: 6px;
   border-radius: 4px;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3191,7 +3197,7 @@ body:not(.player-visible) .queue-panel {
   cursor: pointer;
   padding: 4px 8px;
   border-radius: 4px;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
 }
 
 .btn-text:hover {
@@ -3342,7 +3348,7 @@ body:not(.player-visible) .queue-panel {
   cursor: pointer;
   padding: 4px 8px;
   opacity: 0;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
 }
 
 .queue-item:hover .queue-item-remove {
@@ -3392,7 +3398,7 @@ body:not(.player-visible) .queue-panel {
   border-radius: 8px;
   font-size: 13px;
   opacity: 0;
-  transition: all 0.3s ease;
+  transition: opacity 0.3s ease, transform 0.3s ease;
   z-index: 1100;
   pointer-events: none;
 }
@@ -3567,7 +3573,7 @@ body:not(.player-visible) .track-info-panel {
   cursor: pointer;
   padding: 6px;
   border-radius: 4px;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3863,7 +3869,7 @@ body:not(.player-visible) .track-info-panel {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
   padding: 4px 8px;
   margin: -4px -8px;
   border-radius: 6px;
@@ -3917,7 +3923,7 @@ body:not(.player-visible) .track-info-panel {
   height: 24px;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4067,7 +4073,7 @@ body:not(.player-visible) .track-info-panel {
   font-weight: 500;
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
 }
 
 .btn-modal-secondary:hover {
@@ -4085,7 +4091,7 @@ body:not(.player-visible) .track-info-panel {
   font-weight: 500;
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
 }
 
 .btn-modal-primary:hover {
@@ -4120,7 +4126,7 @@ body:not(.player-visible) .track-info-panel {
   cursor: pointer;
   border-radius: 4px;
   opacity: 0;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4189,7 +4195,7 @@ body:not(.player-visible) .track-info-panel {
   font-size: 13px;
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
 }
 
 .btn-sort-playlist:hover {
@@ -4239,7 +4245,7 @@ body:not(.player-visible) .track-info-panel {
   font-size: 13px;
   text-align: left;
   cursor: pointer;
-  transition: all 0.1s;
+  transition: color 0.1s, background-color 0.1s, opacity 0.1s;
 }
 
 .sort-option:hover {
@@ -4351,7 +4357,7 @@ body:not(.player-visible) .track-info-panel {
   cursor: pointer;
   border-radius: 4px;
   opacity: 0;
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s, border-color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;

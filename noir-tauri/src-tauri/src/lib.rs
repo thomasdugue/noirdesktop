@@ -9,7 +9,7 @@ use walkdir::WalkDir;
 use lofty::{Accessor, AudioFile, Probe, TaggedFileExt, MimeType};
 use base64::{Engine as _, engine::general_purpose};
 use tauri_plugin_dialog::DialogExt;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use rayon::prelude::*;
 use image::imageops::FilterType;
 use image::ImageFormat;
@@ -551,8 +551,8 @@ fn md5_hash(input: &str) -> u64 {
     hasher.finish()
 }
 
-// Recherche une pochette sur MusicBrainz + Cover Art Archive
-fn fetch_cover_from_musicbrainz(artist: &str, album: &str) -> Option<Vec<u8>> {
+// Recherche une pochette sur MusicBrainz + Cover Art Archive (async)
+async fn fetch_cover_from_musicbrainz(artist: &str, album: &str) -> Option<Vec<u8>> {
     // Nettoie et encode les paramètres
     let artist_clean = artist.replace("Artistes Variés", "").trim().to_string();
     let album_clean = album.trim();
@@ -575,9 +575,9 @@ fn fetch_cover_from_musicbrainz(artist: &str, album: &str) -> Option<Vec<u8>> {
         query
     );
 
-    // Recherche sur MusicBrainz
-    let response = HTTP_CLIENT.get(&search_url).send().ok()?;
-    let search_result: MusicBrainzSearchResponse = response.json().ok()?;
+    // Recherche sur MusicBrainz (async)
+    let response = HTTP_CLIENT.get(&search_url).send().await.ok()?;
+    let search_result: MusicBrainzSearchResponse = response.json().await.ok()?;
 
     // Prend le meilleur résultat
     let releases = search_result.releases?;
@@ -591,17 +591,17 @@ fn fetch_cover_from_musicbrainz(artist: &str, album: &str) -> Option<Vec<u8>> {
         best_release.id
     );
 
-    let cover_response = HTTP_CLIENT.get(&cover_url).send().ok()?;
+    let cover_response = HTTP_CLIENT.get(&cover_url).send().await.ok()?;
 
     if cover_response.status().is_success() {
-        cover_response.bytes().ok().map(|b| b.to_vec())
+        cover_response.bytes().await.ok().map(|b| b.to_vec())
     } else {
         None
     }
 }
 
-// Recherche une photo d'artiste via Deezer API (prioritaire car plus de photos)
-fn fetch_artist_image_from_deezer(artist_name: &str) -> Option<Vec<u8>> {
+// Recherche une photo d'artiste via Deezer API (prioritaire car plus de photos) - async
+async fn fetch_artist_image_from_deezer(artist_name: &str) -> Option<Vec<u8>> {
     let artist_clean = artist_name.trim();
 
     if artist_clean.is_empty() || artist_clean == "Artiste inconnu" || artist_clean == "Artistes Variés" {
@@ -614,8 +614,8 @@ fn fetch_artist_image_from_deezer(artist_name: &str) -> Option<Vec<u8>> {
         urlencoding_simple(artist_clean)
     );
 
-    let response = HTTP_CLIENT.get(&search_url).send().ok()?;
-    let json: serde_json::Value = response.json().ok()?;
+    let response = HTTP_CLIENT.get(&search_url).send().await.ok()?;
+    let json: serde_json::Value = response.json().await.ok()?;
 
     // Récupère le premier artiste
     let data = json.get("data")?.as_array()?;
@@ -637,9 +637,9 @@ fn fetch_artist_image_from_deezer(artist_name: &str) -> Option<Vec<u8>> {
         .filter(|s| !s.is_empty() && !s.contains("/artist//") && s.starts_with("http"))?;
 
     // Télécharge l'image
-    let image_response = HTTP_CLIENT.get(image_url).send().ok()?;
+    let image_response = HTTP_CLIENT.get(image_url).send().await.ok()?;
     if image_response.status().is_success() {
-        let bytes = image_response.bytes().ok()?;
+        let bytes = image_response.bytes().await.ok()?;
         // Vérifie que l'image n'est pas vide (placeholder)
         if bytes.len() > 1000 {
             return Some(bytes.to_vec());
@@ -649,8 +649,8 @@ fn fetch_artist_image_from_deezer(artist_name: &str) -> Option<Vec<u8>> {
     None
 }
 
-// Recherche une photo d'artiste via MusicBrainz + Wikimedia Commons (fallback)
-fn fetch_artist_image_from_musicbrainz(artist_name: &str) -> Option<Vec<u8>> {
+// Recherche une photo d'artiste via MusicBrainz + Wikimedia Commons (fallback) - async
+async fn fetch_artist_image_from_musicbrainz(artist_name: &str) -> Option<Vec<u8>> {
     let artist_clean = artist_name.trim();
 
     if artist_clean.is_empty() || artist_clean == "Artiste inconnu" || artist_clean == "Artistes Variés" {
@@ -663,8 +663,8 @@ fn fetch_artist_image_from_musicbrainz(artist_name: &str) -> Option<Vec<u8>> {
         urlencoding_simple(artist_clean)
     );
 
-    let response = HTTP_CLIENT.get(&search_url).send().ok()?;
-    let search_result: MusicBrainzArtistSearchResponse = response.json().ok()?;
+    let response = HTTP_CLIENT.get(&search_url).send().await.ok()?;
+    let search_result: MusicBrainzArtistSearchResponse = response.json().await.ok()?;
 
     // Prend le meilleur résultat (score réduit à 50 pour plus de résultats)
     let artists = search_result.artists?;
@@ -678,11 +678,11 @@ fn fetch_artist_image_from_musicbrainz(artist_name: &str) -> Option<Vec<u8>> {
         best_artist.id
     );
 
-    // Petit délai pour respecter le rate limit de MusicBrainz
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Petit délai pour respecter le rate limit de MusicBrainz (async sleep)
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    let details_response = HTTP_CLIENT.get(&details_url).send().ok()?;
-    let details: MusicBrainzArtistDetails = details_response.json().ok()?;
+    let details_response = HTTP_CLIENT.get(&details_url).send().await.ok()?;
+    let details: MusicBrainzArtistDetails = details_response.json().await.ok()?;
 
     // 3. Cherche une URL d'image dans les relations
     if let Some(relations) = details.relations {
@@ -693,7 +693,7 @@ fn fetch_artist_image_from_musicbrainz(artist_name: &str) -> Option<Vec<u8>> {
                     if let Some(url) = relation.url.and_then(|u| u.resource) {
                         // Wikimedia Commons - convertit l'URL en URL d'image directe
                         if url.contains("commons.wikimedia.org") {
-                            if let Some(image_data) = fetch_wikimedia_image(&url) {
+                            if let Some(image_data) = fetch_wikimedia_image(&url).await {
                                 return Some(image_data);
                             }
                         }
@@ -706,8 +706,8 @@ fn fetch_artist_image_from_musicbrainz(artist_name: &str) -> Option<Vec<u8>> {
     None
 }
 
-// Télécharge une image depuis Wikimedia Commons
-fn fetch_wikimedia_image(wikimedia_url: &str) -> Option<Vec<u8>> {
+// Télécharge une image depuis Wikimedia Commons - async
+async fn fetch_wikimedia_image(wikimedia_url: &str) -> Option<Vec<u8>> {
     // Extrait le nom du fichier de l'URL Wikimedia
     // Format: https://commons.wikimedia.org/wiki/File:Nom_du_fichier.jpg
     let file_name = wikimedia_url
@@ -722,8 +722,8 @@ fn fetch_wikimedia_image(wikimedia_url: &str) -> Option<Vec<u8>> {
         file_name
     );
 
-    let response = HTTP_CLIENT.get(&api_url).send().ok()?;
-    let json: serde_json::Value = response.json().ok()?;
+    let response = HTTP_CLIENT.get(&api_url).send().await.ok()?;
+    let json: serde_json::Value = response.json().await.ok()?;
 
     // Navigue dans la réponse JSON pour trouver l'URL de l'image
     let pages = json.get("query")?.get("pages")?;
@@ -738,9 +738,9 @@ fn fetch_wikimedia_image(wikimedia_url: &str) -> Option<Vec<u8>> {
                     .as_str()?;
 
                 // Télécharge l'image
-                let image_response = HTTP_CLIENT.get(image_url).send().ok()?;
+                let image_response = HTTP_CLIENT.get(image_url).send().await.ok()?;
                 if image_response.status().is_success() {
-                    return image_response.bytes().ok().map(|b| b.to_vec());
+                    return image_response.bytes().await.ok().map(|b| b.to_vec());
                 }
             }
         }
@@ -1465,9 +1465,9 @@ fn generate_thumbnails_batch(paths: Vec<String>) -> u32 {
     generated
 }
 
-// Recherche une pochette sur Internet (MusicBrainz + Cover Art Archive)
+// Recherche une pochette sur Internet (MusicBrainz + Cover Art Archive) - async
 #[tauri::command]
-fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
+async fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
     // Clé unique pour cet album
     let album_key = format!("{}|||{}", artist.to_lowercase(), album.to_lowercase());
 
@@ -1490,8 +1490,8 @@ fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
         }
     }
 
-    // Recherche sur Internet
-    if let Some(image_data) = fetch_cover_from_musicbrainz(&artist, &album) {
+    // Recherche sur Internet (async)
+    if let Some(image_data) = fetch_cover_from_musicbrainz(&artist, &album).await {
         // Sauvegarde dans le cache local
         fs::create_dir_all(&cover_dir).ok();
         if fs::write(&cache_file, &image_data).is_ok() {
@@ -1508,10 +1508,10 @@ fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
     None
 }
 
-// Recherche une image d'artiste sur Internet (Deezer + MusicBrainz)
+// Recherche une image d'artiste sur Internet (Deezer + MusicBrainz) - async
 // Fallback: utilise une pochette d'album Internet, puis pochette locale
 #[tauri::command]
-fn fetch_artist_image(artist: String, fallback_album: Option<String>, fallback_cover_path: Option<String>) -> Option<String> {
+async fn fetch_artist_image(artist: String, fallback_album: Option<String>, fallback_cover_path: Option<String>) -> Option<String> {
     // Clé unique pour cet artiste
     let artist_key = format!("artist|||{}", artist.to_lowercase());
 
@@ -1532,8 +1532,8 @@ fn fetch_artist_image(artist: String, fallback_album: Option<String>, fallback_c
         }
     }
 
-    // 1. Priorité: Deezer (a beaucoup de photos d'artistes)
-    if let Some(image_data) = fetch_artist_image_from_deezer(&artist) {
+    // 1. Priorité: Deezer (a beaucoup de photos d'artistes) - async
+    if let Some(image_data) = fetch_artist_image_from_deezer(&artist).await {
         // Sauvegarde dans le cache local
         fs::create_dir_all(&cover_dir).ok();
         if fs::write(&cache_file, &image_data).is_ok() {
@@ -1542,8 +1542,8 @@ fn fetch_artist_image(artist: String, fallback_album: Option<String>, fallback_c
         }
     }
 
-    // 2. Fallback: MusicBrainz + Wikimedia (moins de photos mais plus précis)
-    if let Some(image_data) = fetch_artist_image_from_musicbrainz(&artist) {
+    // 2. Fallback: MusicBrainz + Wikimedia (moins de photos mais plus précis) - async
+    if let Some(image_data) = fetch_artist_image_from_musicbrainz(&artist).await {
         // Sauvegarde dans le cache local
         fs::create_dir_all(&cover_dir).ok();
         if fs::write(&cache_file, &image_data).is_ok() {
@@ -1552,9 +1552,9 @@ fn fetch_artist_image(artist: String, fallback_album: Option<String>, fallback_c
         }
     }
 
-    // 3. Fallback: pochette d'album depuis Internet (MusicBrainz)
+    // 3. Fallback: pochette d'album depuis Internet (MusicBrainz) - async
     if let Some(album) = &fallback_album {
-        if let Some(image_data) = fetch_cover_from_musicbrainz(&artist, album) {
+        if let Some(image_data) = fetch_cover_from_musicbrainz(&artist, album).await {
             // Sauvegarde comme image artiste (fallback)
             fs::create_dir_all(&cover_dir).ok();
             if fs::write(&cache_file, &image_data).is_ok() {

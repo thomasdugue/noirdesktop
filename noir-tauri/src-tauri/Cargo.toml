@@ -29,8 +29,8 @@ lofty = "0.18"
 base64 = "0.21"
 dirs = "5"
 once_cell = "1.18"
-reqwest = { version = "0.11", features = ["json", "blocking"] }
-tokio = { version = "1", features = ["rt-multi-thread"] }
+reqwest = { version = "0.11", features = ["json"] }  # Async only - no blocking
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }  # Added "time" for tokio::time::sleep
 
 # === AUDIO ENGINE (Player Audiophile) ===
 # Décodeur audio pur Rust (FLAC, WAV, MP3, AAC, ALAC, Vorbis)
