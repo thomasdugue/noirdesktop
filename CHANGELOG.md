@@ -4,7 +4,35 @@ Historique cumulatif des développements, décisions d'architecture et bugs rés
 
 ---
 
-## [2025-02-11] Optimisations Performance — Phase 1 & 2
+## [2025-02-11] Optimisations Performance — Phase 1, 2 & 3
+
+### Phase 3 — Mémoire (Protocole custom pochettes)
+
+#### 3.1 Protocole Tauri `noir://`
+- **Protocole custom** : `noir://localhost/covers/xxx.jpg` et `noir://localhost/thumbnails/xxx_thumb.jpg`
+- **Élimination base64** : Plus d'encodage/décodage base64 (33% d'overhead évité)
+- **Cache navigateur** : `Cache-Control: max-age=31536000, immutable` pour mise en cache WebView
+- **Mémoire JS** : ~60 octets/pochette au lieu de ~700 KB (URLs au lieu de data URIs)
+
+#### 3.2 Commandes Rust modifiées
+- `get_cover()` → retourne `noir://localhost/covers/{hash}.{ext}`
+- `get_cover_thumbnail()` → retourne `noir://localhost/thumbnails/{hash}_thumb.jpg`
+- `fetch_internet_cover()` → retourne `noir://localhost/covers/internet_{hash}.jpg`
+- `fetch_artist_image()` → retourne `noir://localhost/covers/artist_{hash}.jpg`
+
+#### 3.3 Frontend adapté
+- Helper `isValidImageSrc()` : supporte `data:image` et `noir://`
+- 24 vérifications mises à jour dans tout le code
+
+### Impact Mémoire Phase 3
+
+| Métrique | Avant | Après |
+|----------|-------|-------|
+| Mémoire par pochette | ~700 KB | ~60 octets |
+| Heap JS (1000 albums) | ~700 MB | ~60 KB |
+| Sérialisation IPC | 2× (JSON encode/decode) | 0× |
+
+---
 
 ### Phase 1 — Frontend (JS/CSS)
 

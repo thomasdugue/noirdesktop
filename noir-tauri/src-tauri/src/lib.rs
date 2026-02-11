@@ -13,6 +13,7 @@ use reqwest::Client;
 use rayon::prelude::*;
 use image::imageops::FilterType;
 use image::ImageFormat;
+use percent_encoding::percent_decode_str;
 
 // === AUDIO ENGINE MODULES ===
 mod audio;
@@ -1251,16 +1252,15 @@ fn get_cover(path: &str) -> Option<String> {
     };
 
     if let Some(cache_file) = cached_file {
-        // Lit depuis le fichier cache sur disque
-        if let Ok(data) = fs::read(&cache_file) {
-            let mime = if cache_file.ends_with(".png") { "image/png" } else { "image/jpeg" };
-            let base64 = general_purpose::STANDARD.encode(&data);
+        // Retourne une URL noir:// au lieu de base64 (économise ~33% de mémoire)
+        if Path::new(&cache_file).exists() {
+            let filename = Path::new(&cache_file).file_name()?.to_str()?;
             let elapsed = start.elapsed().as_millis();
             if elapsed > 50 {
-                println!("[RUST-PERF] get_cover (CACHE HIT): {}ms ({} KB) for {}",
-                         elapsed, data.len()/1024, path.split('/').last().unwrap_or(path));
+                println!("[RUST-PERF] get_cover (CACHE HIT): {}ms for {}",
+                         elapsed, path.split('/').last().unwrap_or(path));
             }
-            return Some(format!("data:{};base64,{}", mime, base64));
+            return Some(format!("noir://localhost/covers/{}", filename));
         }
     }
 
@@ -1303,8 +1303,9 @@ fn get_cover(path: &str) -> Option<String> {
                              elapsed, probe_time, size_kb, path.split('/').last().unwrap_or(path));
                 }
 
-                let base64 = general_purpose::STANDARD.encode(picture.data());
-                return Some(format!("data:{};base64,{}", mime, base64));
+                // Retourne une URL noir:// au lieu de base64
+                let filename = cache_file.file_name()?.to_str()?;
+                return Some(format!("noir://localhost/covers/{}", filename));
             }
         }
     }
@@ -1382,27 +1383,21 @@ fn get_cover_thumbnail(path: &str) -> Option<String> {
     let thumb_path_jpg = thumb_dir.join(format!("{}_thumb.jpg", hash));
     let thumb_path_webp = thumb_dir.join(format!("{}_thumb.webp", hash));
 
-    // Check si thumbnail existe déjà (FAST PATH - lecture seule)
+    // Check si thumbnail existe déjà (FAST PATH - retourne URL noir://)
     if thumb_path_jpg.exists() {
-        if let Ok(data) = fs::read(&thumb_path_jpg) {
-            let base64 = general_purpose::STANDARD.encode(&data);
-            let elapsed = start.elapsed().as_millis();
-            if elapsed > 50 {
-                println!("[RUST-PERF] get_cover_thumbnail (JPG cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
-            }
-            return Some(format!("data:image/jpeg;base64,{}", base64));
+        let elapsed = start.elapsed().as_millis();
+        if elapsed > 50 {
+            println!("[RUST-PERF] get_cover_thumbnail (JPG cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
         }
+        return Some(format!("noir://localhost/thumbnails/{}_thumb.jpg", hash));
     }
     // Fallback ancien format webp
     if thumb_path_webp.exists() {
-        if let Ok(data) = fs::read(&thumb_path_webp) {
-            let base64 = general_purpose::STANDARD.encode(&data);
-            let elapsed = start.elapsed().as_millis();
-            if elapsed > 50 {
-                println!("[RUST-PERF] get_cover_thumbnail (WebP cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
-            }
-            return Some(format!("data:image/webp;base64,{}", base64));
+        let elapsed = start.elapsed().as_millis();
+        if elapsed > 50 {
+            println!("[RUST-PERF] get_cover_thumbnail (WebP cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
         }
+        return Some(format!("noir://localhost/thumbnails/{}_thumb.webp", hash));
     }
 
     // PAS EN CACHE -> retourne None immédiatement (ne bloque pas!)
@@ -1484,10 +1479,8 @@ async fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
     let cache_file = cover_dir.join(format!("internet_{}.jpg", hash));
 
     if cache_file.exists() {
-        if let Ok(data) = fs::read(&cache_file) {
-            let base64 = general_purpose::STANDARD.encode(&data);
-            return Some(format!("data:image/jpeg;base64,{}", base64));
-        }
+        // Retourne une URL noir:// au lieu de base64
+        return Some(format!("noir://localhost/covers/internet_{}.jpg", hash));
     }
 
     // Recherche sur Internet (async)
@@ -1495,8 +1488,8 @@ async fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
         // Sauvegarde dans le cache local
         fs::create_dir_all(&cover_dir).ok();
         if fs::write(&cache_file, &image_data).is_ok() {
-            let base64 = general_purpose::STANDARD.encode(&image_data);
-            return Some(format!("data:image/jpeg;base64,{}", base64));
+            // Retourne une URL noir:// au lieu de base64
+            return Some(format!("noir://localhost/covers/internet_{}.jpg", hash));
         }
     }
 
@@ -1523,11 +1516,11 @@ async fn fetch_artist_image(artist: String, fallback_album: Option<String>, fall
     let cache_file = cover_dir.join(format!("artist_{}.jpg", hash));
 
     if cache_file.exists() {
-        if let Ok(data) = fs::read(&cache_file) {
-            // Vérifie que le fichier n'est pas vide/corrompu
-            if data.len() > 1000 {
-                let base64 = general_purpose::STANDARD.encode(&data);
-                return Some(format!("data:image/jpeg;base64,{}", base64));
+        // Vérifie que le fichier n'est pas vide/corrompu (check taille via metadata)
+        if let Ok(meta) = fs::metadata(&cache_file) {
+            if meta.len() > 1000 {
+                // Retourne une URL noir:// au lieu de base64
+                return Some(format!("noir://localhost/covers/artist_{}.jpg", hash));
             }
         }
     }
@@ -1537,8 +1530,8 @@ async fn fetch_artist_image(artist: String, fallback_album: Option<String>, fall
         // Sauvegarde dans le cache local
         fs::create_dir_all(&cover_dir).ok();
         if fs::write(&cache_file, &image_data).is_ok() {
-            let base64 = general_purpose::STANDARD.encode(&image_data);
-            return Some(format!("data:image/jpeg;base64,{}", base64));
+            // Retourne une URL noir:// au lieu de base64
+            return Some(format!("noir://localhost/covers/artist_{}.jpg", hash));
         }
     }
 
@@ -1547,8 +1540,8 @@ async fn fetch_artist_image(artist: String, fallback_album: Option<String>, fall
         // Sauvegarde dans le cache local
         fs::create_dir_all(&cover_dir).ok();
         if fs::write(&cache_file, &image_data).is_ok() {
-            let base64 = general_purpose::STANDARD.encode(&image_data);
-            return Some(format!("data:image/jpeg;base64,{}", base64));
+            // Retourne une URL noir:// au lieu de base64
+            return Some(format!("noir://localhost/covers/artist_{}.jpg", hash));
         }
     }
 
@@ -1558,8 +1551,8 @@ async fn fetch_artist_image(artist: String, fallback_album: Option<String>, fall
             // Sauvegarde comme image artiste (fallback)
             fs::create_dir_all(&cover_dir).ok();
             if fs::write(&cache_file, &image_data).is_ok() {
-                let base64 = general_purpose::STANDARD.encode(&image_data);
-                return Some(format!("data:image/jpeg;base64,{}", base64));
+                // Retourne une URL noir:// au lieu de base64
+                return Some(format!("noir://localhost/covers/artist_{}.jpg", hash));
             }
         }
     }
@@ -2122,6 +2115,46 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Protocole custom noir:// pour servir les pochettes sans base64
+        // Économise ~700KB de mémoire JS par pochette (33% inflation base64 évitée)
+        .register_uri_scheme_protocol("noir", |_app, request| {
+            let path = percent_decode_str(request.uri().path())
+                .decode_utf8_lossy()
+                .to_string();
+            let base_dir = get_data_dir();
+
+            let file_path = if path.starts_with("/covers/") {
+                base_dir.join("covers").join(&path[8..])
+            } else if path.starts_with("/thumbnails/") {
+                base_dir.join("thumbnails").join(&path[12..])
+            } else {
+                return http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap();
+            };
+
+            match std::fs::read(&file_path) {
+                Ok(data) => {
+                    let mime = if path.ends_with(".png") {
+                        "image/png"
+                    } else if path.ends_with(".webp") {
+                        "image/webp"
+                    } else {
+                        "image/jpeg"
+                    };
+                    http::Response::builder()
+                        .header("Content-Type", mime)
+                        .header("Cache-Control", "max-age=31536000, immutable")
+                        .body(data)
+                        .unwrap()
+                }
+                Err(_) => http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap(),
+            }
+        })
         .setup(|app| {
             // Initialise l'Audio Engine avec l'AppHandle pour les événements
             let app_handle = app.handle().clone();

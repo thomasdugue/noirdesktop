@@ -272,8 +272,15 @@ let sortDirection = 'asc'  // Direction : 'asc' ou 'desc'
 let albumSortMode = 'artist-asc' // 'artist-asc', 'artist-desc', 'album-asc', 'album-desc'
 
 // === CACHE POUR LES PERFORMANCES ===
-const coverCache = new Map()      // Cache des pochettes pleine résolution { path: base64 }
-const thumbnailCache = new Map()  // Cache des thumbnails 150x150 { path: base64 }
+// Note: Les caches stockent maintenant des URLs noir:// (~60 octets) au lieu de base64 (~700KB)
+// Cela réduit la consommation mémoire de ~99% par pochette
+const coverCache = new Map()      // Cache des pochettes { path: "noir://localhost/covers/xxx.jpg" }
+const thumbnailCache = new Map()  // Cache des thumbnails { path: "noir://localhost/thumbnails/xxx_thumb.jpg" }
+
+// Helper pour vérifier si une valeur est une image valide (data URI ou noir:// URL)
+function isValidImageSrc(src) {
+  return src && (src.startsWith('data:image') || src.startsWith('noir://'))
+}
 let metadataLoaded = false        // Indique si les métadonnées ont été chargées
 let trackAddedDates = {}          // Dates d'ajout des tracks { path: timestamp }
 
@@ -358,7 +365,7 @@ function initCoverObserver() {
         if (coverPath && img && !img.src) {
           // Vérifie le cache d'abord (instantané)
           const cached = coverCache.get(coverPath)
-          if (cached && cached.startsWith('data:image')) {
+          if (isValidImageSrc(cached)) {
             img.src = cached
             img.style.display = 'block'
             if (placeholder) placeholder.style.display = 'none'
@@ -1335,7 +1342,7 @@ function displayAlbumPage(albumKey) {
     </div>
     <div class="album-page-content">
       <div class="album-page-cover">
-        ${cover && cover.startsWith('data:image')
+        ${isValidImageSrc(cover)
           ? `<img src="${cover}" alt="${album.album}">`
           : '<div class="album-cover-placeholder">♪</div>'
         }
@@ -1513,6 +1520,11 @@ searchInput.addEventListener('input', (e) => {
   clearTimeout(searchDebounceTimer)
   searchDebounceTimer = setTimeout(() => {
     updateSearchResultsPanel(query)
+
+    // Si on est sur la vue "tracks", rafraîchit la liste filtrée
+    if (currentView === 'tracks') {
+      displayTracksGrid()
+    }
   }, 200)
 })
 
@@ -1784,14 +1796,14 @@ function loadSearchResultCovers() {
 
     // Check cache d'abord
     const cached = coverCache.get(path)
-    if (cached && cached.startsWith('data:image')) {
+    if (isValidImageSrc(cached)) {
       coverDiv.innerHTML = `<img src="${cached}" alt="">`
       return
     }
 
     // Charge async
     invoke('get_cover', { path }).then(cover => {
-      if (cover && cover.startsWith('data:image')) {
+      if (isValidImageSrc(cover)) {
         coverCache.set(path, cover)
         if (coverDiv.isConnected) {
           coverDiv.innerHTML = `<img src="${cover}" alt="">`
@@ -1836,7 +1848,7 @@ async function loadCoverAsync(path, imgElement, artist = null, album = null) {
   // Vérifie le cache d'abord
   if (coverCache.has(path)) {
     const cover = coverCache.get(path)
-    if (cover && cover.startsWith('data:image') && imgElement.isConnected) {
+    if (isValidImageSrc(cover) && imgElement.isConnected) {
       imgElement.src = cover
       imgElement.style.display = 'block'
     }
@@ -1855,7 +1867,7 @@ async function loadCoverAsync(path, imgElement, artist = null, album = null) {
     coverCache.set(path, cover) // Met en cache même si null
 
     // Vérifie que l'élément est toujours dans le DOM avant de modifier
-    if (cover && cover.startsWith('data:image') && imgElement.isConnected) {
+    if (isValidImageSrc(cover) && imgElement.isConnected) {
       imgElement.src = cover
       imgElement.style.display = 'block'
     }
@@ -1898,7 +1910,7 @@ function loadThumbnailAsync(path, imgElement, artist = null, album = null) {
     if (thumbnailCache.has(path)) {
       PERF.thumbnailCacheHits++
       const thumb = thumbnailCache.get(path)
-      if (thumb && thumb.startsWith('data:image') && imgElement.isConnected) {
+      if (isValidImageSrc(thumb) && imgElement.isConnected) {
         imgElement.src = thumb
         imgElement.style.display = 'block'
       }
@@ -1953,7 +1965,7 @@ async function loadThumbnailFromQueue(item) {
     let thumb = await invoke('get_cover_thumbnail', { path })
     const thumbTime = performance.now() - thumbStart
 
-    if (thumb && thumb.startsWith('data:image')) {
+    if (isValidImageSrc(thumb)) {
       // Thumbnail trouvé sur disque!
       thumbnailCache.set(path, thumb)
       if (imgElement.isConnected) {
@@ -1980,6 +1992,10 @@ async function loadThumbnailFromQueue(item) {
     // Ajouter à la queue de génération (pour fichiers AVEC cover)
     if (!thumbnailGenerationQueue.includes(path)) {
       thumbnailGenerationQueue.push(path)
+      // Déclenche le traitement si pas déjà en cours
+      if (!thumbnailGenerationRunning) {
+        setTimeout(processThumnailGenerationQueue, 100)
+      }
     }
 
     // Charge la cover complète pour affichage immédiat
@@ -1987,7 +2003,7 @@ async function loadThumbnailFromQueue(item) {
     let cover = await invoke('get_cover', { path })
     const coverTime = performance.now() - coverStart
 
-    if (cover && cover.startsWith('data:image')) {
+    if (isValidImageSrc(cover)) {
       // Cover trouvée dans le fichier!
       thumbnailCache.set(path, cover)
       if (imgElement.isConnected) {
@@ -2054,14 +2070,14 @@ async function processThumnailGenerationQueue() {
 
   thumbnailGenerationRunning = false
 
-  // Continue si queue pas vide
+  // Continue si queue pas vide (auto-chaînage)
   if (thumbnailGenerationQueue.length > 0) {
     setTimeout(processThumnailGenerationQueue, 100) // Petite pause entre les batches
   }
 }
 
-// Lance le traitement de la queue périodiquement
-setInterval(processThumnailGenerationQueue, 2000)
+// Note: Plus de setInterval ! Le traitement se lance automatiquement quand on ajoute à la queue
+// et se chaîne via setTimeout tant qu'il reste des items
 
 // === QUEUE POUR FETCH INTERNET NON-BLOQUANT ===
 // Charge les covers depuis Internet en arrière-plan (ne bloque pas l'UI)
@@ -2095,7 +2111,7 @@ async function processInternetCoverQueue() {
   try {
     const cover = await invoke('fetch_internet_cover', { artist: item.artist, album: item.album })
 
-    if (cover && cover.startsWith('data:image')) {
+    if (isValidImageSrc(cover)) {
       // Met en cache et affiche si l'élément est toujours visible
       thumbnailCache.set(item.path, cover)
       if (item.imgElement && item.imgElement.isConnected) {
@@ -2134,7 +2150,7 @@ function loadArtistImageAsync(artistName, imgElement, fallbackAlbum = null, fall
     // Vérifie le cache mémoire d'abord (instantané)
     if (artistImageCache.has(cacheKey)) {
       const image = artistImageCache.get(cacheKey)
-      if (image && image.startsWith('data:image')) {
+      if (isValidImageSrc(image)) {
         imgElement.src = image
         imgElement.style.display = 'block'
       }
@@ -2177,7 +2193,7 @@ async function loadArtistImageFromQueue(item) {
 
     artistImageCache.set(cacheKey, image)
 
-    if (image && image.startsWith('data:image') && imgElement.isConnected) {
+    if (isValidImageSrc(image) && imgElement.isConnected) {
       imgElement.src = image
       imgElement.style.display = 'block'
     }
@@ -2322,7 +2338,7 @@ async function displayHomeView() {
     if (img && placeholder) {
       // Vérifie d'abord le cache mémoire pour affichage instantané
       const cachedCover = coverCache.get(coverPath) || thumbnailCache.get(coverPath)
-      if (cachedCover && cachedCover.startsWith('data:image')) {
+      if (isValidImageSrc(cachedCover)) {
         img.src = cachedCover
         img.style.display = 'block'
         placeholder.style.display = 'none'
@@ -2393,7 +2409,7 @@ async function displayHomeView() {
       const coverPath = (album && album.coverPath) ? album.coverPath : entry.path
       if (img && placeholder) {
         const cachedCover = coverCache.get(coverPath)
-        if (cachedCover && cachedCover.startsWith('data:image')) {
+        if (isValidImageSrc(cachedCover)) {
           img.src = cachedCover
           img.style.display = 'block'
           placeholder.style.display = 'none'
@@ -2474,7 +2490,7 @@ async function displayHomeView() {
         // Charge la pochette
         if (album.coverPath && img && placeholder) {
           const cachedCover = coverCache.get(album.coverPath)
-          if (cachedCover && cachedCover.startsWith('data:image')) {
+          if (isValidImageSrc(cachedCover)) {
             img.src = cachedCover
             img.style.display = 'block'
             placeholder.style.display = 'none'
@@ -2543,7 +2559,7 @@ async function displayHomeView() {
       if (album.coverPath && img && placeholder) {
         // Si déjà en cache, affiche immédiatement (pas de flash)
         const cachedCover = coverCache.get(album.coverPath)
-        if (cachedCover && cachedCover.startsWith('data:image')) {
+        if (isValidImageSrc(cachedCover)) {
           img.src = cachedCover
           img.style.display = 'block'
           placeholder.style.display = 'none'
@@ -2664,7 +2680,7 @@ async function displayHomeView() {
       // Charge la pochette (cache d'abord pour affichage instantané)
       if (album.coverPath && img && placeholder) {
         const cachedCover = coverCache.get(album.coverPath)
-        if (cachedCover && cachedCover.startsWith('data:image')) {
+        if (isValidImageSrc(cachedCover)) {
           img.src = cachedCover
           img.style.display = 'block'
           placeholder.style.display = 'none'
@@ -2739,7 +2755,7 @@ async function displayHomeView() {
 
       if (album.coverPath && img && placeholder) {
         const cachedCover = coverCache.get(album.coverPath)
-        if (cachedCover && cachedCover.startsWith('data:image')) {
+        if (isValidImageSrc(cachedCover)) {
           img.src = cachedCover
           img.style.display = 'block'
           placeholder.style.display = 'none'
@@ -2815,7 +2831,7 @@ async function displayHomeView() {
 
       if (album.coverPath && img && placeholder) {
         const cachedCover = coverCache.get(album.coverPath)
-        if (cachedCover && cachedCover.startsWith('data:image')) {
+        if (isValidImageSrc(cachedCover)) {
           img.src = cachedCover
           img.style.display = 'block'
           placeholder.style.display = 'none'
@@ -2873,7 +2889,7 @@ async function displayHomeView() {
 
       if (album.coverPath && img && placeholder) {
         const cachedCover = coverCache.get(album.coverPath)
-        if (cachedCover && cachedCover.startsWith('data:image')) {
+        if (isValidImageSrc(cachedCover)) {
           img.src = cachedCover
           img.style.display = 'block'
           placeholder.style.display = 'none'
@@ -3211,7 +3227,7 @@ function displayAlbumsGrid() {
 
     // Vérifie si la pochette est déjà en cache (affichage instantané)
     const cachedCover = coverCache.get(album.coverPath)
-    const hasCachedCover = cachedCover && cachedCover.startsWith('data:image')
+    const hasCachedCover = isValidImageSrc(cachedCover)
 
     // Crée la carte avec placeholder ou image si en cache
     card.innerHTML = `
@@ -3501,7 +3517,7 @@ function displayArtistPage(artistKey) {
 
     // Vérifie si la pochette est en cache
     const cachedCover = coverCache.get(albumData.coverPath)
-    const hasCachedCover = cachedCover && cachedCover.startsWith('data:image')
+    const hasCachedCover = isValidImageSrc(cachedCover)
 
     const year = albumData.tracks[0]?.metadata?.year
     const yearText = year ? ` • ${year}` : ''
@@ -4026,7 +4042,7 @@ function showAlbumDetail(albumKey, cover, clickedCard) {
   albumDetailDiv.innerHTML = `
     <div class="album-detail-header">
       <div class="album-detail-cover">
-        ${cover && cover.startsWith('data:image')
+        ${isValidImageSrc(cover)
           ? `<img src="${cover}" alt="${album.album}">`
           : '<div class="album-cover-placeholder">♪</div>'
         }
@@ -4338,7 +4354,7 @@ async function playTrack(index) {
     coverCache.set(track.path, cover)
   }
 
-  if (cover && cover.startsWith('data:image')) {
+  if (isValidImageSrc(cover)) {
     const img = document.createElement('img')
     img.src = cover
     img.onerror = () => {
