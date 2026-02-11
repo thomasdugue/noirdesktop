@@ -2117,7 +2117,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // Protocole custom noir:// pour servir les pochettes sans base64
         // Économise ~700KB de mémoire JS par pochette (33% inflation base64 évitée)
-        .register_uri_scheme_protocol("noir", |_app, request| {
+        .register_uri_scheme_protocol("noir", |_ctx, request| {
             let path = percent_decode_str(request.uri().path())
                 .decode_utf8_lossy()
                 .to_string();
@@ -2128,8 +2128,8 @@ pub fn run() {
             } else if path.starts_with("/thumbnails/") {
                 base_dir.join("thumbnails").join(&path[12..])
             } else {
-                return http::Response::builder()
-                    .status(404)
+                return tauri::http::Response::builder()
+                    .status(tauri::http::StatusCode::NOT_FOUND)
                     .body(Vec::new())
                     .unwrap();
             };
@@ -2143,16 +2143,19 @@ pub fn run() {
                     } else {
                         "image/jpeg"
                     };
-                    http::Response::builder()
-                        .header("Content-Type", mime)
-                        .header("Cache-Control", "max-age=31536000, immutable")
+                    tauri::http::Response::builder()
+                        .header(tauri::http::header::CONTENT_TYPE, mime)
+                        .header(tauri::http::header::CACHE_CONTROL, "max-age=31536000, immutable")
                         .body(data)
                         .unwrap()
                 }
-                Err(_) => http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap(),
+                Err(e) => {
+                    println!("[NOIR PROTOCOL] Error reading {:?}: {}", file_path, e);
+                    tauri::http::Response::builder()
+                        .status(tauri::http::StatusCode::NOT_FOUND)
+                        .body(Vec::new())
+                        .unwrap()
+                }
             }
         })
         .setup(|app| {

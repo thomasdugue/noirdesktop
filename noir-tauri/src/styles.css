@@ -388,7 +388,7 @@ body.dragging-active * {
   border: none;
   padding: 4px;
   cursor: pointer;
-  color: #444;
+  color: #666;  /* Plus visible sur fond sombre */
   transition: color 0.15s, transform 0.1s;
   display: flex;
   align-items: center;
@@ -397,12 +397,21 @@ body.dragging-active * {
   -webkit-app-region: no-drag;
 }
 
+.track-favorite-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .track-favorite-btn:hover {
-  color: #fff;
+  color: #ff6b6b;  /* Rose au hover */
 }
 
 .track-favorite-btn.active {
-  color: #fff;
+  color: #ff6b6b;  /* Rose quand actif */
+}
+
+.track-favorite-btn.active svg {
+  fill: currentColor;  /* Rempli quand actif */
 }
 
 .track-favorite-btn:active {
