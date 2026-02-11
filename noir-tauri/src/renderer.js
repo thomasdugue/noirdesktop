@@ -562,8 +562,9 @@ async function addFolder(folderPath) {
   // Sauvegarde le cache
   await invoke('save_all_caches')
 
-  // Regroupe par album/artiste
+  // Regroupe par album/artiste et construit les index
   groupTracksIntoAlbumsAndArtists()
+  buildTrackLookup()  // Index O(1) pour lookups par path
 
   // Cache le message de bienvenue
   welcomeDiv.classList.add('hidden')
@@ -911,6 +912,7 @@ async function reloadLibraryFromCache() {
     // Regroupe et affiche
     console.log('[RELOAD] Grouping tracks...')
     groupTracksIntoAlbumsAndArtists()
+    buildTrackLookup()  // Index O(1) pour lookups par path
     console.log('[RELOAD] Albums:', Object.keys(albums).length, '| Artists:', Object.keys(artists).length)
 
     if (tracks.length > 0) {
@@ -1095,6 +1097,7 @@ async function init() {
     // Affiche la bibliothèque
     console.log('[INIT] Grouping tracks into albums and artists...')
     groupTracksIntoAlbumsAndArtists()
+    buildTrackLookup()  // Index O(1) pour lookups par path
     console.log('[INIT] Albums count:', Object.keys(albums).length)
     console.log('[INIT] Artists count:', Object.keys(artists).length)
 
@@ -3567,6 +3570,7 @@ function getSortIndicator(column) {
 // Configuration du virtual scroll
 const TRACK_ITEM_HEIGHT = 48 // Hauteur d'un item en pixels
 const VIRTUAL_BUFFER = 10    // Nombre d'items à rendre au-dessus/dessous de la zone visible
+const POOL_SIZE = 60         // Taille du pool de nœuds DOM recyclables
 
 // État du virtual scroll
 let virtualScrollState = {
@@ -3576,7 +3580,17 @@ let virtualScrollState = {
   scrollContainer: null,     // Référence au conteneur de scroll
   contentContainer: null,    // Référence au conteneur des items
   selectedTrackPaths: new Set(),  // Tracks sélectionnées (multi-sélection)
-  lastSelectedPath: null     // Dernière track sélectionnée (pour Shift+Clic)
+  lastSelectedPath: null,    // Dernière track sélectionnée (pour Shift+Clic)
+  pool: []                   // Pool de nœuds DOM réutilisables
+}
+
+// === LOOKUP MAP POUR PERFORMANCES O(1) ===
+// Remplace tracks.find() O(n) par tracksByPath.get() O(1)
+const tracksByPath = new Map() // path → { track, index }
+
+function buildTrackLookup() {
+  tracksByPath.clear()
+  tracks.forEach((track, i) => tracksByPath.set(track.path, { track, index: i }))
 }
 
 // Trie et filtre les tracks
@@ -3637,52 +3651,53 @@ function getSortedAndFilteredTracks() {
   return sortedTracks
 }
 
-// Crée le HTML d'un item de track
-function createTrackItemHTML(track, index) {
-  const title = track.metadata?.title || track.name
-  const artist = track.metadata?.artist || 'Artiste inconnu'
-  const album = track.metadata?.album || ''
-  const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
-  const quality = formatQuality(track.metadata, track.path)
-  const isInQueue = queue.some(q => q.path === track.path)
-  const inQueueClass = isInQueue ? 'in-queue' : ''
-  const selectedClass = virtualScrollState.selectedTrackPaths.has(track.path) ? 'selected' : ''
-  const isFavorite = favoriteTracks.has(track.path)
-  const favoriteClass = isFavorite ? 'active' : ''
-
-  return `
-    <div class="tracks-list-item ${selectedClass}" data-track-path="${track.path}" data-virtual-index="${index}" style="position: absolute; top: ${index * TRACK_ITEM_HEIGHT}px; left: 0; right: 0; height: ${TRACK_ITEM_HEIGHT}px;">
-      <button class="track-favorite-btn ${favoriteClass}" title="${isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}">
-        <svg viewBox="0 0 24 24" fill="${isFavorite ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
-          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-        </svg>
-      </button>
-      <span class="tracks-list-title">${title}</span>
-      <span class="tracks-list-artist">${artist}</span>
-      <span class="tracks-list-album">${album}</span>
-      <span class="tracks-list-quality"><span class="quality-tag ${quality.class}">${quality.label}</span></span>
-      <span class="tracks-list-duration">${duration}</span>
-      <button class="tracks-list-add-playlist" title="Ajouter à une playlist">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
-        </svg>
-      </button>
-      <button class="tracks-list-add-queue ${inQueueClass}" title="${isInQueue ? 'Déjà dans la file' : 'Ajouter à la file'}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
-        </svg>
-      </button>
-    </div>
+// Crée un nœud DOM réutilisable pour le pool
+function createPoolNode() {
+  const el = document.createElement('div')
+  el.className = 'tracks-list-item'
+  el.style.cssText = 'position: absolute; left: 0; right: 0; height: ' + TRACK_ITEM_HEIGHT + 'px;'
+  el.innerHTML = `
+    <button class="track-favorite-btn" title="Favoris">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+      </svg>
+    </button>
+    <span class="tracks-list-title"></span>
+    <span class="tracks-list-artist"></span>
+    <span class="tracks-list-album"></span>
+    <span class="tracks-list-quality"><span class="quality-tag"></span></span>
+    <span class="tracks-list-duration"></span>
+    <button class="tracks-list-add-playlist" title="Ajouter à une playlist">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
+      </svg>
+    </button>
+    <button class="tracks-list-add-queue" title="Ajouter à la file">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
+      </svg>
+    </button>
   `
+  // Cache des références directes aux enfants pour éviter querySelector à chaque update
+  el._favBtn = el.querySelector('.track-favorite-btn')
+  el._favSvg = el._favBtn.querySelector('svg')
+  el._title = el.querySelector('.tracks-list-title')
+  el._artist = el.querySelector('.tracks-list-artist')
+  el._album = el.querySelector('.tracks-list-album')
+  el._quality = el.querySelector('.quality-tag')
+  el._duration = el.querySelector('.tracks-list-duration')
+  el._queueBtn = el.querySelector('.tracks-list-add-queue')
+  return el
 }
 
-// Met à jour les éléments visibles dans le virtual scroll
+// Met à jour les éléments visibles dans le virtual scroll (avec recyclage DOM)
 function updateVirtualScrollItems() {
-  const { filteredTracks, contentContainer, scrollContainer } = virtualScrollState
+  const { filteredTracks, contentContainer, scrollContainer, pool } = virtualScrollState
 
   // Vérifications de sécurité
   if (!contentContainer || !scrollContainer || !scrollContainer.isConnected) return
   if (!filteredTracks || filteredTracks.length === 0) return
+  if (!pool || pool.length === 0) return
 
   const scrollTop = scrollContainer.scrollTop
   const viewportHeight = scrollContainer.clientHeight
@@ -3697,7 +3712,7 @@ function updateVirtualScrollItems() {
     Math.ceil((scrollTop + viewportHeight) / TRACK_ITEM_HEIGHT) + VIRTUAL_BUFFER
   )
 
-  // Ne re-render que si les indices ont changé significativement
+  // Optimisation : ne rien faire si les indices n'ont pas changé
   if (startIndex === virtualScrollState.visibleStartIndex && endIndex === virtualScrollState.visibleEndIndex) {
     return
   }
@@ -3705,13 +3720,44 @@ function updateVirtualScrollItems() {
   virtualScrollState.visibleStartIndex = startIndex
   virtualScrollState.visibleEndIndex = endIndex
 
-  // Génère le HTML pour les items visibles
-  let html = ''
-  for (let i = startIndex; i <= endIndex; i++) {
-    html += createTrackItemHTML(filteredTracks[i], i)
-  }
+  const visibleCount = endIndex - startIndex + 1
 
-  contentContainer.innerHTML = html
+  // Recycle les nœuds DOM du pool au lieu de recréer le HTML
+  for (let p = 0; p < pool.length; p++) {
+    const el = pool[p]
+    if (p < visibleCount) {
+      const trackIndex = startIndex + p
+      const track = filteredTracks[trackIndex]
+      const isFav = favoriteTracks.has(track.path)
+      const isInQueue = queue.some(q => q.path === track.path)
+      const quality = formatQuality(track.metadata, track.path)
+
+      // Position et visibilité
+      el.style.top = (trackIndex * TRACK_ITEM_HEIGHT) + 'px'
+      el.style.display = ''
+      el.dataset.trackPath = track.path
+      el.dataset.virtualIndex = trackIndex
+
+      // Mise à jour du contenu texte (pas de innerHTML = pas de parse)
+      el._title.textContent = track.metadata?.title || track.name
+      el._artist.textContent = track.metadata?.artist || 'Artiste inconnu'
+      el._album.textContent = track.metadata?.album || ''
+      el._duration.textContent = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
+      el._quality.textContent = quality.label
+      el._quality.className = 'quality-tag ' + quality.class
+
+      // États visuels
+      el._favBtn.classList.toggle('active', isFav)
+      el._favBtn.title = isFav ? 'Retirer des favoris' : 'Ajouter aux favoris'
+      el._favSvg.setAttribute('fill', isFav ? 'currentColor' : 'none')
+      el._queueBtn.classList.toggle('in-queue', isInQueue)
+      el._queueBtn.title = isInQueue ? 'Retirer de la file' : 'Ajouter à la file'
+      el.classList.toggle('selected', virtualScrollState.selectedTrackPaths.has(track.path))
+    } else {
+      // Cache les nœuds non utilisés
+      el.style.display = 'none'
+    }
+  }
 }
 
 // Met à jour l'affichage visuel de la sélection multiple
@@ -3803,6 +3849,15 @@ function displayTracksGrid() {
   virtualScrollState.visibleStartIndex = -1  // Force le re-render
   virtualScrollState.visibleEndIndex = -1
 
+  // Crée le pool de nœuds DOM réutilisables (recyclage au lieu de innerHTML)
+  virtualScrollState.pool = []
+  for (let i = 0; i < POOL_SIZE; i++) {
+    const node = createPoolNode()
+    node.style.display = 'none' // Caché par défaut
+    contentContainer.appendChild(node)
+    virtualScrollState.pool.push(node)
+  }
+
   // Affiche le nombre de résultats si recherche
   if (searchQuery && totalTracks < tracks.length) {
     const countDiv = document.createElement('div')
@@ -3832,9 +3887,9 @@ function displayTracksGrid() {
     if (!trackItem || e.target.closest('button')) return
 
     const trackPath = trackItem.dataset.trackPath
-    const track = tracks.find(t => t.path === trackPath)
-    if (track) {
-      prepareCustomDrag(e, track, trackItem)
+    const entry = tracksByPath.get(trackPath)  // O(1) lookup
+    if (entry) {
+      prepareCustomDrag(e, entry.track, trackItem)
     }
   })
 
@@ -3844,8 +3899,9 @@ function displayTracksGrid() {
     if (!trackItem) return
 
     const trackPath = trackItem.dataset.trackPath
-    const track = tracks.find(t => t.path === trackPath)
-    if (!track) return
+    const entry = tracksByPath.get(trackPath)  // O(1) lookup
+    if (!entry) return
+    const track = entry.track
 
     // Bouton favori (cœur)
     const favBtn = e.target.closest('.track-favorite-btn')
@@ -3928,9 +3984,9 @@ function displayTracksGrid() {
     if (!trackItem) return
 
     const trackPath = trackItem.dataset.trackPath
-    const originalIndex = tracks.findIndex(t => t.path === trackPath)
-    if (originalIndex !== -1) {
-      playTrack(originalIndex)
+    const entry = tracksByPath.get(trackPath)  // O(1) lookup
+    if (entry) {
+      playTrack(entry.index)
     }
   })
 
@@ -3940,26 +3996,13 @@ function displayTracksGrid() {
     if (!trackItem) return
 
     const trackPath = trackItem.dataset.trackPath
-    const track = tracks.find(t => t.path === trackPath)
-    if (!track) return
+    const entry = tracksByPath.get(trackPath)  // O(1) lookup
+    if (!entry) return
 
-    const originalIndex = tracks.findIndex(t => t.path === trackPath)
-    showContextMenu(e, track, originalIndex)
+    showContextMenu(e, entry.track, entry.index)
   })
 
-  // Drag custom avec mousedown
-  contentContainer.addEventListener('mousedown', (e) => {
-    if (e.target.closest('button')) return
-
-    const trackItem = e.target.closest('.tracks-list-item')
-    if (!trackItem) return
-
-    const trackPath = trackItem.dataset.trackPath
-    const track = tracks.find(t => t.path === trackPath)
-    if (!track) return
-
-    prepareCustomDrag(e, track, trackItem)
-  })
+  // NOTE: Handler mousedown dupliqué supprimé (déjà géré ligne ~3885)
 
   albumsGridDiv.appendChild(tracksContainer)
 
@@ -6466,6 +6509,7 @@ function removeTrackFromLibrary(track) {
 
   // Regroupe les albums/artistes
   groupTracksIntoAlbumsAndArtists()
+  buildTrackLookup()  // Rebuild index after track removal
 
   // Rafraîchit l'affichage
   displayCurrentView()

@@ -4,7 +4,33 @@ Historique cumulatif des développements, décisions d'architecture et bugs rés
 
 ---
 
-## [2025-02-11] Optimisations Performance — Phase 1, 2 & 3
+## [2025-02-11] Optimisations Performance — Phase 1, 2, 3 & 4
+
+### Phase 4 — Fluidité du rendu (Recyclage DOM)
+
+#### 4.1 Pool de nœuds DOM réutilisables
+- **Pool fixe de 60 nœuds** : Créés une fois, recyclés pendant le scroll
+- **Références directes** : `el._title`, `el._artist`, etc. évitent les querySelector
+- **textContent au lieu de innerHTML** : Pas de parsing HTML à chaque frame
+
+#### 4.2 Lookups O(1)
+- **Map tracksByPath** : Remplace `tracks.find()` O(n) par `tracksByPath.get()` O(1)
+- **buildTrackLookup()** : Reconstruit après chargement/scan/suppression
+
+#### 4.3 Nettoyage handlers
+- **Suppression mousedown dupliqué** : Un seul handler au lieu de deux
+- **Event delegation** : Handlers sur contentContainer, pas sur chaque item
+
+### Impact Performance Phase 4
+
+| Métrique | Avant | Après |
+|----------|-------|-------|
+| innerHTML par scroll | 1× (~75KB HTML) | 0× |
+| Nœuds DOM créés/détruits | ~40 par frame | 0 |
+| Lookup track | O(n) | O(1) |
+| GC pauses | Fréquentes | Rares |
+
+---
 
 ### Phase 3 — Mémoire (Protocole custom pochettes)
 
