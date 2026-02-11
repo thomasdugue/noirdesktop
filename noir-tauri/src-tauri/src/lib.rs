@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::io::Cursor;
 use once_cell::sync::Lazy;
 use walkdir::WalkDir;
 use lofty::{Accessor, AudioFile, Probe, TaggedFileExt, MimeType};
@@ -10,6 +11,8 @@ use base64::{Engine as _, engine::general_purpose};
 use tauri_plugin_dialog::DialogExt;
 use reqwest::blocking::Client;
 use rayon::prelude::*;
+use image::imageops::FilterType;
+use image::ImageFormat;
 
 // === AUDIO ENGINE MODULES ===
 mod audio;
@@ -237,10 +240,12 @@ static AUDIO_ENGINE: Lazy<Mutex<Option<AudioEngine>>> = Lazy::new(|| {
 });
 
 // Client HTTP global (réutilisé pour toutes les requêtes)
+// Timeout réduit à 5s pour éviter les blocages UI
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
         .user_agent("Noir/0.1.0 (Audio Player)")
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(5))
+        .connect_timeout(std::time::Duration::from_secs(3))
         .build()
         .unwrap_or_else(|_| Client::new())
 });
@@ -261,6 +266,10 @@ fn get_metadata_cache_path() -> PathBuf {
 
 fn get_cover_cache_dir() -> PathBuf {
     get_data_dir().join("covers")
+}
+
+fn get_thumbnail_cache_dir() -> PathBuf {
+    get_data_dir().join("thumbnails")
 }
 
 fn get_playlists_path() -> PathBuf {
@@ -767,6 +776,15 @@ fn init_cache() -> bool {
     // Force le chargement lazy des caches en mémoire
     drop(METADATA_CACHE.lock());
     drop(COVER_CACHE.lock());
+
+    // IMPORTANT: Recharge le tracks cache depuis le fichier disque
+    // Car il peut avoir été modifié depuis le dernier chargement (redémarrage, etc.)
+    if let Ok(mut cache) = TRACKS_CACHE.lock() {
+        let fresh_cache = load_tracks_cache();
+        println!("[init_cache] Reloading tracks cache from disk: {} tracks found", fresh_cache.tracks.len());
+        *cache = fresh_cache;
+    }
+
     true
 }
 
@@ -1014,6 +1032,22 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
             return;
         }
 
+        // Vérifie les chemins inaccessibles AVANT le scan
+        let inaccessible_paths: Vec<String> = library_paths
+            .iter()
+            .filter(|p| !Path::new(p).exists())
+            .cloned()
+            .collect();
+
+        if !inaccessible_paths.is_empty() {
+            println!("[Scan] WARNING: {} inaccessible paths detected", inaccessible_paths.len());
+            for path in &inaccessible_paths {
+                println!("[Scan]   - {}", path);
+            }
+            // Émet un événement pour notifier le frontend
+            let _ = app_handle.emit("library_paths_inaccessible", inaccessible_paths.clone());
+        }
+
         // Charge l'ancien cache pour comparaison
         let old_tracks: std::collections::HashSet<String> = {
             if let Ok(cache) = TRACKS_CACHE.lock() {
@@ -1205,6 +1239,8 @@ fn get_added_dates() -> HashMap<String, u64> {
 // Obtenir la pochette (depuis le cache ou lecture fichier)
 #[tauri::command]
 fn get_cover(path: &str) -> Option<String> {
+    let start = std::time::Instant::now();
+
     // Vérifie le cache mémoire des pochettes
     let cached_file = {
         if let Ok(cache) = COVER_CACHE.lock() {
@@ -1219,11 +1255,17 @@ fn get_cover(path: &str) -> Option<String> {
         if let Ok(data) = fs::read(&cache_file) {
             let mime = if cache_file.ends_with(".png") { "image/png" } else { "image/jpeg" };
             let base64 = general_purpose::STANDARD.encode(&data);
+            let elapsed = start.elapsed().as_millis();
+            if elapsed > 50 {
+                println!("[RUST-PERF] get_cover (CACHE HIT): {}ms ({} KB) for {}",
+                         elapsed, data.len()/1024, path.split('/').last().unwrap_or(path));
+            }
             return Some(format!("data:{};base64,{}", mime, base64));
         }
     }
 
     // Pas en cache, lit depuis le fichier audio
+    let probe_start = std::time::Instant::now();
     if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
         if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
             if let Some(picture) = tag.pictures().first() {
@@ -1253,12 +1295,174 @@ fn get_cover(path: &str) -> Option<String> {
                     }
                 }
 
+                let elapsed = start.elapsed().as_millis();
+                let probe_time = probe_start.elapsed().as_millis();
+                let size_kb = picture.data().len() / 1024;
+                if elapsed > 100 {
+                    println!("[RUST-PERF] get_cover (EXTRACTED): {}ms (probe: {}ms, {} KB cover) for {}",
+                             elapsed, probe_time, size_kb, path.split('/').last().unwrap_or(path));
+                }
+
                 let base64 = general_purpose::STANDARD.encode(picture.data());
                 return Some(format!("data:{};base64,{}", mime, base64));
             }
         }
     }
+
+    let elapsed = start.elapsed().as_millis();
+    if elapsed > 50 {
+        println!("[RUST-PERF] get_cover (NO COVER): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
+    }
     None
+}
+
+// Obtenir les bytes bruts de la pochette (pour génération thumbnail)
+fn get_cover_bytes_internal(path: &str) -> Option<Vec<u8>> {
+    // Vérifie le cache mémoire des pochettes
+    let cached_file = {
+        if let Ok(cache) = COVER_CACHE.lock() {
+            cache.entries.get(path).cloned()
+        } else {
+            None
+        }
+    };
+
+    if let Some(cache_file) = cached_file {
+        // Lit depuis le fichier cache sur disque
+        if let Ok(data) = fs::read(&cache_file) {
+            return Some(data);
+        }
+    }
+
+    // Pas en cache, lit depuis le fichier audio
+    if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
+        if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
+            if let Some(picture) = tag.pictures().first() {
+                return Some(picture.data().to_vec());
+            }
+        }
+    }
+    None
+}
+
+// Génère un thumbnail 150x150 en JPEG (plus rapide que WebP)
+fn generate_thumbnail(source_data: &[u8], thumb_path: &Path) -> Result<(), String> {
+    // 1. Décoder l'image source
+    let img = image::load_from_memory(source_data)
+        .map_err(|e| format!("Failed to decode image: {}", e))?;
+
+    // 2. Redimensionner à 150x150 - Triangle est 10x plus rapide que Lanczos3
+    let thumbnail = img.resize_to_fill(150, 150, FilterType::Triangle);
+
+    // 3. Encoder en JPEG qualité 80% (beaucoup plus rapide que WebP)
+    let mut buffer = Vec::new();
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 80);
+    thumbnail.write_with_encoder(encoder)
+        .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+
+    // 4. Sauvegarder
+    if let Some(parent) = thumb_path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    fs::write(thumb_path, buffer)
+        .map_err(|e| format!("Failed to write thumbnail: {}", e))?;
+
+    Ok(())
+}
+
+// Obtenir le thumbnail d'une pochette - VERSION NON-BLOQUANTE
+// Retourne immédiatement le cache, ou None si pas en cache
+// La génération se fait en arrière-plan via generate_thumbnails_batch
+#[tauri::command]
+fn get_cover_thumbnail(path: &str) -> Option<String> {
+    let start = std::time::Instant::now();
+    let hash = format!("{:x}", md5_hash(path));
+    let thumb_dir = get_thumbnail_cache_dir();
+    // Support ancien format .webp et nouveau format .jpg
+    let thumb_path_jpg = thumb_dir.join(format!("{}_thumb.jpg", hash));
+    let thumb_path_webp = thumb_dir.join(format!("{}_thumb.webp", hash));
+
+    // Check si thumbnail existe déjà (FAST PATH - lecture seule)
+    if thumb_path_jpg.exists() {
+        if let Ok(data) = fs::read(&thumb_path_jpg) {
+            let base64 = general_purpose::STANDARD.encode(&data);
+            let elapsed = start.elapsed().as_millis();
+            if elapsed > 50 {
+                println!("[RUST-PERF] get_cover_thumbnail (JPG cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
+            }
+            return Some(format!("data:image/jpeg;base64,{}", base64));
+        }
+    }
+    // Fallback ancien format webp
+    if thumb_path_webp.exists() {
+        if let Ok(data) = fs::read(&thumb_path_webp) {
+            let base64 = general_purpose::STANDARD.encode(&data);
+            let elapsed = start.elapsed().as_millis();
+            if elapsed > 50 {
+                println!("[RUST-PERF] get_cover_thumbnail (WebP cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
+            }
+            return Some(format!("data:image/webp;base64,{}", base64));
+        }
+    }
+
+    // PAS EN CACHE -> retourne None immédiatement (ne bloque pas!)
+    // Le frontend utilisera get_cover comme fallback
+    let elapsed = start.elapsed().as_millis();
+    if elapsed > 10 {
+        println!("[RUST-PERF] get_cover_thumbnail (MISS): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
+    }
+    None
+}
+
+// Génère les thumbnails manquants en batch (appelé après scan ou manuellement)
+#[tauri::command]
+fn generate_thumbnails_batch(paths: Vec<String>) -> u32 {
+    let batch_start = std::time::Instant::now();
+    let count = paths.len();
+    println!("[RUST-PERF] generate_thumbnails_batch: starting batch of {} images", count);
+
+    let thumb_dir = get_thumbnail_cache_dir();
+    fs::create_dir_all(&thumb_dir).ok();
+
+    let mut generated = 0u32;
+    let mut skipped = 0u32;
+    let mut failed = 0u32;
+
+    for (i, path) in paths.iter().enumerate() {
+        let img_start = std::time::Instant::now();
+        let hash = format!("{:x}", md5_hash(path));
+        let thumb_path = thumb_dir.join(format!("{}_thumb.jpg", hash));
+
+        // Skip si déjà généré
+        if thumb_path.exists() {
+            skipped += 1;
+            continue;
+        }
+
+        // Génère le thumbnail
+        if let Some(cover_bytes) = get_cover_bytes_internal(path) {
+            let bytes_len = cover_bytes.len();
+            if generate_thumbnail(&cover_bytes, &thumb_path).is_ok() {
+                generated += 1;
+                let img_elapsed = img_start.elapsed().as_millis();
+                if img_elapsed > 200 {
+                    println!("[RUST-PERF]   [{}/{}] Generated in {}ms ({} KB source): {}",
+                             i+1, count, img_elapsed, bytes_len/1024, path.split('/').last().unwrap_or(path));
+                }
+            } else {
+                failed += 1;
+            }
+        } else {
+            failed += 1;
+        }
+    }
+
+    let batch_elapsed = batch_start.elapsed().as_millis();
+    let avg = if generated > 0 { batch_elapsed / generated as u128 } else { 0 };
+    println!("[RUST-PERF] generate_thumbnails_batch: DONE in {}ms - {} generated, {} skipped, {} failed ({}ms/image avg)",
+             batch_elapsed, generated, skipped, failed, avg);
+
+    generated
 }
 
 // Recherche une pochette sur Internet (MusicBrainz + Cover Art Archive)
@@ -1917,6 +2121,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // Initialise l'Audio Engine avec l'AppHandle pour les événements
             let app_handle = app.handle().clone();
@@ -1939,6 +2144,8 @@ pub fn run() {
             load_all_metadata_cache,
             get_added_dates,
             get_cover,
+            get_cover_thumbnail,
+            generate_thumbnails_batch,
             fetch_internet_cover,
             fetch_artist_image,
             clear_cache,

@@ -2,7 +2,12 @@
 //!
 //! This trait defines the interface for platform-specific audio backends.
 //! Implementations handle device management, sample rate control, and exclusive mode.
-//! Actual audio streaming is delegated to CPAL for cross-platform compatibility.
+//!
+//! # PURE NATIVE - NO CPAL
+//!
+//! Audio streaming is handled directly by platform-specific code:
+//! - macOS: CoreAudioStream using AudioUnit API
+//! - Windows: (future) WASAPI direct
 //!
 //! # Important
 //!
@@ -20,8 +25,8 @@ use crate::audio::types::*;
 /// - Exclusive/Hog mode for bit-perfect playback
 /// - Device change notifications
 ///
-/// Audio streaming is handled separately via CPAL to avoid reimplementing
-/// the complex callback machinery on each platform.
+/// Audio streaming is handled by platform-specific stream implementations
+/// (CoreAudioStream on macOS, WasapiStream on Windows in the future).
 ///
 /// # Example
 ///
@@ -39,8 +44,8 @@ use crate::audio::types::*;
 /// // Enable exclusive mode for bit-perfect
 /// backend.set_exclusive_mode(ExclusiveMode::Exclusive)?;
 ///
-/// // Get CPAL device for streaming
-/// let device = backend.get_cpal_device()?;
+/// // Get device ID for stream creation
+/// let device_id = backend.get_device_id();
 /// ```
 pub trait AudioBackend: Send + Sync {
     // === Device Management ===
@@ -103,13 +108,16 @@ pub trait AudioBackend: Send + Sync {
     /// - A device's sample rate changes
     fn set_device_event_callback(&mut self, callback: Option<DeviceEventCallback>);
 
-    // === CPAL Integration ===
+    // === Device ID for Streaming ===
 
-    /// Get a CPAL device handle for the current device
+    /// Get the device ID for stream creation
     ///
-    /// This is used by AudioEngine to create the actual audio stream.
-    /// The backend handles device selection and configuration; CPAL handles streaming.
-    fn get_cpal_device(&self) -> Result<cpal::Device>;
+    /// Returns the platform-specific device ID:
+    /// - macOS: AudioObjectID (u32)
+    /// - Windows: (future) device string ID
+    ///
+    /// Returns None to use the system default device.
+    fn get_device_id(&self) -> Option<u32>;
 
     /// Prepare the device for streaming
     ///

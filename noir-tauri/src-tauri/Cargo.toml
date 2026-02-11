@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"
@@ -34,8 +35,8 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 # === AUDIO ENGINE (Player Audiophile) ===
 # Décodeur audio pur Rust (FLAC, WAV, MP3, AAC, ALAC, Vorbis)
 symphonia = { version = "0.5", features = ["all"] }
-# Audio I/O bas niveau - accès DAC exclusif (Hog Mode)
-cpal = "0.15"
+# NOTE: CPAL removed! Audio output handled directly via CoreAudio (coreaudio-sys)
+# This gives us full control over device selection and bit-perfect playback.
 # Gestion threads audio
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
@@ -43,6 +44,8 @@ parking_lot = "0.12"
 ringbuf = "0.4"
 # Parallélisation pour scan de bibliothèque rapide
 rayon = "1.8"
+# Image processing for thumbnail generation
+image = "0.24"
 # Resampler haute qualité FFT pour conversion sample rate
 rubato = "0.14"
 # FFT pour visualisations (optionnel, pour plus tard)

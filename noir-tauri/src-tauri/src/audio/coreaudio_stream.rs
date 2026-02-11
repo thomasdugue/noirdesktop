@@ -5,6 +5,9 @@
 //!
 //! Key difference from CPAL: we have direct access to the AudioUnit pointer,
 //! so we can flush its internal buffer during seek.
+//!
+//! PURE COREAUDIO - No CPAL dependency!
+//! Uses kAudioUnitSubType_HALOutput to allow device selection.
 
 use std::ffi::c_void;
 use std::mem;
@@ -16,11 +19,12 @@ use coreaudio_sys::{
     AudioComponentDescription, AudioComponentFindNext, AudioComponentInstanceNew,
     AudioComponentInstanceDispose, AudioOutputUnitStart, AudioOutputUnitStop,
     AudioUnitInitialize, AudioUnitReset, AudioUnitSetProperty, AudioUnitUninitialize,
-    AudioUnit as SysAudioUnit, AudioStreamBasicDescription,
+    AudioUnit as SysAudioUnit, AudioStreamBasicDescription, AudioObjectID,
     kAudioFormatFlagsNativeFloatPacked, kAudioFormatLinearPCM,
     kAudioUnitProperty_SetRenderCallback, kAudioUnitProperty_StreamFormat,
     kAudioUnitScope_Global, kAudioUnitScope_Input, kAudioUnitType_Output,
-    kAudioUnitSubType_DefaultOutput, kAudioUnitManufacturer_Apple,
+    kAudioUnitSubType_HALOutput, kAudioUnitManufacturer_Apple,
+    kAudioOutputUnitProperty_CurrentDevice,
     AURenderCallbackStruct, AudioUnitRenderActionFlags, AudioTimeStamp,
     AudioBufferList,
 };
@@ -73,7 +77,14 @@ struct CallbackData {
 const EMPTY_CALLBACKS_THRESHOLD: u32 = 3;
 
 impl CoreAudioStream {
+    /// Create a new CoreAudio stream
+    ///
+    /// # Arguments
+    /// * `device_id` - Optional CoreAudio device ID. If None, uses system default.
+    /// * `config` - Stream configuration (sample rate, channels)
+    /// * Other args for streaming state
     pub fn new(
+        device_id: Option<AudioObjectID>,
         config: AudioStreamConfig,
         consumer: HeapCons<f32>,
         streaming_state: Arc<StreamingState>,
@@ -84,10 +95,11 @@ impl CoreAudioStream {
         duration_seconds: f64,
     ) -> Result<Self, String> {
         unsafe {
-            // 1. Find the default output audio component
+            // 1. Find the HAL output audio component (allows device selection)
+            // Note: We use HALOutput instead of DefaultOutput to be able to select a specific device
             let desc = AudioComponentDescription {
                 componentType: kAudioUnitType_Output,
-                componentSubType: kAudioUnitSubType_DefaultOutput,
+                componentSubType: kAudioUnitSubType_HALOutput,
                 componentManufacturer: kAudioUnitManufacturer_Apple,
                 componentFlags: 0,
                 componentFlagsMask: 0,
@@ -95,7 +107,7 @@ impl CoreAudioStream {
 
             let component = AudioComponentFindNext(ptr::null_mut(), &desc);
             if component.is_null() {
-                return Err("Failed to find default audio output component".to_string());
+                return Err("Failed to find HAL audio output component".to_string());
             }
 
             // 2. Create an instance of the audio unit
@@ -103,6 +115,27 @@ impl CoreAudioStream {
             let status = AudioComponentInstanceNew(component, &mut audio_unit);
             if status != 0 {
                 return Err(format!("AudioComponentInstanceNew failed: {}", status));
+            }
+
+            // 2b. Set the output device if specified
+            if let Some(dev_id) = device_id {
+                println!("[CoreAudioStream] Setting output device to ID: {}", dev_id);
+                let status = AudioUnitSetProperty(
+                    audio_unit,
+                    kAudioOutputUnitProperty_CurrentDevice,
+                    kAudioUnitScope_Global,
+                    0,
+                    &dev_id as *const _ as *const c_void,
+                    mem::size_of::<AudioObjectID>() as u32,
+                );
+                if status != 0 {
+                    println!("[CoreAudioStream] WARNING: Failed to set device {}: error {}", dev_id, status);
+                    // Don't fail - fall back to default device
+                } else {
+                    println!("[CoreAudioStream] Output device set successfully");
+                }
+            } else {
+                println!("[CoreAudioStream] Using system default output device");
             }
 
             // 3. Set the stream format

@@ -60,8 +60,13 @@ impl AudioStreamConfig {
 }
 
 /// Factory function to create the platform-appropriate audio stream
+///
+/// # Arguments
+/// * `device_id` - Optional device ID. On macOS, this is an AudioObjectID.
+///                 If None, the system default device will be used.
 #[cfg(target_os = "macos")]
 pub fn create_audio_stream(
+    device_id: Option<u32>,
     config: AudioStreamConfig,
     consumer: HeapCons<f32>,
     streaming_state: Arc<StreamingState>,
@@ -73,6 +78,7 @@ pub fn create_audio_stream(
 ) -> Result<Box<dyn AudioOutputStream>, String> {
     use super::coreaudio_stream::CoreAudioStream;
     CoreAudioStream::new(
+        device_id,
         config,
         consumer,
         streaming_state,

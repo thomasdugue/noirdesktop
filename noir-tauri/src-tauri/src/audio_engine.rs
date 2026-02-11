@@ -2,12 +2,14 @@
 // Player audiophile avec RingBuffer lock-free et SEEKING professionnel
 // Fréquence de progression : 100ms pour interpolation fluide côté frontend
 // Le callback audio fait UNIQUEMENT : pop_slice() + multiplication volume
+//
+// PURE COREAUDIO - No CPAL dependency!
+// Device management and streaming handled entirely via CoreAudio HAL.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use cpal::traits::{DeviceTrait, HostTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
@@ -16,173 +18,58 @@ use crate::audio_decoder::{start_streaming_with_config, StreamingState};
 use crate::audio::{AudioBackend, create_backend, ExclusiveMode, StreamConfig};
 use crate::audio::{AudioOutputStream, AudioStreamConfig, create_audio_stream};
 
-// === DEVICE CAPABILITIES ===
-// Structures pour auditer et sélectionner la configuration optimale
+// NOTE: Device capabilities are now obtained directly from the backend
+// via backend.current_device() which returns DeviceInfo with all necessary info.
 
-/// Capacités audio du device de sortie
-#[derive(Debug, Clone)]
-pub struct DeviceCapabilities {
-    pub device_name: String,
-    /// Ranges de sample rates supportés (min, max) pour chaque config
-    pub sample_rate_ranges: Vec<(u32, u32)>,
-    /// Sample rates standards détectés (44100, 48000, 96000, etc.)
-    pub standard_rates: Vec<u32>,
-    /// Sample rate maximum supporté (théorique)
-    pub max_sample_rate: u32,
-    /// Nombre de canaux maximum
-    pub max_channels: u16,
-    /// Sample rate ACTUEL du device (config par défaut = ce que macOS utilise vraiment)
-    pub current_sample_rate: u32,
-}
-
-/// Configuration sélectionnée pour la lecture
-#[derive(Debug, Clone)]
-pub struct SelectedConfig {
-    pub sample_rate: u32,
-    pub channels: u16,
-    pub needs_resampling: bool,
-    pub source_rate: u32,
-}
-
-/// Sample rates standards audiophiles
+/// Sample rates standards audiophiles (for reference)
+#[allow(dead_code)]
 const STANDARD_SAMPLE_RATES: [u32; 8] = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000];
 
-/// Audite les capacités du device audio
-/// IMPORTANT: Utilise default_output_config() pour obtenir le sample rate RÉEL
-/// configuré dans Configuration Audio MIDI de macOS, pas les capacités théoriques
-fn audit_device_capabilities(device: &cpal::Device) -> Result<DeviceCapabilities, String> {
-    let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-
-    // 1. Récupère la config par DÉFAUT - c'est le sample rate RÉEL de macOS
-    let default_config = device
-        .default_output_config()
-        .map_err(|e| format!("Failed to get default config: {}", e))?;
-
-    let current_sample_rate = default_config.sample_rate().0;
-
-    // 2. Récupère les capacités théoriques (pour info)
-    let supported_configs = device
-        .supported_output_configs()
-        .map_err(|e| format!("Failed to get supported configs: {}", e))?;
-
-    let mut sample_rate_ranges: Vec<(u32, u32)> = Vec::new();
-    let mut max_channels: u16 = 0;
-
-    for config in supported_configs {
-        let min_rate = config.min_sample_rate().0;
-        let max_rate = config.max_sample_rate().0;
-        sample_rate_ranges.push((min_rate, max_rate));
-        max_channels = max_channels.max(config.channels());
-    }
-
-    // Détecte les rates standards supportés (théoriquement)
-    let standard_rates: Vec<u32> = STANDARD_SAMPLE_RATES
-        .iter()
-        .filter(|&&rate| {
-            sample_rate_ranges.iter().any(|(min, max)| rate >= *min && rate <= *max)
-        })
-        .copied()
-        .collect();
-
-    // Max théorique (pour info seulement)
-    let max_sample_rate = sample_rate_ranges
-        .iter()
-        .map(|(_, max)| *max)
-        .max()
-        .unwrap_or(44100);
-
-    println!("=== Device Capabilities: {} ===", device_name);
-    println!("  ⚠️  CURRENT sample rate (macOS config): {} Hz", current_sample_rate);
-    println!("  Theoretical max: {} Hz", max_sample_rate);
-    println!("  Standard rates (theoretical): {:?}", standard_rates);
-    println!("  Max channels: {}", max_channels);
-
-    Ok(DeviceCapabilities {
-        device_name,
-        sample_rate_ranges,
-        standard_rates,
-        max_sample_rate,
-        max_channels,
-        current_sample_rate,
-    })
-}
-
-/// Vérifie si un sample rate est supporté par le device (théoriquement)
-fn is_rate_supported(rate: u32, capabilities: &DeviceCapabilities) -> bool {
-    capabilities.sample_rate_ranges.iter().any(|(min, max)| rate >= *min && rate <= *max)
-}
-
-/// Tente de configurer le hardware au sample rate du fichier source
-/// Retourne (actual_rate, is_bit_perfect)
-fn try_hardware_switch(
-    device: &cpal::Device,
+/// Trouve le meilleur sample rate de sortie pour une source donnée
+/// Utilise le backend CoreAudio directement (pas CPAL)
+fn find_best_output_rate_from_backend(
     source_rate: u32,
-    capabilities: &DeviceCapabilities,
+    backend: &mut Box<dyn AudioBackend>,
 ) -> (u32, bool) {
     println!("[Hardware] Attempting to set DAC to {}Hz...", source_rate);
 
-    // 1. Vérifie si le rate source est supporté par le device
-    let is_supported = capabilities.sample_rate_ranges
-        .iter()
-        .any(|(min, max)| source_rate >= *min && source_rate <= *max);
+    // Récupère les infos du device courant
+    let current_device = match backend.current_device() {
+        Ok(dev) => dev,
+        Err(e) => {
+            eprintln!("[Hardware] Failed to get current device: {}", e);
+            return (44100, false);
+        }
+    };
 
-    if !is_supported {
-        println!("[Hardware] {}Hz NOT supported by device (ranges: {:?})",
-            source_rate, capabilities.sample_rate_ranges);
-        println!("[Hardware] FAILED - Falling back to resampling at {}Hz",
-            capabilities.current_sample_rate);
-        return (capabilities.current_sample_rate, false);
-    }
+    let supported_rates = &current_device.supported_sample_rates;
+    let current_rate = current_device.current_sample_rate;
 
-    // 2. Le rate est théoriquement supporté - on va tenter de créer le stream avec ce rate
-    // Sur macOS, CPAL peut créer un stream avec un rate différent du default
-    // et Core Audio acceptera si le device le supporte vraiment
-
-    // On vérifie une dernière fois avec supported_output_configs
-    match device.supported_output_configs() {
-        Ok(configs) => {
-            let configs_vec: Vec<_> = configs.collect();
-            let supported = configs_vec
-                .iter()
-                .filter(|c| c.channels() >= 2)
-                .any(|c| {
-                    source_rate >= c.min_sample_rate().0
-                    && source_rate <= c.max_sample_rate().0
-                });
-
-            if supported {
-                println!("[Hardware] SUCCESS - DAC will be configured at {}Hz (bit-perfect)", source_rate);
-                return (source_rate, true);
-            } else {
-                println!("[Hardware] Rate {}Hz not in supported configs", source_rate);
+    // Vérifie si le rate source est supporté
+    if supported_rates.contains(&source_rate) {
+        // Tente de configurer le hardware
+        let config = StreamConfig::stereo(source_rate);
+        match backend.prepare_for_streaming(&config) {
+            Ok(actual_rate) => {
+                if actual_rate == source_rate {
+                    println!("[Hardware] SUCCESS - DAC configured at {}Hz (bit-perfect)", source_rate);
+                    return (source_rate, true);
+                } else {
+                    println!("[Hardware] Rate changed to {}Hz by backend", actual_rate);
+                    return (actual_rate, actual_rate == source_rate);
+                }
+            }
+            Err(e) => {
+                eprintln!("[Hardware] Failed to prepare device: {}. Using fallback.", e);
             }
         }
-        Err(e) => {
-            eprintln!("[Hardware] Failed to query configs: {}", e);
-        }
+    } else {
+        println!("[Hardware] {}Hz NOT supported by device (supported: {:?})",
+            source_rate, supported_rates);
     }
 
-    println!("[Hardware] FAILED - Falling back to resampling at {}Hz",
-        capabilities.current_sample_rate);
-    (capabilities.current_sample_rate, false)
-}
-
-/// Trouve le meilleur sample rate de sortie pour une source donnée
-/// STRATÉGIE: Tente le bit-perfect d'abord, fallback sur resampling si échec
-fn find_best_output_rate(
-    source_rate: u32,
-    capabilities: &DeviceCapabilities,
-    device: &cpal::Device,
-) -> (u32, bool) {
-    // 1. Tente le bit-perfect en premier
-    let (hw_rate, hw_success) = try_hardware_switch(device, source_rate, capabilities);
-
-    if hw_success {
-        return (hw_rate, true);  // Bit-perfect!
-    }
-
-    // 2. Fallback : utilise le rate actuel du device + resampling
-    (capabilities.current_sample_rate, false)
+    println!("[Hardware] FAILED - Falling back to resampling at {}Hz", current_rate);
+    (current_rate, false)
 }
 
 // Note: select_optimal_config() removed - use find_best_output_rate() directly
@@ -360,45 +247,19 @@ impl AudioEngine {
         app_handle: Option<AppHandle>,
         backend: Arc<Mutex<Box<dyn AudioBackend>>>,
     ) {
-        // NOTE: We no longer cache the device here.
-        // Instead, we get a fresh device reference for each new track.
-        // This allows following the system default when user plugs in headphones/DAC.
+        // PURE COREAUDIO - no CPAL!
+        // Get device info from backend directly.
 
-        // Helper to get current device and capabilities
-        let get_current_device_and_caps = |backend: &Arc<Mutex<Box<dyn AudioBackend>>>| -> Option<(cpal::Device, DeviceCapabilities)> {
-            let device = match backend.lock().get_cpal_device() {
-                Ok(d) => d,
+        // Get initial device info for logging
+        {
+            let backend_guard = backend.lock();
+            match backend_guard.current_device() {
+                Ok(dev) => println!("Initial audio device: {} (ID: {})", dev.name, dev.id),
                 Err(e) => {
-                    eprintln!("Failed to get audio device from backend: {}", e);
-                    let host = cpal::default_host();
-                    host.default_output_device()?
+                    eprintln!("No audio output device available: {}", e);
+                    return;
                 }
-            };
-
-            let capabilities = match audit_device_capabilities(&device) {
-                Ok(caps) => caps,
-                Err(e) => {
-                    eprintln!("Failed to audit device capabilities: {}", e);
-                    DeviceCapabilities {
-                        device_name: device.name().unwrap_or_else(|_| "Unknown".to_string()),
-                        sample_rate_ranges: vec![(44100, 48000)],
-                        standard_rates: vec![44100, 48000],
-                        max_sample_rate: 48000,
-                        max_channels: 2,
-                        current_sample_rate: 44100,
-                    }
-                }
-            };
-
-            Some((device, capabilities))
-        };
-
-        // Get initial device for logging
-        if let Some((device, _)) = get_current_device_and_caps(&backend) {
-            println!("Initial audio device: {:?}", device.name());
-        } else {
-            eprintln!("No audio output device available!");
-            return;
+            }
         }
 
         // Session streaming actuelle (pour les commandes seek/stop)
@@ -470,32 +331,32 @@ impl AudioEngine {
                         }
                     };
 
-                    // 2. Get FRESH device (follows system default - handles headphones/DAC hot-plug)
-                    let (device, capabilities) = match get_current_device_and_caps(&backend) {
-                        Some((d, c)) => (d, c),
-                        None => {
-                            eprintln!("No audio output device available!");
-                            if let Some(ref app) = app_handle {
-                                let _ = app.emit("playback_loading", false);
-                            }
-                            continue;
+                    // 2. Get device ID from backend (PURE COREAUDIO - no CPAL)
+                    let device_id = backend.lock().get_device_id();
+                    {
+                        let backend_guard = backend.lock();
+                        match backend_guard.current_device() {
+                            Ok(dev) => println!("[AudioEngine] Using device: {} (ID: {})", dev.name, dev.id),
+                            Err(e) => eprintln!("[AudioEngine] Device info unavailable: {}", e),
                         }
-                    };
-                    println!("[AudioEngine] Using device: {:?}", device.name());
+                    }
 
                     // 3. Use backend to prepare device for streaming (changes sample rate if possible)
                     let stream_config = StreamConfig::stereo(source_info.sample_rate);
-                    let (optimal_rate, is_bit_perfect) = match backend.lock().prepare_for_streaming(&stream_config) {
-                        Ok(actual_rate) => {
-                            let bit_perfect = actual_rate == source_info.sample_rate;
-                            println!("[Backend] Device prepared: {} Hz (requested: {} Hz, bit-perfect: {})",
-                                actual_rate, source_info.sample_rate, bit_perfect);
-                            (actual_rate, bit_perfect)
-                        }
-                        Err(e) => {
-                            eprintln!("[Backend] Failed to prepare device: {}. Using CPAL fallback.", e);
-                            // Fallback to old logic
-                            find_best_output_rate(source_info.sample_rate, &capabilities, &device)
+                    let (optimal_rate, is_bit_perfect) = {
+                        let mut backend_guard = backend.lock();
+                        match backend_guard.prepare_for_streaming(&stream_config) {
+                            Ok(actual_rate) => {
+                                let bit_perfect = actual_rate == source_info.sample_rate;
+                                println!("[Backend] Device prepared: {} Hz (requested: {} Hz, bit-perfect: {})",
+                                    actual_rate, source_info.sample_rate, bit_perfect);
+                                (actual_rate, bit_perfect)
+                            }
+                            Err(e) => {
+                                eprintln!("[Backend] Failed to prepare device: {}. Using fallback.", e);
+                                // Fallback: use backend's info
+                                find_best_output_rate_from_backend(source_info.sample_rate, &mut *backend_guard)
+                            }
                         }
                     };
 
@@ -540,9 +401,10 @@ impl AudioEngine {
                                 *current_session_cmd.lock() = Some(session.command_tx.clone());
                                 *current_streaming_state.lock() = Some(Arc::clone(&session.state));
 
-                                // Crée le stream de sortie CoreAudio
+                                // Crée le stream de sortie CoreAudio (PURE COREAUDIO - no CPAL!)
                                 let stream_config = AudioStreamConfig::new(output_sample_rate, channels as u16);
                                 let stream_result = create_audio_stream(
+                                    device_id,  // Pass device ID for direct CoreAudio routing
                                     stream_config,
                                     consumer,
                                     Arc::clone(&session.state),
@@ -716,28 +578,21 @@ impl AudioEngine {
                                 }
                             };
 
-                            // Get FRESH device for seek restart
-                            let (device, capabilities) = match get_current_device_and_caps(&backend) {
-                                Some((d, c)) => (d, c),
-                                None => {
-                                    eprintln!("No audio output device available!");
-                                    state.is_seeking.store(false, Ordering::Relaxed);
-                                    if let Some(ref app) = app_handle {
-                                        let _ = app.emit("playback_loading", false);
-                                    }
-                                    continue;
-                                }
-                            };
+                            // Get device ID for seek restart (PURE COREAUDIO - no CPAL)
+                            let device_id = backend.lock().get_device_id();
 
                             // Use backend to prepare device (sample rate already set, just verify)
                             let stream_config = StreamConfig::stereo(source_info.sample_rate);
-                            let (optimal_rate, is_bit_perfect) = match backend.lock().prepare_for_streaming(&stream_config) {
-                                Ok(actual_rate) => {
-                                    let bit_perfect = actual_rate == source_info.sample_rate;
-                                    (actual_rate, bit_perfect)
-                                }
-                                Err(_) => {
-                                    find_best_output_rate(source_info.sample_rate, &capabilities, &device)
+                            let (optimal_rate, is_bit_perfect) = {
+                                let mut backend_guard = backend.lock();
+                                match backend_guard.prepare_for_streaming(&stream_config) {
+                                    Ok(actual_rate) => {
+                                        let bit_perfect = actual_rate == source_info.sample_rate;
+                                        (actual_rate, bit_perfect)
+                                    }
+                                    Err(_) => {
+                                        find_best_output_rate_from_backend(source_info.sample_rate, &mut *backend_guard)
+                                    }
                                 }
                             };
                             let target_rate = if !is_bit_perfect { Some(optimal_rate) } else { None };
@@ -758,9 +613,10 @@ impl AudioEngine {
                                         *current_session_cmd.lock() = Some(session.command_tx.clone());
                                         *current_streaming_state.lock() = Some(Arc::clone(&session.state));
 
-                                        // Crée le stream CoreAudio
+                                        // Crée le stream CoreAudio (PURE COREAUDIO - no CPAL)
                                         let stream_config = AudioStreamConfig::new(output_sample_rate, channels as u16);
                                         match create_audio_stream(
+                                            device_id,  // Pass device ID for direct CoreAudio routing
                                             stream_config,
                                             consumer,
                                             Arc::clone(&session.state),

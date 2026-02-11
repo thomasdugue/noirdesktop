@@ -15,7 +15,7 @@ use std::time::Duration;
 use core_foundation::base::TCFType;
 use core_foundation::string::{CFString, CFStringRef};
 use coreaudio_sys::*;
-use cpal::traits::{DeviceTrait, HostTrait};
+// NOTE: CPAL removed - using pure CoreAudio via coreaudio_stream.rs
 
 use crate::audio::backend::AudioBackend;
 use crate::audio::error::{AudioBackendError, Result};
@@ -88,10 +88,26 @@ impl CoreAudioBackend {
         if let Ok(current_id) = self.get_active_device_id() {
             if current_id != self.last_device_id {
                 let old_id = self.last_device_id;
+
+                // IMPORTANT: Release Hog Mode on OLD device before switching
+                // This prevents "device locked" errors when the old device is disconnected
+                if self.exclusive_mode == ExclusiveMode::Exclusive {
+                    println!("[CoreAudio] Releasing Hog Mode on old device {} before switch", old_id);
+                    let _ = Self::disable_hog_mode_internal(old_id);
+                }
+
                 self.last_device_id = current_id;
 
                 // Refresh cache to include new device
                 let _ = self.refresh_device_cache();
+
+                // Reset manual device if it no longer exists
+                if let Some(manual_id) = self.manual_device_id {
+                    if !self.device_cache.contains_key(&manual_id.to_string()) {
+                        println!("[CoreAudio] Manual device {} no longer exists, resetting to default", manual_id);
+                        self.manual_device_id = None;
+                    }
+                }
 
                 let old_name = self.device_cache
                     .get(&old_id.to_string())
@@ -614,12 +630,26 @@ impl CoreAudioBackend {
 
 impl AudioBackend for CoreAudioBackend {
     fn list_devices(&self) -> Result<Vec<DeviceInfo>> {
+        // Return cached devices, but also try to refresh if cache is empty
+        if self.device_cache.is_empty() {
+            println!("[CoreAudio] Device cache is empty, this shouldn't happen");
+        }
         Ok(self.device_cache.values().cloned().collect())
     }
 
     fn current_device(&self) -> Result<DeviceInfo> {
         // Always get the CURRENT default device (follows system changes)
-        let device_id = self.get_active_device_id()?;
+        let device_id = match self.get_active_device_id() {
+            Ok(id) => id,
+            Err(e) => {
+                println!("[CoreAudio] Failed to get active device: {}", e);
+                // Try to return first cached device as fallback
+                if let Some(info) = self.device_cache.values().next() {
+                    return Ok(info.clone());
+                }
+                return Err(e);
+            }
+        };
         let id = device_id.to_string();
         self.device_cache
             .get(&id)
@@ -737,20 +767,32 @@ impl AudioBackend for CoreAudioBackend {
         // AudioObjectAddPropertyListener(...)
     }
 
-    fn get_cpal_device(&self) -> Result<cpal::Device> {
-        // CRITICAL FIX: Always use CPAL's default device to follow system changes
-        // When user plugs in headphones or DAC, CPAL's default_output_device() returns the new device
-        let host = cpal::default_host();
-
-        let device = host.default_output_device()
-            .ok_or_else(|| AudioBackendError::DeviceNotFound("No default output device".to_string()))?;
-
-        // Log the device we're using
-        if let Ok(name) = device.name() {
-            println!("[CoreAudio] Using CPAL device: {}", name);
+    fn get_device_id(&self) -> Option<u32> {
+        // Si un device manuel a été sélectionné, l'utiliser
+        if let Some(manual_id) = self.manual_device_id {
+            let device_name = self.device_cache
+                .get(&manual_id.to_string())
+                .map(|info| info.name.as_str())
+                .unwrap_or("Unknown");
+            println!("[CoreAudio] Using manually selected device: {} (ID: {})", device_name, manual_id);
+            return Some(manual_id);
         }
 
-        Ok(device)
+        // Sinon, retourne le device par défaut du système
+        match self.get_active_device_id() {
+            Ok(id) => {
+                let device_name = self.device_cache
+                    .get(&id.to_string())
+                    .map(|info| info.name.as_str())
+                    .unwrap_or("Unknown");
+                println!("[CoreAudio] Using system default device: {} (ID: {})", device_name, id);
+                Some(id)
+            }
+            Err(e) => {
+                println!("[CoreAudio] Failed to get device ID: {}", e);
+                None
+            }
+        }
     }
 
     fn prepare_for_streaming(&mut self, config: &StreamConfig) -> Result<u32> {

@@ -37,7 +37,8 @@ const DRAG_THRESHOLD = 5 // pixels
 let customDragState = {
   isPotentialDrag: false, // mousedown détecté, attente de mouvement
   isDragging: false,      // drag effectivement démarré
-  track: null,
+  track: null,            // track individuelle (si drag d'une track)
+  albumKey: null,         // clé d'album (si drag d'un album complet)
   trackElement: null,
   ghostElement: null,
   startX: 0,
@@ -84,9 +85,14 @@ function initCustomDragSystem() {
         // Ajoute classe sur body pour empêcher tout highlight
         document.body.classList.add('dragging-active')
 
-        // Affiche le ghost
-        const title = customDragState.track.metadata?.title || customDragState.track.name
-        customDragState.ghostElement.textContent = '♪ ' + title
+        // Affiche le ghost avec le bon texte selon le type de drag
+        if (customDragState.albumKey && albums[customDragState.albumKey]) {
+          const album = albums[customDragState.albumKey]
+          customDragState.ghostElement.textContent = '💿 ' + album.album + ' (' + album.tracks.length + ' titres)'
+        } else if (customDragState.track) {
+          const title = customDragState.track.metadata?.title || customDragState.track.name
+          customDragState.ghostElement.textContent = '♪ ' + title
+        }
         customDragState.ghostElement.style.display = 'block'
 
         // Ajoute la classe dragging
@@ -141,13 +147,23 @@ function initCustomDragSystem() {
     }
 
     // Si on était vraiment en train de drag, vérifie le drop
-    if (wasDragging && customDragState.track) {
+    if (wasDragging) {
       const playlistItem = document.elementFromPoint(e.clientX, e.clientY)?.closest('.playlist-item')
 
       if (playlistItem) {
         const playlistId = playlistItem.dataset.playlistId
         if (playlistId) {
-          await addTrackToPlaylist(playlistId, customDragState.track)
+          // Si c'est un album, ajoute tous les tracks
+          if (customDragState.albumKey && albums[customDragState.albumKey]) {
+            const album = albums[customDragState.albumKey]
+            for (const track of album.tracks) {
+              await addTrackToPlaylist(playlistId, track)
+            }
+            showToast(`Album "${album.album}" ajouté à la playlist`)
+          } else if (customDragState.track) {
+            // Sinon ajoute juste la track
+            await addTrackToPlaylist(playlistId, customDragState.track)
+          }
         }
       }
     }
@@ -156,6 +172,7 @@ function initCustomDragSystem() {
     customDragState.isPotentialDrag = false
     customDragState.isDragging = false
     customDragState.track = null
+    customDragState.albumKey = null
     customDragState.trackElement = null
     customDragState.currentHighlightedPlaylist = null
   })
@@ -169,11 +186,28 @@ function prepareCustomDrag(e, track, trackElement) {
   customDragState.isPotentialDrag = true
   customDragState.isDragging = false
   customDragState.track = track
+  customDragState.albumKey = null
   customDragState.trackElement = trackElement
   customDragState.startX = e.clientX
   customDragState.startY = e.clientY
 
   return true // Indique qu'on a préparé le drag
+}
+
+// Prépare un drag custom pour un album complet (appelé sur mousedown sur une card album)
+function prepareAlbumDrag(e, albumKey, cardElement) {
+  // Ignore si on clique sur un bouton
+  if (e.target.closest('button')) return false
+
+  customDragState.isPotentialDrag = true
+  customDragState.isDragging = false
+  customDragState.track = null
+  customDragState.albumKey = albumKey
+  customDragState.trackElement = cardElement
+  customDragState.startX = e.clientX
+  customDragState.startY = e.clientY
+
+  return true
 }
 
 // === ÉLÉMENTS DE LA PAGE ===
@@ -199,6 +233,10 @@ const shuffleBtn = document.getElementById('shuffle')
 const repeatBtn = document.getElementById('repeat')
 const volumeBar = document.getElementById('volume')
 const volumeBtn = document.getElementById('volume-btn')
+const audioOutputBtn = document.getElementById('audio-output-btn')
+const audioOutputMenu = document.getElementById('audio-output-menu')
+const audioOutputList = document.getElementById('audio-output-list')
+const exclusiveModeCheckbox = document.getElementById('exclusive-mode-checkbox')
 
 // Panel détail album (sera créé dynamiquement)
 let albumDetailDiv = null
@@ -214,6 +252,7 @@ let currentView = 'home' // Vue actuelle : 'home', 'albums', 'artists', 'tracks'
 let filteredArtist = null  // Artiste filtré (pour la navigation artiste → albums)
 let shuffleMode = 'off'    // Mode shuffle : 'off', 'album', 'library'
 let repeatMode = 'off'     // Mode répétition : 'off', 'all', 'one'
+let shufflePlayedTracks = new Set()  // Historique des tracks joués en shuffle (évite les doublons)
 let currentPlayingAlbumKey = null  // Album en cours de lecture (pour skip séquentiel)
 let lastVolume = 100       // Dernier volume avant mute
 
@@ -229,9 +268,55 @@ let sortDirection = 'asc'  // Direction : 'asc' ou 'desc'
 let albumSortMode = 'artist-asc' // 'artist-asc', 'artist-desc', 'album-asc', 'album-desc'
 
 // === CACHE POUR LES PERFORMANCES ===
-const coverCache = new Map()  // Cache des pochettes { path: base64 }
-let metadataLoaded = false    // Indique si les métadonnées ont été chargées
-let trackAddedDates = {}      // Dates d'ajout des tracks { path: timestamp }
+const coverCache = new Map()      // Cache des pochettes pleine résolution { path: base64 }
+const thumbnailCache = new Map()  // Cache des thumbnails 150x150 { path: base64 }
+let metadataLoaded = false        // Indique si les métadonnées ont été chargées
+let trackAddedDates = {}          // Dates d'ajout des tracks { path: timestamp }
+
+// === DIAGNOSTIC PERFORMANCE ===
+const PERF = {
+  thumbnailCalls: 0,
+  thumbnailCacheHits: 0,
+  thumbnailCacheMisses: 0,
+  coverFallbacks: 0,
+  internetFallbacks: 0,
+  totalLoadTime: 0,
+  slowLoads: [],  // > 500ms
+  pageLoads: [],  // Temps de chargement par page
+
+  reset() {
+    this.thumbnailCalls = 0
+    this.thumbnailCacheHits = 0
+    this.thumbnailCacheMisses = 0
+    this.coverFallbacks = 0
+    this.internetFallbacks = 0
+    this.totalLoadTime = 0
+    this.slowLoads = []
+  },
+
+  log() {
+    const hitRate = this.thumbnailCalls > 0 ? (this.thumbnailCacheHits/this.thumbnailCalls*100).toFixed(1) : 0
+    const avgTime = this.thumbnailCalls > 0 ? (this.totalLoadTime/this.thumbnailCalls).toFixed(0) : 0
+    console.log(`%c[PERF] === THUMBNAIL PERFORMANCE REPORT ===`, 'color: #00ff00; font-weight: bold')
+    console.log(`[PERF] Total calls: ${this.thumbnailCalls}`)
+    console.log(`[PERF] Cache hits: ${this.thumbnailCacheHits} (${hitRate}%)`)
+    console.log(`[PERF] Cache misses: ${this.thumbnailCacheMisses}`)
+    console.log(`[PERF] Cover fallbacks: ${this.coverFallbacks}`)
+    console.log(`[PERF] Internet fallbacks: ${this.internetFallbacks}`)
+    console.log(`[PERF] Avg load time: ${avgTime}ms`)
+    console.log(`[PERF] Slow loads (>500ms): ${this.slowLoads.length}`)
+    if (this.slowLoads.length > 0) {
+      console.log(`[PERF] Top 10 slowest:`)
+      this.slowLoads.sort((a, b) => parseInt(b.time) - parseInt(a.time)).slice(0, 10).forEach((s, i) => {
+        console.log(`  ${i+1}. ${s.time}ms - ${s.type} - ${s.path}`)
+      })
+    }
+    console.log(`%c[PERF] === END REPORT ===`, 'color: #00ff00; font-weight: bold')
+  }
+}
+
+// Exposer pour debug console
+window.PERF = PERF
 
 // Cache des données Home (évite les appels backend répétés)
 let homeDataCache = {
@@ -271,8 +356,8 @@ function initCoverObserver() {
             img.style.display = 'block'
             if (placeholder) placeholder.style.display = 'none'
           } else {
-            // Charge de façon asynchrone
-            loadCoverAsync(coverPath, img).then(() => {
+            // Charge le thumbnail de façon asynchrone (150x150 WebP)
+            loadThumbnailAsync(coverPath, img).then(() => {
               if (img.style.display === 'block' && placeholder) {
                 placeholder.style.display = 'none'
               }
@@ -726,9 +811,10 @@ async function startBackgroundScan() {
 
 // Recharge la bibliothèque depuis le cache mis à jour
 async function reloadLibraryFromCache() {
-  console.log('Reloading library from updated cache...')
+  console.log('[RELOAD] Reloading library from updated cache...')
 
   const [cachedTracks, cachedStats] = await invoke('load_tracks_from_cache')
+  console.log('[RELOAD] Got from cache:', cachedTracks?.length || 0, 'tracks')
 
   if (cachedTracks) {
     // Reset et recharge
@@ -736,18 +822,26 @@ async function reloadLibraryFromCache() {
     for (const track of cachedTracks) {
       tracks.push(track)
     }
+    console.log('[RELOAD] tracks.length after reload:', tracks.length)
 
     // Recharge les dates d'ajout
     const addedDates = await invoke('get_added_dates')
     trackAddedDates = addedDates || {}
 
     // Regroupe et affiche
+    console.log('[RELOAD] Grouping tracks...')
     groupTracksIntoAlbumsAndArtists()
+    console.log('[RELOAD] Albums:', Object.keys(albums).length, '| Artists:', Object.keys(artists).length)
 
     if (tracks.length > 0) {
       welcomeDiv.classList.add('hidden')
+      console.log('[RELOAD] Displaying view:', currentView)
       displayCurrentView()
+    } else {
+      console.log('[RELOAD] ⚠️ No tracks after reload')
     }
+  } else {
+    console.log('[RELOAD] ⚠️ cachedTracks is null/undefined')
   }
 }
 
@@ -771,11 +865,67 @@ async function initScanListeners() {
     // Affiche le toast
     showToast(`Indexation terminée - ${stats.total_tracks} fichiers`)
 
-    // Si des changements ont été détectés, recharge la bibliothèque
-    if (new_tracks > 0 || removed_tracks > 0) {
+    // Recharge la bibliothèque si:
+    // 1. Des changements ont été détectés (new_tracks > 0 ou removed_tracks > 0)
+    // 2. OU si la bibliothèque locale est vide mais le scan a trouvé des tracks
+    const shouldReload = new_tracks > 0 || removed_tracks > 0 || (tracks.length === 0 && stats.total_tracks > 0)
+    if (shouldReload) {
+      console.log(`Reloading library: new=${new_tracks}, removed=${removed_tracks}, local=${tracks.length}, scanned=${stats.total_tracks}`)
       reloadLibraryFromCache()
     }
   })
+
+  // Chemins de bibliothèque inaccessibles (disque externe non monté, etc.)
+  await listen('library_paths_inaccessible', (event) => {
+    const paths = event.payload
+    console.warn('[Library] Inaccessible paths:', paths)
+
+    // Affiche un message d'avertissement persistant
+    showInaccessiblePathsWarning(paths)
+  })
+}
+
+// Affiche un avertissement pour les chemins inaccessibles
+function showInaccessiblePathsWarning(paths) {
+  // Retire l'ancien avertissement s'il existe
+  const existingWarning = document.querySelector('.inaccessible-paths-warning')
+  if (existingWarning) existingWarning.remove()
+
+  // Crée le message d'avertissement
+  const warning = document.createElement('div')
+  warning.className = 'inaccessible-paths-warning'
+
+  const pathsList = paths.map(p => {
+    // Extrait le nom du volume ou du dossier pour un affichage plus lisible
+    const parts = p.split('/')
+    const volumeName = parts[2] || p  // /Volumes/NomDuVolume/...
+    return volumeName
+  }).join(', ')
+
+  warning.innerHTML = `
+    <div class="warning-icon">⚠️</div>
+    <div class="warning-content">
+      <div class="warning-title">Bibliothèque inaccessible</div>
+      <div class="warning-message">
+        Certains dossiers de votre bibliothèque ne sont pas accessibles : <strong>${pathsList}</strong>
+        <br>Vérifiez que votre disque externe est bien connecté.
+      </div>
+    </div>
+    <button class="warning-close" title="Fermer">×</button>
+  `
+
+  // Ajoute le bouton de fermeture
+  warning.querySelector('.warning-close').addEventListener('click', () => {
+    warning.remove()
+  })
+
+  // Insère après la titlebar
+  const titlebar = document.querySelector('.titlebar')
+  if (titlebar) {
+    titlebar.insertAdjacentElement('afterend', warning)
+  } else {
+    document.body.prepend(warning)
+  }
 }
 
 // Toggle replié/déplié
@@ -821,15 +971,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Au démarrage : charge depuis le cache puis scan en arrière-plan
 async function init() {
+  console.log('[INIT] Starting initialization...')
+
   // Initialise le cache en mémoire côté Rust (une seule fois)
+  console.log('[INIT] Calling init_cache...')
   await invoke('init_cache')
+  console.log('[INIT] init_cache completed')
 
   // Charge les favoris au démarrage (crée la playlist si nécessaire)
   await loadFavorites()
 
   const savedPaths = await invoke('get_library_paths')
+  console.log('[INIT] Library paths:', savedPaths)
 
   if (savedPaths.length === 0) {
+    console.log('[INIT] No library paths configured')
     // Pas de bibliothèque configurée - affiche les stats vides
     updateIndexationStats({ artists_count: 0, albums_count: 0, mp3_count: 0, flac_16bit_count: 0, flac_24bit_count: 0 })
     return
@@ -837,31 +993,57 @@ async function init() {
 
   // === DÉMARRAGE INSTANTANÉ ===
   // 1. Charge depuis le cache (instantané)
+  console.log('[INIT] Loading tracks from cache...')
   const [cachedTracks, cachedStats] = await invoke('load_tracks_from_cache')
+  console.log('[INIT] Received from cache:', {
+    tracksCount: cachedTracks?.length || 0,
+    stats: cachedStats
+  })
 
   if (cachedTracks && cachedTracks.length > 0) {
     // Affiche immédiatement les tracks depuis le cache
+    console.log('[INIT] Populating tracks array...')
     for (const track of cachedTracks) {
       tracks.push(track)
     }
+    console.log('[INIT] tracks.length after population:', tracks.length)
 
     // Charge les dates d'ajout
     const addedDates = await invoke('get_added_dates')
     trackAddedDates = addedDates || {}
 
     // Affiche la bibliothèque
+    console.log('[INIT] Grouping tracks into albums and artists...')
     groupTracksIntoAlbumsAndArtists()
+    console.log('[INIT] Albums count:', Object.keys(albums).length)
+    console.log('[INIT] Artists count:', Object.keys(artists).length)
+
     welcomeDiv.classList.add('hidden')
+    console.log('[INIT] Displaying current view:', currentView)
     displayCurrentView()
 
     // Affiche les stats du cache
     updateIndexationStats(cachedStats)
 
-    console.log(`Instant startup: ${cachedTracks.length} tracks loaded from cache`)
+    console.log(`[INIT] ✅ Instant startup complete: ${cachedTracks.length} tracks loaded from cache`)
+  } else {
+    console.log('[INIT] ⚠️ No tracks in cache, will wait for background scan')
   }
 
   // 2. Lance le scan en arrière-plan pour détecter les changements
+  console.log('[INIT] Starting background scan...')
   startBackgroundScan()
+}
+
+// Debug: log l'état de la bibliothèque
+window.debugLibrary = function() {
+  console.log('=== LIBRARY DEBUG ===')
+  console.log('tracks.length:', tracks.length)
+  console.log('albums count:', Object.keys(albums).length)
+  console.log('artists count:', Object.keys(artists).length)
+  console.log('currentView:', currentView)
+  console.log('First 3 tracks:', tracks.slice(0, 3))
+  console.log('First 3 album keys:', Object.keys(albums).slice(0, 3))
 }
 
 // Lance l'initialisation
@@ -977,11 +1159,12 @@ function navigateToArtistPage(artistKey) {
 function navigateToAlbumPage(albumKey) {
   if (!albumKey || !albums[albumKey]) return
 
-  // Sauvegarde la vue actuelle dans l'historique
+  // Sauvegarde la vue actuelle dans l'historique (inclut le contexte artiste si on vient de là)
   navigationHistory.push({
     view: currentView,
     filteredArtist: filteredArtist,
-    scrollPosition: document.querySelector('.albums-view')?.scrollTop || 0
+    scrollPosition: document.querySelector('.albums-view')?.scrollTop || 0,
+    artistPageKey: currentArtistPageKey  // Préserve la page artiste pour le retour
   })
 
   currentAlbumPageKey = albumKey
@@ -1013,8 +1196,15 @@ function navigateBack() {
   const previous = navigationHistory.pop()
   currentView = previous.view
   filteredArtist = previous.filteredArtist
-  currentAlbumPageKey = null
-  currentArtistPageKey = null
+
+  // Restaure les clés de page selon le type de vue
+  if (previous.view === 'artist-page' && previous.artistPageKey) {
+    currentArtistPageKey = previous.artistPageKey
+    currentAlbumPageKey = null
+  } else {
+    currentAlbumPageKey = null
+    currentArtistPageKey = null
+  }
 
   // Restaure le nav item actif
   navItems.forEach(i => i.classList.remove('active'))
@@ -1075,7 +1265,7 @@ function displayAlbumPage(albumKey) {
         }
       </div>
       <div class="album-page-info">
-        <p class="album-page-artist">${album.artist}</p>
+        <p class="album-page-artist clickable-artist" data-artist="${escapeHtml(album.artist)}">${escapeHtml(album.artist)}</p>
         <p class="album-page-meta">
           ${album.tracks.length} titres • ${formatTime(totalDuration)}
           ${qualityTag ? `<span class="album-page-tags">${qualityTag}</span>` : ''}
@@ -1100,6 +1290,14 @@ function displayAlbumPage(albumKey) {
 
   // Event listener pour le bouton retour
   pageContainer.querySelector('.btn-back-nav').addEventListener('click', navigateBack)
+
+  // Event listener pour le nom de l'artiste (navigation vers page artiste)
+  const artistLink = pageContainer.querySelector('.album-page-artist.clickable-artist')
+  if (artistLink && artists[album.artist]) {
+    artistLink.addEventListener('click', () => {
+      navigateToArtistPage(album.artist)
+    })
+  }
 
   // Event listener pour lecture album
   pageContainer.querySelector('.play-album-btn').addEventListener('click', () => {
@@ -1584,34 +1782,319 @@ async function loadCoverAsync(path, imgElement, artist = null, album = null) {
   }
 }
 
-// Cache séparé pour les images d'artistes
-const artistImageCache = new Map()
+// === CHARGEMENT ASYNCHRONE DES THUMBNAILS (VERSION OPTIMISÉE NON-BLOQUANTE) ===
+// Stratégie:
+// 1. Check cache mémoire JS (instantané)
+// 2. Check cache disque Rust via get_cover_thumbnail (rapide, lecture seule)
+// 3. Si pas de thumbnail: utiliser get_cover comme fallback (bloquant mais rare après première génération)
+// 4. Génération batch en arrière-plan après le scan
 
-// === CHARGEMENT ASYNCHRONE DES IMAGES D'ARTISTES ===
-async function loadArtistImageAsync(artistName, imgElement, fallbackAlbum = null, fallbackCoverPath = null) {
-  const cacheKey = `artist:${artistName}`
+// === SYSTÈME DE QUEUE À CONCURRENCE LIMITÉE ===
+// Pour éviter de saturer le NAS avec 100 requêtes simultanées
+const MAX_CONCURRENT_LOADS = 5  // Maximum 5 chargements en parallèle
+let activeLoads = 0
+const loadQueue = []
 
-  // Vérifie le cache d'abord
-  if (artistImageCache.has(cacheKey)) {
-    const image = artistImageCache.get(cacheKey)
-    if (image && image.startsWith('data:image')) {
-      imgElement.src = image
-      imgElement.style.display = 'block'
+// File d'attente pour la génération batch en arrière-plan
+let thumbnailGenerationQueue = []
+let thumbnailGenerationRunning = false
+
+// Fonction principale - ajoute à la queue au lieu de charger directement
+// Retourne une Promise pour compatibilité avec les appels .then()
+function loadThumbnailAsync(path, imgElement, artist = null, album = null) {
+  return new Promise((resolve) => {
+    // Vérifications de sécurité
+    if (!path || !imgElement) {
+      resolve()
+      return
     }
+
+    PERF.thumbnailCalls++
+
+    // 1. Cache mémoire JS (instantané) - pas besoin de queue
+    if (thumbnailCache.has(path)) {
+      PERF.thumbnailCacheHits++
+      const thumb = thumbnailCache.get(path)
+      if (thumb && thumb.startsWith('data:image') && imgElement.isConnected) {
+        imgElement.src = thumb
+        imgElement.style.display = 'block'
+      }
+      resolve()
+      return
+    }
+
+    PERF.thumbnailCacheMisses++
+
+    // Ajouter à la queue avec callback de résolution
+    loadQueue.push({ path, imgElement, artist, album, startTime: performance.now(), resolve })
+
+    // Démarrer le traitement si possible
+    processLoadQueue()
+  })
+}
+
+// Traite la queue avec concurrence limitée
+async function processLoadQueue() {
+  while (loadQueue.length > 0 && activeLoads < MAX_CONCURRENT_LOADS) {
+    const item = loadQueue.shift()
+    if (!item) continue
+
+    activeLoads++
+
+    // Dispatch vers le bon handler selon le type
+    const handler = item.type === 'artist'
+      ? loadArtistImageFromQueue(item)
+      : loadThumbnailFromQueue(item)
+
+    handler.finally(() => {
+      activeLoads--
+      // Continue avec le suivant
+      processLoadQueue()
+    })
+  }
+}
+
+// Charge un thumbnail depuis la queue
+async function loadThumbnailFromQueue(item) {
+  const { path, imgElement, artist, album, startTime, resolve } = item
+
+  // Vérifie que l'élément est toujours dans le DOM
+  if (!imgElement.isConnected) {
+    if (resolve) resolve()
     return
   }
 
   try {
-    // Recherche une image d'artiste (photo Deezer/MusicBrainz ou fallback pochette)
+    // 2. Check thumbnail sur disque
+    const thumbStart = performance.now()
+    let thumb = await invoke('get_cover_thumbnail', { path })
+    const thumbTime = performance.now() - thumbStart
+
+    if (thumb && thumb.startsWith('data:image')) {
+      // Thumbnail trouvé sur disque!
+      thumbnailCache.set(path, thumb)
+      if (imgElement.isConnected) {
+        imgElement.src = thumb
+        imgElement.style.display = 'block'
+      }
+      const totalTime = performance.now() - startTime
+      PERF.totalLoadTime += totalTime
+      if (totalTime > 500) {
+        PERF.slowLoads.push({
+          path: path.split('/').pop(),
+          time: totalTime.toFixed(0),
+          type: 'thumb-disk',
+          thumbTime: thumbTime.toFixed(0)
+        })
+      }
+      if (resolve) resolve()
+      return
+    }
+
+    // 3. Pas de thumbnail -> utiliser cover complète comme fallback
+    PERF.coverFallbacks++
+
+    // Ajouter à la queue de génération (pour fichiers AVEC cover)
+    if (!thumbnailGenerationQueue.includes(path)) {
+      thumbnailGenerationQueue.push(path)
+    }
+
+    // Charge la cover complète pour affichage immédiat
+    const coverStart = performance.now()
+    let cover = await invoke('get_cover', { path })
+    const coverTime = performance.now() - coverStart
+
+    if (cover && cover.startsWith('data:image')) {
+      // Cover trouvée dans le fichier!
+      thumbnailCache.set(path, cover)
+      if (imgElement.isConnected) {
+        imgElement.src = cover
+        imgElement.style.display = 'block'
+      }
+      const totalTime = performance.now() - startTime
+      PERF.totalLoadTime += totalTime
+      if (totalTime > 500) {
+        PERF.slowLoads.push({
+          path: path.split('/').pop(),
+          time: totalTime.toFixed(0),
+          type: 'cover-fallback',
+          coverTime: coverTime.toFixed(0)
+        })
+      }
+      if (resolve) resolve()
+      return
+    }
+
+    // PAS de cover locale -> marquer comme "pending Internet" et NE PAS BLOQUER
+    thumbnailCache.set(path, null)
+
+    // Ajouter à la queue Internet si on a artist+album
+    if (artist && album) {
+      PERF.internetFallbacks++
+      queueInternetCoverFetch(path, artist, album, imgElement)
+    }
+
+    const totalTime = performance.now() - startTime
+    PERF.totalLoadTime += totalTime
+  } catch (e) {
+    console.error('[PERF] Error loading thumbnail:', path, e)
+    thumbnailCache.set(path, null)
+  }
+
+  if (resolve) resolve()
+}
+
+// Génère les thumbnails manquants en arrière-plan (appelé périodiquement)
+async function processThumnailGenerationQueue() {
+  if (thumbnailGenerationRunning || thumbnailGenerationQueue.length === 0) return
+
+  thumbnailGenerationRunning = true
+
+  // Prend un batch de 20 images à la fois
+  const batch = thumbnailGenerationQueue.splice(0, 20)
+
+  if (batch.length > 0) {
+    console.log(`[THUMBNAIL] Generating ${batch.length} thumbnails in background...`)
+    try {
+      const generated = await invoke('generate_thumbnails_batch', { paths: batch })
+      console.log(`[THUMBNAIL] Generated ${generated} thumbnails`)
+
+      // Invalide le cache mémoire pour les images générées
+      // (elles seront rechargées en thumbnail au prochain affichage)
+      for (const path of batch) {
+        thumbnailCache.delete(path)
+      }
+    } catch (e) {
+      console.error('[THUMBNAIL] Batch generation error:', e)
+    }
+  }
+
+  thumbnailGenerationRunning = false
+
+  // Continue si queue pas vide
+  if (thumbnailGenerationQueue.length > 0) {
+    setTimeout(processThumnailGenerationQueue, 100) // Petite pause entre les batches
+  }
+}
+
+// Lance le traitement de la queue périodiquement
+setInterval(processThumnailGenerationQueue, 2000)
+
+// === QUEUE POUR FETCH INTERNET NON-BLOQUANT ===
+// Charge les covers depuis Internet en arrière-plan (ne bloque pas l'UI)
+const internetCoverQueue = []
+let internetFetchRunning = false
+
+function queueInternetCoverFetch(path, artist, album, imgElement) {
+  // Évite les doublons
+  if (internetCoverQueue.find(q => q.path === path)) return
+
+  internetCoverQueue.push({ path, artist, album, imgElement })
+
+  // Lance le traitement si pas déjà en cours
+  if (!internetFetchRunning) {
+    processInternetCoverQueue()
+  }
+}
+
+async function processInternetCoverQueue() {
+  if (internetFetchRunning || internetCoverQueue.length === 0) return
+
+  internetFetchRunning = true
+
+  // Traite un item à la fois (évite de surcharger le réseau)
+  const item = internetCoverQueue.shift()
+  if (!item) {
+    internetFetchRunning = false
+    return
+  }
+
+  try {
+    const cover = await invoke('fetch_internet_cover', { artist: item.artist, album: item.album })
+
+    if (cover && cover.startsWith('data:image')) {
+      // Met en cache et affiche si l'élément est toujours visible
+      thumbnailCache.set(item.path, cover)
+      if (item.imgElement && item.imgElement.isConnected) {
+        item.imgElement.src = cover
+        item.imgElement.style.display = 'block'
+        // Cache le placeholder
+        const placeholder = item.imgElement.nextElementSibling || item.imgElement.parentElement?.querySelector('.carousel-cover-placeholder, .album-cover-placeholder')
+        if (placeholder) placeholder.style.display = 'none'
+      }
+    }
+  } catch (e) {
+    console.error('[INTERNET] Error fetching cover:', item.artist, item.album, e)
+  }
+
+  internetFetchRunning = false
+
+  // Continue avec le prochain
+  if (internetCoverQueue.length > 0) {
+    // Petit délai pour éviter de surcharger
+    setTimeout(processInternetCoverQueue, 100)
+  }
+}
+
+// Cache séparé pour les images d'artistes
+const artistImageCache = new Map()
+
+// Queue pour les images d'artistes (utilise la même limite de concurrence)
+const artistLoadQueue = []
+
+// === CHARGEMENT ASYNCHRONE DES IMAGES D'ARTISTES ===
+// Utilise une queue à concurrence limitée comme les thumbnails
+function loadArtistImageAsync(artistName, imgElement, fallbackAlbum = null, fallbackCoverPath = null) {
+  return new Promise((resolve) => {
+    const cacheKey = `artist:${artistName}`
+
+    // Vérifie le cache mémoire d'abord (instantané)
+    if (artistImageCache.has(cacheKey)) {
+      const image = artistImageCache.get(cacheKey)
+      if (image && image.startsWith('data:image')) {
+        imgElement.src = image
+        imgElement.style.display = 'block'
+      }
+      resolve()
+      return
+    }
+
+    // Ajouter à la queue partagée avec les thumbnails
+    loadQueue.push({
+      type: 'artist',
+      artistName,
+      imgElement,
+      fallbackAlbum,
+      fallbackCoverPath,
+      cacheKey,
+      startTime: performance.now(),
+      resolve
+    })
+
+    // Démarrer le traitement
+    processLoadQueue()
+  })
+}
+
+// Charge une image d'artiste depuis la queue
+async function loadArtistImageFromQueue(item) {
+  const { artistName, imgElement, fallbackAlbum, fallbackCoverPath, cacheKey, resolve } = item
+
+  if (!imgElement.isConnected) {
+    if (resolve) resolve()
+    return
+  }
+
+  try {
     const image = await invoke('fetch_artist_image', {
       artist: artistName,
       fallbackAlbum: fallbackAlbum,
       fallbackCoverPath: fallbackCoverPath
     })
 
-    artistImageCache.set(cacheKey, image) // Met en cache même si null
+    artistImageCache.set(cacheKey, image)
 
-    if (image && image.startsWith('data:image')) {
+    if (image && image.startsWith('data:image') && imgElement.isConnected) {
       imgElement.src = image
       imgElement.style.display = 'block'
     }
@@ -1619,6 +2102,8 @@ async function loadArtistImageAsync(artistName, imgElement, fallbackAlbum = null
     console.error('Erreur artist image:', artistName, e)
     artistImageCache.set(cacheKey, null)
   }
+
+  if (resolve) resolve()
 }
 
 // === AFFICHAGE DE LA PAGE HOME ===
@@ -1752,11 +2237,20 @@ async function displayHomeView() {
     const img = resumeTile.querySelector('.resume-cover-img')
     const placeholder = resumeTile.querySelector('.resume-cover-placeholder')
     if (img && placeholder) {
-      loadCoverAsync(coverPath, img, artist, album).then(() => {
-        if (img.isConnected && img.style.display === 'block') {
-          placeholder.style.display = 'none'
-        }
-      })
+      // Vérifie d'abord le cache mémoire pour affichage instantané
+      const cachedCover = coverCache.get(coverPath) || thumbnailCache.get(coverPath)
+      if (cachedCover && cachedCover.startsWith('data:image')) {
+        img.src = cachedCover
+        img.style.display = 'block'
+        placeholder.style.display = 'none'
+      } else {
+        // Sinon charge via la queue
+        loadThumbnailAsync(coverPath, img, artist, album).then(() => {
+          if (img.isConnected && img.style.display === 'block') {
+            placeholder.style.display = 'none'
+          }
+        })
+      }
     }
 
     resumeSection.appendChild(resumeTile)
@@ -1821,7 +2315,7 @@ async function displayHomeView() {
           img.style.display = 'block'
           placeholder.style.display = 'none'
         } else {
-          loadCoverAsync(coverPath, img, entry.artist, entry.album).then(() => {
+          loadThumbnailAsync(coverPath, img, entry.artist, entry.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
             }
@@ -1902,7 +2396,7 @@ async function displayHomeView() {
             img.style.display = 'block'
             placeholder.style.display = 'none'
           } else {
-            loadCoverAsync(album.coverPath, img, album.artist, album.album).then(() => {
+            loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
               if (img.isConnected && img.style.display === 'block') {
                 placeholder.style.display = 'none'
               }
@@ -1971,8 +2465,8 @@ async function displayHomeView() {
           img.style.display = 'block'
           placeholder.style.display = 'none'
         } else {
-          // Sinon charge de manière asynchrone
-          loadCoverAsync(album.coverPath, img, album.artist, album.album).then(() => {
+          // Sinon charge le thumbnail de manière asynchrone
+          loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
             }
@@ -2016,22 +2510,14 @@ async function displayHomeView() {
       const img = item.querySelector('.carousel-cover-img')
       const placeholder = item.querySelector('.carousel-cover-placeholder')
 
-      // Charge l'image de l'artiste (depuis le cache ou via l'API)
+      // Charge la PHOTO de l'artiste (pas la cover d'album)
       if (img && placeholder) {
-        // Essaie d'abord le cache de l'album sample
-        const cachedCover = artist.sample_path ? coverCache.get(artist.sample_path) : null
-        if (cachedCover && cachedCover.startsWith('data:image')) {
-          img.src = cachedCover
-          img.style.display = 'block'
-          placeholder.style.display = 'none'
-        } else if (artist.sample_path) {
-          // Sinon charge la pochette de l'album sample
-          loadCoverAsync(artist.sample_path, img, artist.name, artist.sample_album).then(() => {
-            if (img.isConnected && img.style.display === 'block') {
-              placeholder.style.display = 'none'
-            }
-          })
-        }
+        // Utilise loadArtistImageAsync qui récupère les vraies photos d'artiste via Deezer/MusicBrainz
+        loadArtistImageAsync(artist.name, img, artist.sample_album, artist.sample_path).then(() => {
+          if (img.isConnected && img.style.display === 'block') {
+            placeholder.style.display = 'none'
+          }
+        })
       }
 
       artistsCarousel.appendChild(item)
@@ -2100,7 +2586,7 @@ async function displayHomeView() {
           img.style.display = 'block'
           placeholder.style.display = 'none'
         } else {
-          loadCoverAsync(album.coverPath, img, album.artist, album.album).then(() => {
+          loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
             }
@@ -2113,6 +2599,215 @@ async function displayHomeView() {
 
     hiResSection.appendChild(hiResCarousel)
     homeContainer.appendChild(hiResSection)
+  }
+
+  // === 7. Carrousel "Albums longs" (durée > 60 minutes) - parfait pour écoute immersive ===
+  const longAlbumKeys = Object.keys(albums).filter(key => {
+    const album = albums[key]
+    // Calcule la durée totale de l'album
+    const totalDuration = album.tracks.reduce((sum, track) => {
+      return sum + (track.metadata?.duration || 0)
+    }, 0)
+    return totalDuration >= 3600 // 60 minutes en secondes
+  })
+
+  if (longAlbumKeys.length >= 3) {
+    const longSection = document.createElement('section')
+    longSection.className = 'home-section'
+
+    const longHeader = document.createElement('h2')
+    longHeader.className = 'home-section-title'
+    longHeader.textContent = 'Albums longs'
+    longSection.appendChild(longHeader)
+
+    const longCarousel = document.createElement('div')
+    longCarousel.className = 'home-carousel'
+
+    // Trie par durée décroissante, prend les 15 plus longs
+    const sortedByDuration = longAlbumKeys
+      .map(key => {
+        const album = albums[key]
+        const totalDuration = album.tracks.reduce((sum, t) => sum + (t.metadata?.duration || 0), 0)
+        return { key, album, duration: totalDuration }
+      })
+      .sort((a, b) => b.duration - a.duration)
+      .slice(0, 15)
+
+    for (const { key: albumKey, album, duration } of sortedByDuration) {
+      if (!album) continue
+
+      const durationStr = formatAlbumDuration(duration)
+
+      const item = document.createElement('div')
+      item.className = 'carousel-item'
+      item.dataset.albumKey = albumKey
+      item.innerHTML = `
+        <div class="carousel-cover">
+          <img class="carousel-cover-img" style="display: none;" alt="">
+          <div class="carousel-cover-placeholder">♪</div>
+          <span class="duration-badge">${durationStr}</span>
+        </div>
+        <div class="carousel-title">${escapeHtml(album.album)}</div>
+        <div class="carousel-artist">${escapeHtml(album.artist)}</div>
+      `
+
+      const img = item.querySelector('.carousel-cover-img')
+      const placeholder = item.querySelector('.carousel-cover-placeholder')
+
+      if (album.coverPath && img && placeholder) {
+        const cachedCover = coverCache.get(album.coverPath)
+        if (cachedCover && cachedCover.startsWith('data:image')) {
+          img.src = cachedCover
+          img.style.display = 'block'
+          placeholder.style.display = 'none'
+        } else {
+          loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
+            if (img.isConnected && img.style.display === 'block') {
+              placeholder.style.display = 'none'
+            }
+          })
+        }
+      }
+
+      longCarousel.appendChild(item)
+    }
+
+    longSection.appendChild(longCarousel)
+    homeContainer.appendChild(longSection)
+  }
+
+  // === 8. Carrousel "Ajoutés cette semaine" ===
+  const oneWeekAgo = Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60)
+  const thisWeekAlbums = Object.keys(albums)
+    .map(key => {
+      const album = albums[key]
+      // Trouve la date d'ajout la plus récente parmi les tracks
+      let mostRecentDate = 0
+      for (const track of album.tracks) {
+        const addedDate = trackAddedDates[track.path] || 0
+        if (addedDate > mostRecentDate) {
+          mostRecentDate = addedDate
+        }
+      }
+      return { key, album, addedDate: mostRecentDate }
+    })
+    .filter(item => item.addedDate >= oneWeekAgo)
+    .sort((a, b) => b.addedDate - a.addedDate)
+    .slice(0, 15)
+
+  if (thisWeekAlbums.length >= 3) {
+    const weekSection = document.createElement('section')
+    weekSection.className = 'home-section'
+
+    const weekHeader = document.createElement('h2')
+    weekHeader.className = 'home-section-title'
+    weekHeader.textContent = 'Ajoutés cette semaine'
+    weekSection.appendChild(weekHeader)
+
+    const weekCarousel = document.createElement('div')
+    weekCarousel.className = 'home-carousel'
+
+    for (const { key: albumKey, album, addedDate } of thisWeekAlbums) {
+      if (!album) continue
+
+      // Calcule "il y a X jours"
+      const daysAgo = Math.floor((Date.now() / 1000 - addedDate) / (24 * 60 * 60))
+      const timeLabel = daysAgo === 0 ? "Aujourd'hui" : daysAgo === 1 ? 'Hier' : `Il y a ${daysAgo}j`
+
+      const item = document.createElement('div')
+      item.className = 'carousel-item'
+      item.dataset.albumKey = albumKey
+      item.innerHTML = `
+        <div class="carousel-cover">
+          <img class="carousel-cover-img" style="display: none;" alt="">
+          <div class="carousel-cover-placeholder">♪</div>
+          <span class="time-badge">${timeLabel}</span>
+        </div>
+        <div class="carousel-title">${escapeHtml(album.album)}</div>
+        <div class="carousel-artist">${escapeHtml(album.artist)}</div>
+      `
+
+      const img = item.querySelector('.carousel-cover-img')
+      const placeholder = item.querySelector('.carousel-cover-placeholder')
+
+      if (album.coverPath && img && placeholder) {
+        const cachedCover = coverCache.get(album.coverPath)
+        if (cachedCover && cachedCover.startsWith('data:image')) {
+          img.src = cachedCover
+          img.style.display = 'block'
+          placeholder.style.display = 'none'
+        } else {
+          loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
+            if (img.isConnected && img.style.display === 'block') {
+              placeholder.style.display = 'none'
+            }
+          })
+        }
+      }
+
+      weekCarousel.appendChild(item)
+    }
+
+    weekSection.appendChild(weekCarousel)
+    homeContainer.appendChild(weekSection)
+  }
+
+  // === 9. Carrousel "Mix aléatoire" (sélection aléatoire d'albums) ===
+  const allAlbumKeys = Object.keys(albums)
+  if (allAlbumKeys.length >= 10) {
+    const mixSection = document.createElement('section')
+    mixSection.className = 'home-section'
+
+    const mixHeader = document.createElement('h2')
+    mixHeader.className = 'home-section-title'
+    mixHeader.textContent = 'Mix aléatoire'
+    mixSection.appendChild(mixHeader)
+
+    const mixCarousel = document.createElement('div')
+    mixCarousel.className = 'home-carousel'
+
+    // Sélection vraiment aléatoire de 12 albums
+    const shuffledAlbums = [...allAlbumKeys].sort(() => Math.random() - 0.5).slice(0, 12)
+
+    for (const albumKey of shuffledAlbums) {
+      const album = albums[albumKey]
+      if (!album) continue
+
+      const item = document.createElement('div')
+      item.className = 'carousel-item'
+      item.dataset.albumKey = albumKey
+      item.innerHTML = `
+        <div class="carousel-cover">
+          <img class="carousel-cover-img" style="display: none;" alt="">
+          <div class="carousel-cover-placeholder">♪</div>
+        </div>
+        <div class="carousel-title">${escapeHtml(album.album)}</div>
+        <div class="carousel-artist">${escapeHtml(album.artist)}</div>
+      `
+
+      const img = item.querySelector('.carousel-cover-img')
+      const placeholder = item.querySelector('.carousel-cover-placeholder')
+
+      if (album.coverPath && img && placeholder) {
+        const cachedCover = coverCache.get(album.coverPath)
+        if (cachedCover && cachedCover.startsWith('data:image')) {
+          img.src = cachedCover
+          img.style.display = 'block'
+          placeholder.style.display = 'none'
+        } else {
+          loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
+            if (img.isConnected && img.style.display === 'block') {
+              placeholder.style.display = 'none'
+            }
+          })
+        }
+      }
+
+      mixCarousel.appendChild(item)
+    }
+
+    mixSection.appendChild(mixCarousel)
+    homeContainer.appendChild(mixSection)
   }
 
   // Message si rien à afficher
@@ -2269,11 +2964,11 @@ function updateHomeNowPlayingSection() {
     <button class="resume-play-btn">${audioIsPlaying ? '⏸' : '▶'}</button>
   `
 
-  // Charge la pochette
+  // Charge le thumbnail de la pochette
   const img = resumeTile.querySelector('.resume-cover-img')
   const placeholder = resumeTile.querySelector('.resume-cover-placeholder')
   if (img && placeholder) {
-    loadCoverAsync(currentTrack.path, img, artist, album).then(() => {
+    loadThumbnailAsync(currentTrack.path, img, artist, album).then(() => {
       if (img.isConnected && img.style.display === 'block') {
         placeholder.style.display = 'none'
       }
@@ -2302,7 +2997,9 @@ function openAlbumFromHome(albumKey, album) {
 
 // === AFFICHAGE DE LA GRILLE D'ALBUMS ===
 function displayAlbumsGrid() {
-  // Note: albumsGridDiv est déjà vidé par displayCurrentView()
+  // Clear explicite du conteneur (peut être appelé récursivement depuis le menu de tri)
+  albumsGridDiv.textContent = ''
+  if (coverObserver) coverObserver.disconnect()
 
   // Si on filtre par artiste, affiche un header avec bouton retour
   if (filteredArtist) {
@@ -2450,8 +3147,20 @@ function displayAlbumsGrid() {
 
     // Clic sur un album = ouvre le panel de détail (comportement original)
     card.addEventListener('click', () => {
+      // Ignore si on était en train de drag
+      if (customDragState.isDragging) return
       const cover = coverCache.get(album.coverPath)
       showAlbumDetail(albumKey, cover, card)
+    })
+
+    // Clic droit sur un album = menu contextuel
+    card.addEventListener('contextmenu', (e) => {
+      showAlbumContextMenu(e, albumKey)
+    })
+
+    // Drag & drop pour ajouter l'album complet à une playlist
+    card.addEventListener('mousedown', (e) => {
+      prepareAlbumDrag(e, albumKey, card)
     })
 
     gridContainer.appendChild(card)
@@ -2723,11 +3432,11 @@ function displayArtistPage(artistKey) {
       <div class="album-artist">${albumData.tracks.length} titre${albumData.tracks.length > 1 ? 's' : ''}${yearText}</div>
     `
 
-    // Si pas en cache, charge la pochette
+    // Si pas en cache, charge le thumbnail
     if (!hasCachedCover && albumData.coverPath) {
       const cardImg = card.querySelector('.album-cover-img')
       const cardPlaceholder = card.querySelector('.album-cover-placeholder')
-      loadCoverAsync(albumData.coverPath, cardImg, artist.name, albumData.album).then(() => {
+      loadThumbnailAsync(albumData.coverPath, cardImg, artist.name, albumData.album).then(() => {
         if (cardImg.isConnected && cardImg.style.display === 'block') {
           cardPlaceholder.style.display = 'none'
         }
@@ -2827,10 +3536,16 @@ function createTrackItemHTML(track, index) {
   const isInQueue = queue.some(q => q.path === track.path)
   const inQueueClass = isInQueue ? 'in-queue' : ''
   const selectedClass = virtualScrollState.selectedTrackPaths.has(track.path) ? 'selected' : ''
+  const isFavorite = favoriteTracks.has(track.path)
+  const favoriteClass = isFavorite ? 'active' : ''
 
   return `
     <div class="tracks-list-item ${selectedClass}" data-track-path="${track.path}" data-virtual-index="${index}" style="position: absolute; top: ${index * TRACK_ITEM_HEIGHT}px; left: 0; right: 0; height: ${TRACK_ITEM_HEIGHT}px;">
-      <span class="track-drag-handle" title="Glisser vers une playlist">⠿</span>
+      <button class="track-favorite-btn ${favoriteClass}" title="${isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}">
+        <svg viewBox="0 0 24 24" fill="${isFavorite ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+        </svg>
+      </button>
       <span class="tracks-list-title">${title}</span>
       <span class="tracks-list-artist">${artist}</span>
       <span class="tracks-list-album">${album}</span>
@@ -2901,7 +3616,11 @@ function updateTrackSelectionDisplay() {
 
 // === AFFICHAGE DE LA LISTE DES TITRES (avec Virtual Scrolling) ===
 function displayTracksGrid() {
-  // Note: albumsGridDiv est déjà vidé par displayCurrentView()
+  // Ferme tout panel ouvert qui pourrait créer une "double sidebar"
+  closeAlbumDetail()
+
+  // Clear explicite du conteneur (peut être appelé récursivement depuis le tri)
+  albumsGridDiv.textContent = ''
 
   // Header avec titre
   const headerDiv = document.createElement('div')
@@ -2996,6 +3715,18 @@ function displayTracksGrid() {
 
   // === EVENT DELEGATION sur le conteneur de contenu ===
 
+  // Drag & drop pour ajouter des tracks à une playlist
+  contentContainer.addEventListener('mousedown', (e) => {
+    const trackItem = e.target.closest('.tracks-list-item')
+    if (!trackItem || e.target.closest('button')) return
+
+    const trackPath = trackItem.dataset.trackPath
+    const track = tracks.find(t => t.path === trackPath)
+    if (track) {
+      prepareCustomDrag(e, track, trackItem)
+    }
+  })
+
   // Clic (avec support multi-sélection Cmd/Shift)
   contentContainer.addEventListener('click', (e) => {
     const trackItem = e.target.closest('.tracks-list-item')
@@ -3004,6 +3735,14 @@ function displayTracksGrid() {
     const trackPath = trackItem.dataset.trackPath
     const track = tracks.find(t => t.path === trackPath)
     if (!track) return
+
+    // Bouton favori (cœur)
+    const favBtn = e.target.closest('.track-favorite-btn')
+    if (favBtn) {
+      e.stopPropagation()
+      toggleFavorite(track.path, favBtn)
+      return
+    }
 
     // Bouton toggle queue (ajouter/retirer)
     const addQueueBtn = e.target.closest('.tracks-list-add-queue')
@@ -3368,6 +4107,12 @@ function showAlbumDetail(albumKey, cover, clickedCard) {
     prepareCustomDrag(e, track, trackItem)
   })
 
+  // Menu contextuel sur le header de l'album pour créer une playlist
+  albumDetailDiv.querySelector('.album-detail-header').addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    showAlbumContextMenu(e, albumKey)
+  })
+
   // Event listeners pour le panel
   albumDetailDiv.querySelector('.close-album-detail').addEventListener('click', closeAlbumDetail)
   albumDetailDiv.querySelector('.play-album-btn').addEventListener('click', () => {
@@ -3564,41 +4309,66 @@ async function playTrack(index) {
 }
 
 // === CONTRÔLES DU LECTEUR ===
-playPauseBtn.addEventListener('click', async () => {
+
+// Flag pour éviter les appels multiples pendant le toggle
+let isTogglingPlayState = false
+let lastToggleAction = null  // 'pause' ou 'resume' - pour éviter l'action inverse trop rapide
+
+// Fonction toggle play/pause (réutilisable par raccourcis clavier)
+async function togglePlay() {
   // Si pas de track sélectionnée, ne fait rien
   if (currentTrackIndex < 0 || !tracks[currentTrackIndex]) return
 
-  const currentTrack = tracks[currentTrackIndex]
-
-  if (!audioIsPlaying) {
-    // PLAY / RESUME via Rust
-    try {
-      await invoke('audio_resume')
-      audioIsPlaying = true
-      playPauseBtn.textContent = '⏸'
-    } catch (e) {
-      console.error('audio_resume error:', e)
-    }
-    // Met à jour le composant Home si visible
-    updateHomeNowPlayingSection()
-  } else {
-    // PAUSE via Rust
-    try {
-      await invoke('audio_pause')
-      audioIsPlaying = false
-      playPauseBtn.textContent = '▶'
-    } catch (e) {
-      console.error('audio_pause error:', e)
-      audioIsPlaying = false
-      playPauseBtn.textContent = '▶'
-    }
-    // Met à jour le composant Home si visible
-    updateHomeNowPlayingSection()
+  // Évite les appels multiples rapides (debounce strict)
+  if (isTogglingPlayState) {
+    console.log('[togglePlay] Debounce - ignoring call')
+    return
   }
-})
+  isTogglingPlayState = true
 
-// Morceau précédent
-prevBtn.addEventListener('click', () => {
+  // Détermine l'action à effectuer basée sur l'état Rust (source de vérité)
+  const shouldResume = isPausedFromRust || !audioIsPlaying
+  const action = shouldResume ? 'resume' : 'pause'
+
+  // Protection supplémentaire : évite d'envoyer la même action 2 fois de suite
+  // ou une action inverse immédiatement après (symptôme du bug double-entrée)
+  if (lastToggleAction === action) {
+    console.log('[togglePlay] Same action already pending:', action)
+    isTogglingPlayState = false
+    return
+  }
+
+  lastToggleAction = action
+  console.log('[togglePlay] Action:', action, '| isPausedFromRust:', isPausedFromRust, '| audioIsPlaying:', audioIsPlaying)
+
+  try {
+    if (shouldResume) {
+      // PLAY / RESUME via Rust
+      await invoke('audio_resume')
+      // L'état sera mis à jour par l'événement playback_resumed
+    } else {
+      // PAUSE via Rust
+      await invoke('audio_pause')
+      // L'état sera mis à jour par l'événement playback_paused
+    }
+  } catch (e) {
+    console.error('[togglePlay] Error:', e)
+  }
+
+  // Met à jour le composant Home si visible
+  updateHomeNowPlayingSection()
+
+  // Réactive après un délai plus long pour être sûr que l'événement Rust est arrivé
+  setTimeout(() => {
+    isTogglingPlayState = false
+    lastToggleAction = null  // Reset pour permettre la prochaine action
+  }, 250)
+}
+
+playPauseBtn.addEventListener('click', togglePlay)
+
+// Fonction pour jouer le morceau précédent (réutilisable par raccourcis clavier)
+function playPreviousTrack() {
   const currentTrack = tracks[currentTrackIndex]
   const currentFolder = currentTrack?.path ? currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/')) : null
 
@@ -3618,7 +4388,7 @@ prevBtn.addEventListener('click', () => {
 
   const currentAlbumTrackIndex = albumTracks.findIndex(t => t.path === currentTrack?.path)
 
-  console.log('prevBtn DEBUG:', {
+  console.log('playPreviousTrack DEBUG:', {
     currentAlbumTrackIndex,
     albumTracksCount: albumTracks.length,
     currentFolder
@@ -3647,7 +4417,10 @@ prevBtn.addEventListener('click', () => {
   if (currentTrackIndex > 0) {
     playTrack(currentTrackIndex - 1)
   }
-})
+}
+
+// Morceau précédent
+prevBtn.addEventListener('click', playPreviousTrack)
 
 // Morceau suivant
 nextBtn.addEventListener('click', () => {
@@ -3656,6 +4429,9 @@ nextBtn.addEventListener('click', () => {
 
 // === CLICK SUR COVER ART = Navigation vers l'album ===
 coverArtEl.addEventListener('click', () => {
+  // Si on était en train de drag, ne pas naviguer
+  if (customDragState.isDragging) return
+
   if (!currentPlayingAlbumKey || currentTrackIndex < 0) return
 
   const album = albums[currentPlayingAlbumKey]
@@ -3666,6 +4442,16 @@ coverArtEl.addEventListener('click', () => {
 
   // Navigue vers la page album dédiée
   navigateToAlbumPage(currentPlayingAlbumKey)
+})
+
+// === DRAG FROM COVER ART = Ajouter le track en cours à une playlist ===
+coverArtEl.addEventListener('mousedown', (e) => {
+  if (currentTrackIndex < 0) return
+
+  const currentTrack = tracks[currentTrackIndex]
+  if (!currentTrack) return
+
+  prepareCustomDrag(e, currentTrack, coverArtEl)
 })
 
 // Fonction pour jouer le morceau suivant (gère queue + shuffle + repeat + album context)
@@ -3717,26 +4503,57 @@ function playNextTrack() {
 
   // 3. Gestion des modes shuffle (seulement si le track actuel est bien dans l'album)
   if (shuffleMode === 'album' && albumTracks.length > 1 && currentAlbumTrackIndex !== -1) {
-    // Shuffle dans l'album uniquement
-    let randomAlbumIndex
-    do {
-      randomAlbumIndex = Math.floor(Math.random() * albumTracks.length)
-    } while (randomAlbumIndex === currentAlbumTrackIndex && albumTracks.length > 1)
+    // Shuffle dans l'album uniquement - évite les doublons
+    const availableTracks = albumTracks.filter(t => !shufflePlayedTracks.has(t.path))
 
-    const randomTrack = albumTracks[randomAlbumIndex]
-    const globalIndex = tracks.findIndex(t => t.path === randomTrack.path)
-    if (globalIndex !== -1) {
+    if (availableTracks.length === 0) {
+      // Tous les tracks ont été joués, on reset et on recommence
+      shufflePlayedTracks.clear()
+      if (currentTrack) shufflePlayedTracks.add(currentTrack.path)
+      // Re-filter après reset
+      const freshTracks = albumTracks.filter(t => !shufflePlayedTracks.has(t.path))
+      if (freshTracks.length > 0) {
+        const randomTrack = freshTracks[Math.floor(Math.random() * freshTracks.length)]
+        shufflePlayedTracks.add(randomTrack.path)
+        const globalIndex = tracks.findIndex(t => t.path === randomTrack.path)
+        if (globalIndex !== -1) {
+          playTrack(globalIndex)
+          return
+        }
+      }
+    } else {
+      // Choisir parmi les tracks non encore joués
+      const randomTrack = availableTracks[Math.floor(Math.random() * availableTracks.length)]
+      shufflePlayedTracks.add(randomTrack.path)
+      const globalIndex = tracks.findIndex(t => t.path === randomTrack.path)
+      if (globalIndex !== -1) {
+        playTrack(globalIndex)
+        return
+      }
+    }
+  } else if (shuffleMode === 'library') {
+    // Shuffle sur toute la bibliothèque - évite les doublons
+    const availableTracks = tracks.filter(t => !shufflePlayedTracks.has(t.path))
+
+    if (availableTracks.length === 0) {
+      // Tous les tracks ont été joués, on reset
+      shufflePlayedTracks.clear()
+      if (currentTrack) shufflePlayedTracks.add(currentTrack.path)
+      const freshTracks = tracks.filter(t => !shufflePlayedTracks.has(t.path))
+      if (freshTracks.length > 0) {
+        const randomTrack = freshTracks[Math.floor(Math.random() * freshTracks.length)]
+        shufflePlayedTracks.add(randomTrack.path)
+        const globalIndex = tracks.findIndex(t => t.path === randomTrack.path)
+        playTrack(globalIndex)
+        return
+      }
+    } else {
+      const randomTrack = availableTracks[Math.floor(Math.random() * availableTracks.length)]
+      shufflePlayedTracks.add(randomTrack.path)
+      const globalIndex = tracks.findIndex(t => t.path === randomTrack.path)
       playTrack(globalIndex)
       return
     }
-  } else if (shuffleMode === 'library') {
-    // Shuffle sur toute la bibliothèque
-    let randomIndex
-    do {
-      randomIndex = Math.floor(Math.random() * tracks.length)
-    } while (randomIndex === currentTrackIndex && tracks.length > 1)
-    playTrack(randomIndex)
-    return
   }
 
   // 4. Mode séquentiel : track suivante dans l'album
@@ -4032,9 +4849,12 @@ async function initRustAudioListeners() {
   await listen('playback_seeking', (event) => {
     const targetPosition = event.payload
     isSeekingUI = true
+    seekTargetPosition = targetPosition  // Met à jour la cible pour syncToRustPosition
 
-    // Synchronise immédiatement à la position cible
-    syncToRustPosition(targetPosition)
+    // Met à jour l'UI immédiatement avec la position cible
+    lastRustPosition = targetPosition
+    lastRustTimestamp = performance.now()
+    lastDisplayedPosition = targetPosition
 
     if (audioDurationFromRust > 0) {
       const percent = (targetPosition / audioDurationFromRust) * 100
@@ -4042,15 +4862,28 @@ async function initRustAudioListeners() {
       currentTimeEl.textContent = formatTime(targetPosition)
       updateProgressBarStyle(percent)
     }
+
+    // Timeout de sécurité : si Rust ne confirme pas dans 2s, réactive l'interpolation
+    if (seekTimeoutId) clearTimeout(seekTimeoutId)
+    seekTimeoutId = setTimeout(() => {
+      if (isSeekingUI) {
+        console.log('[Seek] Safety timeout from playback_seeking event')
+        isSeekingUI = false
+      }
+    }, 2000)
   })
 
-  // Pause/Resume depuis Rust
+  // Pause/Resume depuis Rust - synchronise l'état global
   await listen('playback_paused', () => {
     isPausedFromRust = true
+    audioIsPlaying = false
+    playPauseBtn.textContent = '▶'
   })
 
   await listen('playback_resumed', () => {
     isPausedFromRust = false
+    audioIsPlaying = true
+    playPauseBtn.textContent = '⏸'
     // Re-synchronise le timestamp pour éviter un saut
     lastRustTimestamp = performance.now()
   })
@@ -4058,6 +4891,9 @@ async function initRustAudioListeners() {
   // Fin de lecture (émis par Rust quand le track est terminé)
   await listen('playback_ended', () => {
     console.log('Rust: playback_ended - transitioning to next track')
+
+    // IMPORTANT: Sauvegarder l'index AVANT toute modification d'état
+    const indexToRepeat = currentTrackIndex
 
     // Marque la fin de lecture AVANT la transition
     audioIsPlaying = false
@@ -4069,9 +4905,9 @@ async function initRustAudioListeners() {
     // Petit délai pour laisser Rust nettoyer son état avant de lancer la suite
     setTimeout(() => {
       // Gère repeat et next track
-      if (repeatMode === 'one') {
-        // Répète le même morceau
-        playTrack(currentTrackIndex)
+      if (repeatMode === 'one' && indexToRepeat >= 0 && indexToRepeat < tracks.length) {
+        // Répète le même morceau (utilise l'index sauvegardé)
+        playTrack(indexToRepeat)
       } else {
         playNextTrack()
       }
@@ -4203,6 +5039,9 @@ progressBar.addEventListener('change', () => {
 
 // === SHUFFLE & REPEAT ===
 shuffleBtn.addEventListener('click', () => {
+  // Reset l'historique des tracks joués à chaque changement de mode
+  shufflePlayedTracks.clear()
+
   // Cycle : off → album → library → off
   if (shuffleMode === 'off') {
     shuffleMode = 'album'
@@ -4221,23 +5060,35 @@ shuffleBtn.addEventListener('click', () => {
   }
 })
 
-repeatBtn.addEventListener('click', () => {
-  // Cycle : off → all → one → off
-  if (repeatMode === 'off') {
-    repeatMode = 'all'
+// Met à jour l'UI du bouton repeat selon le mode actuel
+function updateRepeatButtonUI() {
+  if (!repeatBtn) return
+
+  if (repeatMode === 'all') {
     repeatBtn.classList.add('active')
     repeatBtn.textContent = '⟳'
     repeatBtn.title = 'Répéter tout'
-  } else if (repeatMode === 'all') {
-    repeatMode = 'one'
+  } else if (repeatMode === 'one') {
+    repeatBtn.classList.add('active')
     repeatBtn.textContent = '⟳₁'
     repeatBtn.title = 'Répéter un'
   } else {
-    repeatMode = 'off'
     repeatBtn.classList.remove('active')
     repeatBtn.textContent = '⟳'
     repeatBtn.title = 'Répéter'
   }
+}
+
+repeatBtn.addEventListener('click', () => {
+  // Cycle : off → all → one → off
+  if (repeatMode === 'off') {
+    repeatMode = 'all'
+  } else if (repeatMode === 'all') {
+    repeatMode = 'one'
+  } else {
+    repeatMode = 'off'
+  }
+  updateRepeatButtonUI()
 })
 
 // === VOLUME ===
@@ -4301,11 +5152,247 @@ function updateVolumeIcon(volume) {
   }
 }
 
+// === SÉLECTEUR DE SORTIE AUDIO ===
+let currentAudioDeviceId = null
+
+// Toggle le menu de sélection audio
+audioOutputBtn.addEventListener('click', async (e) => {
+  e.stopPropagation()
+
+  if (audioOutputMenu.classList.contains('hidden')) {
+    // Ouvre le menu et charge les devices
+    await loadAudioDevices()
+    await loadExclusiveMode()
+    audioOutputMenu.classList.remove('hidden')
+    audioOutputBtn.classList.add('active')
+  } else {
+    // Ferme le menu
+    audioOutputMenu.classList.add('hidden')
+    audioOutputBtn.classList.remove('active')
+  }
+})
+
+// Ferme le menu au clic ailleurs
+document.addEventListener('click', (e) => {
+  if (!audioOutputMenu.classList.contains('hidden') &&
+      !audioOutputMenu.contains(e.target) &&
+      e.target !== audioOutputBtn) {
+    audioOutputMenu.classList.add('hidden')
+    audioOutputBtn.classList.remove('active')
+  }
+})
+
+// Charge la liste des périphériques audio
+async function loadAudioDevices() {
+  console.log('[AUDIO-OUTPUT] Loading audio devices...')
+  try {
+    const devices = await invoke('get_audio_devices')
+    console.log('[AUDIO-OUTPUT] Available devices:', devices)
+
+    const currentDevice = await invoke('get_current_audio_device')
+    console.log('[AUDIO-OUTPUT] Current device:', currentDevice)
+
+    currentAudioDeviceId = currentDevice?.id || null
+
+    audioOutputList.innerHTML = ''
+
+    for (const device of devices) {
+      const item = document.createElement('button')
+      item.className = `audio-output-item${device.id === currentAudioDeviceId ? ' active' : ''}`
+      item.dataset.deviceId = device.id
+
+      // Formate le sample rate
+      const sampleRate = device.current_sample_rate
+        ? `${(device.current_sample_rate / 1000).toFixed(1).replace('.0', '')} kHz`
+        : ''
+
+      // Formate les sample rates supportés
+      const supportedRates = device.supported_sample_rates && device.supported_sample_rates.length > 0
+        ? device.supported_sample_rates.map(r => `${r/1000}k`).join(', ')
+        : ''
+
+      item.innerHTML = `
+        <div class="audio-output-item-info">
+          <div class="audio-output-item-name">${device.name}</div>
+          <div class="audio-output-item-details">
+            ${sampleRate}${supportedRates ? ` • Supporte: ${supportedRates}` : ''}
+          </div>
+        </div>
+        ${device.is_default ? '<span class="audio-output-item-default">Défaut</span>' : ''}
+      `
+
+      item.addEventListener('click', () => selectAudioDevice(device.id, device.name))
+      audioOutputList.appendChild(item)
+    }
+  } catch (e) {
+    console.error('[AUDIO-OUTPUT] Error loading devices:', e)
+    console.error('[AUDIO-OUTPUT] Error details:', JSON.stringify(e, null, 2))
+    audioOutputList.innerHTML = `<div style="padding: 16px; color: #ff6b6b;">Erreur: ${e?.message || e || 'Audio engine non initialisé'}</div>`
+  }
+}
+
+// Sélectionne un périphérique audio
+async function selectAudioDevice(deviceId, deviceName) {
+  console.log('[AUDIO-OUTPUT] Selecting device:', deviceId, deviceName)
+  console.log('[AUDIO-OUTPUT] Previous device was:', currentAudioDeviceId)
+
+  // Ne fait rien si c'est déjà le device actif
+  if (deviceId === currentAudioDeviceId) {
+    console.log('[AUDIO-OUTPUT] Already on this device, skipping')
+    audioOutputMenu.classList.add('hidden')
+    audioOutputBtn.classList.remove('active')
+    return
+  }
+
+  // Ferme le menu immédiatement
+  audioOutputMenu.classList.add('hidden')
+  audioOutputBtn.classList.remove('active')
+
+  try {
+    console.log('[AUDIO-OUTPUT] Calling set_audio_device...')
+    await invoke('set_audio_device', { deviceId })
+    console.log('[AUDIO-OUTPUT] Device preference changed successfully')
+
+    const previousDeviceId = currentAudioDeviceId
+    currentAudioDeviceId = deviceId
+
+    // Met à jour l'affichage
+    audioOutputList.querySelectorAll('.audio-output-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.deviceId === deviceId)
+    })
+
+    // Si de la musique joue ou était en pause, relance la lecture sur le nouveau device
+    // Note: Le backend CPAL utilise toujours le device par défaut système, donc on doit
+    // forcer une relance pour que le changement prenne effet via prepare_for_streaming()
+    const wasPlaying = audioIsPlaying || !isPausedFromRust
+    if (currentTrackIndex >= 0 && tracks[currentTrackIndex]) {
+      const currentTrack = tracks[currentTrackIndex]
+      console.log('[AUDIO-OUTPUT] Restarting playback on new device...', { wasPlaying, audioIsPlaying, isPausedFromRust })
+      showToast(`Sortie: ${deviceName}`)
+
+      // Sauvegarde la position actuelle (utilise le slider comme référence fiable)
+      const progressSlider = document.getElementById('progress')
+      let currentPosition = audioPositionFromRust
+      if (progressSlider && audioDurationFromRust > 0) {
+        currentPosition = (parseFloat(progressSlider.value) / 100) * audioDurationFromRust
+      }
+
+      try {
+        // Stoppe d'abord pour libérer le stream
+        await invoke('audio_stop').catch(() => {})
+
+        // Court délai pour laisser le temps au stream de se fermer
+        await new Promise(resolve => setTimeout(resolve, 100))
+
+        // Relance la lecture
+        await invoke('audio_play', { path: currentTrack.path })
+
+        // Seek à la position précédente après un court délai
+        if (currentPosition > 1) {
+          setTimeout(async () => {
+            try {
+              await invoke('audio_seek', { time: currentPosition })
+              console.log('[AUDIO-OUTPUT] Seeked to previous position:', currentPosition.toFixed(2))
+            } catch (e) {
+              console.error('[AUDIO-OUTPUT] Error seeking:', e)
+            }
+          }, 300)
+        }
+
+        // Si c'était en pause avant, remet en pause
+        if (!wasPlaying || isPausedFromRust) {
+          setTimeout(async () => {
+            try {
+              await invoke('audio_pause')
+              console.log('[AUDIO-OUTPUT] Restored pause state')
+            } catch (e) {
+              console.error('[AUDIO-OUTPUT] Error pausing:', e)
+            }
+          }, 400)
+        }
+
+        console.log('[AUDIO-OUTPUT] Playback restarted on new device')
+      } catch (playErr) {
+        console.error('[AUDIO-OUTPUT] Error restarting playback:', playErr)
+        showToast('Erreur lors du changement de sortie')
+      }
+    } else {
+      showToast(`Sortie audio: ${deviceName}`)
+    }
+  } catch (e) {
+    console.error('[AUDIO-OUTPUT] Error changing device:', e)
+    showToast('Erreur lors du changement de sortie audio')
+  }
+}
+
+// Charge l'état du mode exclusif
+async function loadExclusiveMode() {
+  console.log('[AUDIO-OUTPUT] Loading exclusive mode state...')
+  try {
+    const isExclusive = await invoke('is_exclusive_mode')
+    console.log('[AUDIO-OUTPUT] Exclusive mode is:', isExclusive)
+    exclusiveModeCheckbox.checked = isExclusive
+  } catch (e) {
+    console.error('[AUDIO-OUTPUT] Error loading exclusive mode:', e)
+  }
+}
+
+// Toggle le mode exclusif (Hog Mode)
+exclusiveModeCheckbox.addEventListener('change', async () => {
+  const newState = exclusiveModeCheckbox.checked
+  console.log('[AUDIO-OUTPUT] Toggling exclusive mode to:', newState)
+  console.log('[AUDIO-OUTPUT] Current device ID:', currentAudioDeviceId)
+  console.log('[AUDIO-OUTPUT] Audio is currently playing:', audioIsPlaying)
+
+  try {
+    console.log('[AUDIO-OUTPUT] Calling set_exclusive_mode...')
+    await invoke('set_exclusive_mode', { enabled: newState })
+    console.log('[AUDIO-OUTPUT] Exclusive mode changed successfully')
+
+    if (newState) {
+      // Le Hog Mode nécessite de relancer la lecture pour prendre effet
+      if (audioIsPlaying && currentTrackIndex >= 0) {
+        showToast('Mode exclusif activé - Relance de la lecture...')
+        // Relance le track actuel pour que le Hog Mode prenne effet
+        const currentTrack = tracks[currentTrackIndex]
+        if (currentTrack) {
+          console.log('[AUDIO-OUTPUT] Restarting playback for Hog Mode...')
+          try {
+            await invoke('audio_play', { path: currentTrack.path })
+            console.log('[AUDIO-OUTPUT] Playback restarted in exclusive mode')
+          } catch (playErr) {
+            console.error('[AUDIO-OUTPUT] Error restarting playback:', playErr)
+          }
+        }
+      } else {
+        showToast('Mode exclusif activé (bit-perfect)')
+      }
+    } else {
+      showToast('Mode exclusif désactivé')
+    }
+  } catch (e) {
+    console.error('[AUDIO-OUTPUT] Error changing exclusive mode:', e)
+    // Revert le checkbox
+    exclusiveModeCheckbox.checked = !newState
+    showToast('Erreur lors du changement de mode')
+  }
+})
+
 // === UTILITAIRES ===
 function formatTime(seconds) {
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
   return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+
+// Formate une durée d'album en heures et minutes
+function formatAlbumDuration(seconds) {
+  const hours = Math.floor(seconds / 3600)
+  const mins = Math.floor((seconds % 3600) / 60)
+  if (hours > 0) {
+    return `${hours}h${mins > 0 ? mins + 'm' : ''}`
+  }
+  return `${mins}m`
 }
 
 // === FILE D'ATTENTE (QUEUE) ===
@@ -4649,6 +5736,89 @@ document.addEventListener('DOMContentLoaded', initQueueListeners)
 // === MENU CONTEXTUEL ===
 let contextMenuTracks = []  // Tracks sélectionnées pour le menu contextuel
 let contextMenuTrackIndex = -1
+
+// Menu contextuel pour un album (clic droit sur le header du panel album)
+function showAlbumContextMenu(e, albumKey) {
+  e.preventDefault()
+
+  const album = albums[albumKey]
+  if (!album) return
+
+  // Supprime tout menu existant
+  document.querySelectorAll('.album-context-menu').forEach(m => m.remove())
+  hideContextMenu()
+
+  const menu = document.createElement('div')
+  menu.className = 'context-menu album-context-menu'
+  menu.innerHTML = `
+    <button class="context-menu-item" data-action="play-album">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      <span>Lecture de l'album</span>
+    </button>
+    <button class="context-menu-item" data-action="add-album-queue">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="M16 16l-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
+      </svg>
+      <span>Ajouter à la file d'attente</span>
+    </button>
+    <div class="context-menu-separator"></div>
+    <button class="context-menu-item" data-action="create-playlist-from-album">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 5v14"/><path d="M5 12h14"/>
+      </svg>
+      <span>Créer une playlist avec cet album</span>
+    </button>
+  `
+
+  // Position
+  menu.style.left = `${e.clientX}px`
+  menu.style.top = `${e.clientY}px`
+  document.body.appendChild(menu)
+
+  // Actions
+  menu.querySelector('[data-action="play-album"]').addEventListener('click', () => {
+    playAlbum(albumKey)
+    menu.remove()
+  })
+
+  menu.querySelector('[data-action="add-album-queue"]').addEventListener('click', () => {
+    album.tracks.forEach(track => addToQueue(track))
+    showQueueNotification(`${album.tracks.length} titres ajoutés à la file`)
+    menu.remove()
+  })
+
+  menu.querySelector('[data-action="create-playlist-from-album"]').addEventListener('click', async () => {
+    // Crée une nouvelle playlist avec le nom "Artiste - Album"
+    const playlistName = `${album.artist} - ${album.album}`
+
+    try {
+      const newPlaylist = await invoke('create_playlist', { name: playlistName })
+      playlists.push(newPlaylist)
+      updatePlaylistsSidebar()
+
+      // Ajoute tous les tracks de l'album
+      for (const track of album.tracks) {
+        await addTrackToPlaylist(newPlaylist.id, track)
+      }
+
+      showToast(`Playlist "${playlistName}" créée avec ${album.tracks.length} titres`)
+    } catch (e) {
+      console.error('Erreur création playlist:', e)
+      showToast('Erreur lors de la création de la playlist')
+    }
+
+    menu.remove()
+  })
+
+  // Ferme au clic ailleurs
+  const closeHandler = (ev) => {
+    if (!ev.target.closest('.album-context-menu')) {
+      menu.remove()
+      document.removeEventListener('click', closeHandler)
+    }
+  }
+  setTimeout(() => document.addEventListener('click', closeHandler), 0)
+}
 
 // Affiche le menu contextuel (avec support multi-sélection)
 function showContextMenu(e, track, trackIndex) {
@@ -5577,6 +6747,9 @@ async function deletePlaylist(playlistId) {
 
 // === MENU CONTEXTUEL PLAYLIST (clic droit sur une playlist) ===
 function showPlaylistContextMenu(e, playlist) {
+  // Supprime tous les menus contextuels playlist existants (évite les doublons)
+  document.querySelectorAll('.playlist-context-menu').forEach(m => m.remove())
+
   // Crée un menu contextuel temporaire pour la playlist
   hideContextMenu()
 
@@ -6039,3 +7212,467 @@ function initPlaylistListeners() {
 // Initialise au chargement du DOM
 document.addEventListener('DOMContentLoaded', initPlaylistListeners)
 document.addEventListener('DOMContentLoaded', initCustomDragSystem)
+
+// === RACCOURCIS CLAVIER GLOBAUX ===
+// Ces raccourcis fonctionnent même quand l'application n'est pas au focus
+
+let globalShortcutsRegistered = false
+
+async function initGlobalShortcuts() {
+  // Évite d'enregistrer plusieurs fois
+  if (globalShortcutsRegistered) return
+
+  try {
+    const { register, unregisterAll } = window.__TAURI__.globalShortcut
+
+    // D'abord désenregistre tous les raccourcis existants
+    await unregisterAll()
+
+    // Play/Pause : MediaPlayPause ou Cmd/Ctrl+Space
+    try {
+      await register('MediaPlayPause', () => {
+        console.log('[SHORTCUT] MediaPlayPause triggered')
+        togglePlay()
+      })
+      console.log('[SHORTCUTS] MediaPlayPause registered')
+    } catch (e) {
+      console.log('[SHORTCUTS] MediaPlayPause not available, trying Ctrl+Space')
+      try {
+        // Fallback : Cmd+Space sur Mac, Ctrl+Space sur Windows/Linux
+        const playPauseKey = navigator.platform.includes('Mac') ? 'Cmd+Shift+P' : 'Ctrl+Shift+P'
+        await register(playPauseKey, () => {
+          console.log('[SHORTCUT] Play/Pause triggered')
+          togglePlay()
+        })
+        console.log(`[SHORTCUTS] ${playPauseKey} registered for Play/Pause`)
+      } catch (e2) {
+        console.warn('[SHORTCUTS] Could not register play/pause shortcut:', e2)
+      }
+    }
+
+    // Track suivante : MediaTrackNext ou Cmd/Ctrl+Right
+    try {
+      await register('MediaTrackNext', () => {
+        console.log('[SHORTCUT] MediaTrackNext triggered')
+        playNextTrack()
+      })
+      console.log('[SHORTCUTS] MediaTrackNext registered')
+    } catch (e) {
+      try {
+        const nextKey = navigator.platform.includes('Mac') ? 'Cmd+Shift+Right' : 'Ctrl+Shift+Right'
+        await register(nextKey, () => {
+          console.log('[SHORTCUT] Next track triggered')
+          playNextTrack()
+        })
+        console.log(`[SHORTCUTS] ${nextKey} registered for Next`)
+      } catch (e2) {
+        console.warn('[SHORTCUTS] Could not register next track shortcut:', e2)
+      }
+    }
+
+    // Track précédente : MediaTrackPrevious ou Cmd/Ctrl+Left
+    try {
+      await register('MediaTrackPrevious', () => {
+        console.log('[SHORTCUT] MediaTrackPrevious triggered')
+        playPreviousTrack()
+      })
+      console.log('[SHORTCUTS] MediaTrackPrevious registered')
+    } catch (e) {
+      try {
+        const prevKey = navigator.platform.includes('Mac') ? 'Cmd+Shift+Left' : 'Ctrl+Shift+Left'
+        await register(prevKey, () => {
+          console.log('[SHORTCUT] Previous track triggered')
+          playPreviousTrack()
+        })
+        console.log(`[SHORTCUTS] ${prevKey} registered for Previous`)
+      } catch (e2) {
+        console.warn('[SHORTCUTS] Could not register previous track shortcut:', e2)
+      }
+    }
+
+    // Volume Up : MediaVolumeUp ou Cmd/Ctrl+Up
+    try {
+      await register('MediaVolumeUp', () => {
+        console.log('[SHORTCUT] MediaVolumeUp triggered')
+        adjustVolume(0.1)
+      })
+      console.log('[SHORTCUTS] MediaVolumeUp registered')
+    } catch (e) {
+      try {
+        const volUpKey = navigator.platform.includes('Mac') ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up'
+        await register(volUpKey, () => {
+          console.log('[SHORTCUT] Volume up triggered')
+          adjustVolume(0.1)
+        })
+        console.log(`[SHORTCUTS] ${volUpKey} registered for Volume Up`)
+      } catch (e2) {
+        console.warn('[SHORTCUTS] Could not register volume up shortcut:', e2)
+      }
+    }
+
+    // Volume Down : MediaVolumeDown ou Cmd/Ctrl+Down
+    try {
+      await register('MediaVolumeDown', () => {
+        console.log('[SHORTCUT] MediaVolumeDown triggered')
+        adjustVolume(-0.1)
+      })
+      console.log('[SHORTCUTS] MediaVolumeDown registered')
+    } catch (e) {
+      try {
+        const volDownKey = navigator.platform.includes('Mac') ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down'
+        await register(volDownKey, () => {
+          console.log('[SHORTCUT] Volume down triggered')
+          adjustVolume(-0.1)
+        })
+        console.log(`[SHORTCUTS] ${volDownKey} registered for Volume Down`)
+      } catch (e2) {
+        console.warn('[SHORTCUTS] Could not register volume down shortcut:', e2)
+      }
+    }
+
+    // Mute : MediaMute ou Cmd/Ctrl+M
+    try {
+      await register('MediaMute', () => {
+        console.log('[SHORTCUT] MediaMute triggered')
+        toggleMute()
+      })
+      console.log('[SHORTCUTS] MediaMute registered')
+    } catch (e) {
+      try {
+        const muteKey = navigator.platform.includes('Mac') ? 'Cmd+Shift+M' : 'Ctrl+Shift+M'
+        await register(muteKey, () => {
+          console.log('[SHORTCUT] Mute triggered')
+          toggleMute()
+        })
+        console.log(`[SHORTCUTS] ${muteKey} registered for Mute`)
+      } catch (e2) {
+        console.warn('[SHORTCUTS] Could not register mute shortcut:', e2)
+      }
+    }
+
+    globalShortcutsRegistered = true
+    console.log('[SHORTCUTS] Global shortcuts initialized successfully')
+
+  } catch (error) {
+    console.error('[SHORTCUTS] Error initializing global shortcuts:', error)
+  }
+}
+
+// Ajuste le volume de façon relative (delta en pourcentage 0-1)
+function adjustVolume(delta) {
+  // volumeBar utilise une échelle 0-100
+  const currentVolumePercent = volumeBar ? parseFloat(volumeBar.value) : 100
+  const deltaPercent = delta * 100 // Convertit delta 0-1 vers 0-100
+  const newVolumePercent = Math.max(0, Math.min(100, currentVolumePercent + deltaPercent))
+  const newVolumeNormalized = newVolumePercent / 100 // Pour Rust (0-1)
+
+  if (volumeBar) {
+    volumeBar.value = newVolumePercent
+    updateVolumeIcon(newVolumeNormalized)
+  }
+
+  // Envoie au backend Rust (attend 0-1)
+  invoke('audio_set_volume', { volume: newVolumeNormalized }).catch(console.error)
+
+  // Feedback visuel
+  showToast(`Volume: ${Math.round(newVolumePercent)}%`)
+}
+
+// Toggle mute (utilise lastVolume qui est déjà défini globalement)
+function toggleMute() {
+  const currentVolumePercent = volumeBar ? parseFloat(volumeBar.value) : 100
+
+  if (currentVolumePercent > 0) {
+    // Mute
+    lastVolume = currentVolumePercent
+    if (volumeBar) {
+      volumeBar.value = 0
+      updateVolumeIcon(0)
+    }
+    invoke('audio_set_volume', { volume: 0 }).catch(console.error)
+    showToast('Volume: Muet')
+  } else {
+    // Unmute
+    const restorePercent = lastVolume || 100
+    if (volumeBar) {
+      volumeBar.value = restorePercent
+      updateVolumeIcon(restorePercent / 100)
+    }
+    invoke('audio_set_volume', { volume: restorePercent / 100 }).catch(console.error)
+    showToast(`Volume: ${Math.round(restorePercent)}%`)
+  }
+}
+
+// Initialise les raccourcis au chargement
+document.addEventListener('DOMContentLoaded', initGlobalShortcuts)
+
+// === RACCOURCIS CLAVIER LOCAUX (quand l'app est au focus) ===
+// Ces raccourcis marchent quand la fenêtre est active
+
+function initLocalKeyboardShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    // Ignore si on est dans un champ de texte
+    if (e.target.matches('input, textarea, [contenteditable]')) return
+
+    // Utilise e.key pour les lettres (compatible AZERTY/QWERTY)
+    const key = e.key.toLowerCase()
+
+    switch (e.code) {
+      case 'Space':
+        // Space = Play/Pause (seulement si pas dans un input)
+        e.preventDefault()
+        togglePlay()
+        break
+
+      case 'ArrowRight':
+        if (e.metaKey || e.ctrlKey) {
+          // Cmd/Ctrl + Right = Next track
+          e.preventDefault()
+          playNextTrack()
+        } else if (e.shiftKey) {
+          // Shift + Right = Seek forward 10s
+          e.preventDefault()
+          seekRelative(10)
+        }
+        break
+
+      case 'ArrowLeft':
+        if (e.metaKey || e.ctrlKey) {
+          // Cmd/Ctrl + Left = Previous track
+          e.preventDefault()
+          playPreviousTrack()
+        } else if (e.shiftKey) {
+          // Shift + Left = Seek backward 10s
+          e.preventDefault()
+          seekRelative(-10)
+        }
+        break
+
+      case 'ArrowUp':
+        if (e.shiftKey) {
+          // Shift + Up = Volume up
+          e.preventDefault()
+          adjustVolume(0.05)
+        }
+        break
+
+      case 'ArrowDown':
+        if (e.shiftKey) {
+          // Shift + Down = Volume down
+          e.preventDefault()
+          adjustVolume(-0.05)
+        }
+        break
+
+      case 'Escape':
+        // Escape = Close any open panel/modal
+        e.preventDefault()
+        closeAllPanels()
+        break
+    }
+
+    // Gère les lettres par leur caractère (compatible AZERTY/QWERTY)
+    // Ignore si un modifier est appuyé (sauf Shift pour les majuscules)
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+
+    switch (key) {
+      case 'm':
+        // M = Toggle mute
+        e.preventDefault()
+        toggleMute()
+        break
+
+      case 'r':
+        // R = Cycle repeat mode
+        e.preventDefault()
+        cycleRepeatMode()
+        break
+
+      case 's':
+        // S = Toggle shuffle
+        e.preventDefault()
+        toggleShuffleMode()
+        break
+
+      case 'l':
+        // L = Toggle like/favorite current track
+        e.preventDefault()
+        toggleFavoriteFromKeyboard()
+        break
+    }
+  })
+}
+
+// Toggle favori depuis le raccourci clavier (sans élément bouton)
+async function toggleFavoriteFromKeyboard() {
+  if (currentTrackIndex < 0 || !tracks[currentTrackIndex]) {
+    showToast('Aucun morceau en cours')
+    return
+  }
+
+  const trackPath = tracks[currentTrackIndex].path
+  const trackTitle = tracks[currentTrackIndex].metadata?.title || tracks[currentTrackIndex].name
+
+  try {
+    const isNowFavorite = await invoke('toggle_favorite', { trackPath })
+
+    // Met à jour le Set local
+    if (isNowFavorite) {
+      favoriteTracks.add(trackPath)
+      showToast(`"${trackTitle}" ajouté aux favoris ❤️`)
+      // Affiche l'animation du cœur sur la pochette du player
+      showHeartAnimation()
+    } else {
+      favoriteTracks.delete(trackPath)
+      showToast(`"${trackTitle}" retiré des favoris`)
+    }
+
+    // Met à jour l'icône dans le player si visible
+    updatePlayerFavoriteIcon(trackPath, isNowFavorite)
+
+    // Recharge les playlists pour mettre à jour le compteur
+    await loadPlaylists()
+  } catch (err) {
+    console.error('Erreur toggle favorite:', err)
+    showToast('Erreur lors du changement de favori')
+  }
+}
+
+// Affiche l'animation du cœur qui s'envole sur la pochette du player
+function showHeartAnimation() {
+  const coverArt = document.getElementById('cover-art')
+  if (!coverArt) return
+
+  // Crée l'élément cœur avec SVG blanc
+  const heart = document.createElement('div')
+  heart.className = 'like-heart-animation'
+  heart.innerHTML = `<svg width="32" height="32" viewBox="0 0 24 24" fill="#fff" stroke="none">
+    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+  </svg>`
+
+  // Ajoute au parent de la cover (pour le positionnement relatif)
+  const coverContainer = coverArt.closest('.cover-art') || coverArt.parentElement
+  if (coverContainer) {
+    coverContainer.style.position = 'relative'
+    coverContainer.appendChild(heart)
+
+    // Supprime après l'animation
+    setTimeout(() => {
+      heart.remove()
+    }, 800)
+  }
+}
+
+// Met à jour l'icône favori dans le player
+function updatePlayerFavoriteIcon(trackPath, isFavorite) {
+  // Trouve tous les boutons favoris visibles pour ce track
+  const buttons = document.querySelectorAll(`.btn-favorite[data-track-path="${trackPath}"]`)
+  buttons.forEach(btn => {
+    btn.classList.toggle('active', isFavorite)
+    const svg = btn.querySelector('svg')
+    if (svg) {
+      svg.setAttribute('fill', isFavorite ? 'currentColor' : 'none')
+    }
+  })
+}
+
+// Ferme tous les panneaux ouverts
+function closeAllPanels() {
+  // Ferme le détail d'album
+  if (typeof closeAlbumDetail === 'function') {
+    closeAlbumDetail()
+  }
+
+  // Ferme le context menu
+  if (typeof hideContextMenu === 'function') {
+    hideContextMenu()
+  }
+
+  // Ferme les menus de playlist
+  document.querySelectorAll('.playlist-context-menu').forEach(m => m.remove())
+
+  // Ferme le menu de sortie audio
+  const audioOutputMenu = document.getElementById('audio-output-menu')
+  if (audioOutputMenu && !audioOutputMenu.classList.contains('hidden')) {
+    audioOutputMenu.classList.add('hidden')
+    const audioOutputBtn = document.getElementById('audio-output-btn')
+    if (audioOutputBtn) audioOutputBtn.classList.remove('active')
+  }
+
+  // Ferme le modal de playlist
+  const playlistModal = document.getElementById('playlist-modal')
+  if (playlistModal && !playlistModal.classList.contains('hidden')) {
+    playlistModal.classList.add('hidden')
+  }
+}
+
+// Seek relatif en secondes
+function seekRelative(seconds) {
+  // Utilise la position actuelle du slider de progression (plus fiable)
+  const progressSlider = document.getElementById('progress')
+  let currentPos = audioPositionFromRust
+
+  // Si le slider existe, utilise sa valeur comme référence
+  if (progressSlider && audioDurationFromRust > 0) {
+    currentPos = (parseFloat(progressSlider.value) / 100) * audioDurationFromRust
+  }
+
+  const newPosition = Math.max(0, Math.min(audioDurationFromRust, currentPos + seconds))
+  console.log('[SEEK] Seeking from', currentPos.toFixed(2), 'to', newPosition.toFixed(2), '(delta:', seconds, ')')
+
+  invoke('audio_seek', { time: newPosition }).catch(err => {
+    console.error('[SEEK] Error:', err)
+  })
+}
+
+// Cycle repeat mode (off -> all -> one -> off)
+function cycleRepeatMode() {
+  const modes = ['off', 'all', 'one']
+  const currentIndex = modes.indexOf(repeatMode)
+  const nextIndex = (currentIndex + 1) % modes.length
+  repeatMode = modes[nextIndex]
+
+  // Met à jour l'UI
+  if (repeatBtn) {
+    updateRepeatButtonUI()
+  }
+
+  // Feedback
+  const labels = { off: 'Répétition désactivée', all: 'Répéter tout', one: 'Répéter un' }
+  showToast(labels[repeatMode])
+}
+
+// Toggle shuffle mode (cycle: off -> album -> library -> off)
+function toggleShuffleMode() {
+  // Reset le shuffle history quand on change de mode
+  shufflePlayedTracks.clear()
+
+  // Cycle entre les modes
+  if (shuffleMode === 'off') {
+    shuffleMode = 'album'
+    if (shuffleBtn) {
+      shuffleBtn.classList.add('active')
+      shuffleBtn.textContent = '⤮ᴬ'
+      shuffleBtn.title = 'Aléatoire (Album)'
+    }
+    showToast('Lecture aléatoire (Album)')
+  } else if (shuffleMode === 'album') {
+    shuffleMode = 'library'
+    if (shuffleBtn) {
+      shuffleBtn.textContent = '⤮∞'
+      shuffleBtn.title = 'Aléatoire (Bibliothèque)'
+    }
+    showToast('Lecture aléatoire (Bibliothèque)')
+  } else {
+    shuffleMode = 'off'
+    if (shuffleBtn) {
+      shuffleBtn.classList.remove('active')
+      shuffleBtn.textContent = '⤮'
+      shuffleBtn.title = 'Aléatoire'
+    }
+    showToast('Lecture aléatoire désactivée')
+  }
+}
+
+// Initialise les raccourcis locaux
+document.addEventListener('DOMContentLoaded', initLocalKeyboardShortcuts)
