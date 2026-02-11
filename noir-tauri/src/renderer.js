@@ -1390,6 +1390,13 @@ function displayAlbumPage(albumKey) {
       prepareCustomDrag(e, track, trackItem)
     })
 
+    // Menu contextuel (clic droit)
+    trackItem.addEventListener('contextmenu', (e) => {
+      e.preventDefault()
+      const globalIndex = tracks.findIndex(t => t.path === track.path)
+      showContextMenu(e, track, globalIndex)
+    })
+
     tracksContainer.appendChild(trackItem)
   })
 
@@ -5336,10 +5343,43 @@ async function loadExclusiveMode() {
     const isExclusive = await invoke('is_exclusive_mode')
     console.log('[AUDIO-OUTPUT] Exclusive mode is:', isExclusive)
     exclusiveModeCheckbox.checked = isExclusive
+    updateHogModeStatus(isExclusive)
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error loading exclusive mode:', e)
   }
 }
+
+// Met à jour l'affichage du statut Hog Mode
+function updateHogModeStatus(isActive) {
+  const statusEl = document.getElementById('hog-mode-status')
+  if (statusEl) {
+    statusEl.textContent = isActive ? 'Actif' : 'Désactivé'
+    statusEl.classList.toggle('active', isActive)
+  }
+}
+
+// Initialise le tooltip Hog Mode
+function initHogModeTooltip() {
+  const infoBtn = document.getElementById('hog-mode-info-btn')
+  const tooltip = document.getElementById('hog-mode-tooltip')
+
+  if (infoBtn && tooltip) {
+    infoBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      tooltip.classList.toggle('visible')
+    })
+
+    // Ferme le tooltip en cliquant ailleurs
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.hog-mode-container')) {
+        tooltip.classList.remove('visible')
+      }
+    })
+  }
+}
+
+// Initialise au chargement
+document.addEventListener('DOMContentLoaded', initHogModeTooltip)
 
 // Toggle le mode exclusif (Hog Mode)
 exclusiveModeCheckbox.addEventListener('change', async () => {
@@ -5352,6 +5392,9 @@ exclusiveModeCheckbox.addEventListener('change', async () => {
     console.log('[AUDIO-OUTPUT] Calling set_exclusive_mode...')
     await invoke('set_exclusive_mode', { enabled: newState })
     console.log('[AUDIO-OUTPUT] Exclusive mode changed successfully')
+
+    // Met à jour le statut visuel
+    updateHogModeStatus(newState)
 
     if (newState) {
       // Le Hog Mode nécessite de relancer la lecture pour prendre effet
@@ -5376,8 +5419,9 @@ exclusiveModeCheckbox.addEventListener('change', async () => {
     }
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error changing exclusive mode:', e)
-    // Revert le checkbox
+    // Revert le checkbox et le statut
     exclusiveModeCheckbox.checked = !newState
+    updateHogModeStatus(!newState)
     showToast('Erreur lors du changement de mode')
   }
 })
@@ -6003,6 +6047,23 @@ function goToTrackArtist(track) {
 
 // === PANEL INFORMATIONS TRACK ===
 
+// Détecte les doublons d'un track dans la bibliothèque
+function findTrackDuplicates(track) {
+  const meta = track.metadata || {}
+  const title = (meta.title || track.name || '').toLowerCase().trim()
+  const artist = (meta.artist || '').toLowerCase().trim()
+
+  if (!title) return []
+
+  return tracks.filter(t => {
+    if (t.path === track.path) return false // Exclut le track lui-même
+    const tMeta = t.metadata || {}
+    const tTitle = (tMeta.title || t.name || '').toLowerCase().trim()
+    const tArtist = (tMeta.artist || '').toLowerCase().trim()
+    return tTitle === title && tArtist === artist
+  })
+}
+
 // Affiche le panel d'informations pour un track
 async function showTrackInfoPanel(track) {
   const panel = document.getElementById('track-info-panel')
@@ -6038,6 +6099,10 @@ async function showTrackInfoPanel(track) {
   // Qualité audio
   const quality = formatQuality(meta, track.path)
 
+  // Détecte les doublons
+  const duplicates = findTrackDuplicates(track)
+  const hasDuplicates = duplicates.length > 0
+
   // Icône de qualité
   const qualityIcon = quality.class === 'quality-hires'
     ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>'
@@ -6049,8 +6114,11 @@ async function showTrackInfoPanel(track) {
   let html = `
     <div class="track-info-artwork-section">
       <div class="track-info-artwork-container">
+        <div class="track-info-artwork-loader" id="track-info-artwork-loader">
+          <div class="artwork-spinner"></div>
+        </div>
         <img class="track-info-artwork" id="track-info-artwork-img" src="" alt="Artwork" style="display: none;">
-        <div class="track-info-artwork-placeholder" id="track-info-artwork-placeholder">
+        <div class="track-info-artwork-placeholder" id="track-info-artwork-placeholder" style="display: none;">
           <svg viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
           </svg>
@@ -6058,10 +6126,30 @@ async function showTrackInfoPanel(track) {
       </div>
     </div>
 
+    ${hasDuplicates ? `
+    <div class="track-info-duplicate-alert">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+      <span>${duplicates.length} doublon${duplicates.length > 1 ? 's' : ''} détecté${duplicates.length > 1 ? 's' : ''} dans la bibliothèque</span>
+    </div>
+    ` : ''}
+
     <div class="track-info-title-section">
       <h2 class="track-info-title">${escapeHtml(title)}</h2>
-      <p class="track-info-artist">${escapeHtml(artist)}</p>
-      <p class="track-info-album">${escapeHtml(album)}</p>
+      <p class="track-info-artist track-info-clickable" data-artist="${escapeHtml(artist)}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="track-info-link-icon">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+        </svg>
+        ${escapeHtml(artist)}
+      </p>
+      <p class="track-info-album track-info-clickable" data-album="${escapeHtml(album)}">
+        <svg viewBox="0 0 24 24" fill="currentColor" class="track-info-link-icon">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/>
+        </svg>
+        ${escapeHtml(album)}
+      </p>
       <div class="track-info-quality-badge ${quality.class}">
         ${qualityIcon}
         <span>${quality.label}</span>
@@ -6142,30 +6230,74 @@ async function showTrackInfoPanel(track) {
 
   content.innerHTML = html
 
-  // Charge l'artwork de façon asynchrone
+  // Ajoute les event listeners pour les liens cliquables
+  const artistLink = content.querySelector('.track-info-artist.track-info-clickable')
+  const albumLink = content.querySelector('.track-info-album.track-info-clickable')
+
+  if (artistLink) {
+    artistLink.addEventListener('click', () => {
+      const artistName = artistLink.dataset.artist
+      if (artistName && artists[artistName]) {
+        closeTrackInfoPanel()
+        showArtistAlbums(artistName)
+      }
+    })
+  }
+
+  if (albumLink) {
+    albumLink.addEventListener('click', () => {
+      const albumName = albumLink.dataset.album
+      if (albumName) {
+        const albumKey = Object.keys(albums).find(key => albums[key].album === albumName)
+        if (albumKey) {
+          closeTrackInfoPanel()
+          navigateToAlbumPage(albumKey)
+        }
+      }
+    })
+  }
+
+  // Charge l'artwork de façon asynchrone - FORCE le chargement
   const imgEl = document.getElementById('track-info-artwork-img')
   const placeholderEl = document.getElementById('track-info-artwork-placeholder')
+  const loaderEl = document.getElementById('track-info-artwork-loader')
 
-  if (imgEl && placeholderEl) {
+  if (imgEl && placeholderEl && loaderEl) {
+    // Affiche le loader pendant le chargement
+    loaderEl.style.display = 'flex'
+    imgEl.style.display = 'none'
+    placeholderEl.style.display = 'none'
+
     try {
-      // Tente d'abord le cache mémoire
-      if (coverCache.has(track.path)) {
-        imgEl.src = coverCache.get(track.path)
-        imgEl.style.display = 'block'
-        placeholderEl.style.display = 'none'
-      } else {
-        // Sinon, charge depuis le backend
-        const cover = await invoke('get_cover', { path: track.path })
-        if (cover) {
-          const src = `data:image/jpeg;base64,${cover}`
-          imgEl.src = src
+      // Force TOUJOURS le chargement depuis le backend pour garantir l'affichage
+      const cover = await invoke('get_cover', { path: track.path })
+
+      if (cover) {
+        const src = `data:image/jpeg;base64,${cover}`
+        imgEl.src = src
+        imgEl.onload = () => {
+          loaderEl.style.display = 'none'
           imgEl.style.display = 'block'
           placeholderEl.style.display = 'none'
-          coverCache.set(track.path, src)
         }
+        imgEl.onerror = () => {
+          loaderEl.style.display = 'none'
+          imgEl.style.display = 'none'
+          placeholderEl.style.display = 'flex'
+        }
+        // Met en cache
+        coverCache.set(track.path, src)
+      } else {
+        // Pas de cover, affiche le placeholder
+        loaderEl.style.display = 'none'
+        imgEl.style.display = 'none'
+        placeholderEl.style.display = 'flex'
       }
     } catch (e) {
       console.warn('Impossible de charger la pochette:', e)
+      loaderEl.style.display = 'none'
+      imgEl.style.display = 'none'
+      placeholderEl.style.display = 'flex'
     }
   }
 }

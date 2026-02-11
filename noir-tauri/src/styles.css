@@ -2840,29 +2840,238 @@ body.player-visible .app {
 }
 
 .audio-output-footer {
-  padding: 12px 16px;
+  padding: 14px 16px;
   border-top: 1px solid #333;
-  background: #151515;
+  background: linear-gradient(180deg, #151515 0%, #0d0d0d 100%);
 }
 
-.exclusive-mode-toggle {
+/* === HOG MODE TOGGLE === */
+.hog-mode-container {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  position: relative;
+}
+
+.hog-mode-toggle-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+/* Custom toggle switch */
+.hog-mode-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.hog-mode-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.hog-mode-slider {
+  position: absolute;
   cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 24px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hog-mode-slider::before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 2px;
+  bottom: 2px;
+  background: #666;
+  border-radius: 50%;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.hog-mode-switch input:checked + .hog-mode-slider {
+  background: linear-gradient(135deg, #0a4a2a 0%, #063d1f 100%);
+  border-color: #0d6b3a;
+}
+
+.hog-mode-switch input:checked + .hog-mode-slider::before {
+  transform: translateX(20px);
+  background: #22c55e;
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.5);
+}
+
+.hog-mode-switch:hover .hog-mode-slider {
+  border-color: #555;
+}
+
+.hog-mode-switch input:checked:hover + .hog-mode-slider {
+  border-color: #0f8a4a;
+}
+
+/* Labels */
+.hog-mode-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hog-mode-text {
   font-size: 12px;
+  font-weight: 500;
+  color: #ccc;
+  letter-spacing: 0.3px;
+}
+
+.hog-mode-status {
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  transition: color 0.3s ease;
+}
+
+.hog-mode-status.active {
+  color: #22c55e;
+}
+
+/* Info button */
+.hog-mode-info-btn {
+  background: transparent;
+  border: 1px solid #333;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.hog-mode-info-btn svg {
+  width: 14px;
+  height: 14px;
+  color: #555;
+  transition: color 0.2s ease;
+}
+
+.hog-mode-info-btn:hover {
+  border-color: #555;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.hog-mode-info-btn:hover svg {
   color: #888;
 }
 
-.exclusive-mode-toggle input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--color-accent, #0af);
-  cursor: pointer;
+/* Tooltip */
+.hog-mode-tooltip {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  right: 0;
+  width: 280px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 100;
 }
 
-.exclusive-mode-toggle:hover {
-  color: #ccc;
+.hog-mode-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.hog-mode-tooltip::after {
+  content: "";
+  position: absolute;
+  bottom: -8px;
+  right: 16px;
+  width: 14px;
+  height: 14px;
+  background: #1a1a1a;
+  border-right: 1px solid #333;
+  border-bottom: 1px solid #333;
+  transform: rotate(45deg);
+}
+
+.hog-mode-tooltip-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hog-mode-tooltip p {
+  font-size: 12px;
+  color: #999;
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+.hog-mode-tooltip ul {
+  margin: 0 0 14px;
+  padding-left: 16px;
+  list-style: none;
+}
+
+.hog-mode-tooltip li {
+  font-size: 11px;
+  color: #777;
+  line-height: 1.6;
+  position: relative;
+}
+
+.hog-mode-tooltip li::before {
+  content: "→";
+  position: absolute;
+  left: -16px;
+  color: #22c55e;
+}
+
+.hog-mode-tooltip-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.2);
+  border-radius: 8px;
+}
+
+.hog-mode-tooltip-warning svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: #ffc107;
+}
+
+.hog-mode-tooltip-warning span {
+  font-size: 11px;
+  color: #ffc107;
+  line-height: 1.4;
 }
 
 /* Scrollbar personnalisée */
@@ -3593,6 +3802,87 @@ body:not(.player-visible) .track-info-panel {
   background: rgba(0, 0, 0, 0.3);
   border-radius: 6px;
   border: 1px solid #1a1a1a;
+}
+
+/* Artwork loader */
+.track-info-artwork-loader {
+  width: 200px;
+  height: 200px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #1a1a1a 0%, #0d0d0d 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.artwork-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #222;
+  border-top-color: #555;
+  border-radius: 50%;
+  animation: artwork-spin 0.8s linear infinite;
+}
+
+@keyframes artwork-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Duplicate alert */
+.track-info-duplicate-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 20px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #3d2a00 0%, #2a1d00 100%);
+  border: 1px solid #5a4000;
+  border-radius: 8px;
+  color: #ffc107;
+  font-size: 12px;
+  font-weight: 500;
+  animation: duplicate-pulse 2s ease-in-out infinite;
+}
+
+.track-info-duplicate-alert svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  stroke: #ffc107;
+}
+
+@keyframes duplicate-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Clickable artist/album links */
+.track-info-clickable {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  border-radius: 6px;
+}
+
+.track-info-clickable:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+.track-info-link-icon {
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.track-info-clickable:hover .track-info-link-icon {
+  opacity: 0.7;
 }
 
 /* === SECTION PLAYLISTS SIDEBAR === */

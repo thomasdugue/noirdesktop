@@ -4,6 +4,35 @@ Historique cumulatif des développements, décisions d'architecture et bugs rés
 
 ---
 
+## [2025-02-11] Améliorations Panel Info + Toggle Hog Mode
+
+### Fonctionnalités
+
+- **Menu contextuel page Album** : Clic droit sur les tracks fonctionne maintenant
+- **Détection des doublons** : Alerte visuelle si un titre existe plusieurs fois dans la bibliothèque
+- **Liens cliquables** : Artiste et album dans le panel info sont maintenant cliquables (navigation directe)
+- **Loader artwork** : Spinner pendant le chargement de la pochette, force le chargement depuis le backend
+- **Toggle Hog Mode redessiné** : Switch iOS-style avec tooltip d'information détaillée
+
+### Design
+
+| Élément | Style |
+|---------|-------|
+| Toggle Hog Mode | Switch 44x24px, vert #22c55e actif, animation glow |
+| Tooltip | 280px, background #1a1a1a, warning box ambre |
+| Alerte doublon | Fond dégradé ambre, animation pulse |
+| Liens cliquables | Hover avec background subtil, icône apparaît |
+
+### Fichiers Modifiés
+
+```
+index.html    — Nouveau HTML toggle Hog Mode avec tooltip
+styles.css    — ~150 lignes : toggle switch, tooltip, alerte doublons, liens
+renderer.js   — findTrackDuplicates(), initHogModeTooltip(), updateHogModeStatus()
+```
+
+---
+
 ## [2025-02-11] Panel Informations Track
 
 ### Fonctionnalités
