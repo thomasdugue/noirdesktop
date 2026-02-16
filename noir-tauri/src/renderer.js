@@ -9,11 +9,12 @@ const { getCurrentWindow } = window.__TAURI__.window;
 document.addEventListener('DOMContentLoaded', () => {
   const titlebar = document.querySelector('.titlebar')
   if (titlebar) {
-    titlebar.addEventListener('mousedown', async (e) => {
+    titlebar.addEventListener('mousedown', (e) => {
       // Ne drag pas si on clique sur un bouton ou autre élément interactif
       if (e.target.closest('button, input, a, [data-no-drag]')) return
       // Démarre le drag de la fenêtre via Tauri
-      await getCurrentWindow().startDragging()
+      e.preventDefault()
+      getCurrentWindow().startDragging()
     })
   }
 })
@@ -56,7 +57,7 @@ function initCustomDragSystem() {
     pointer-events: none;
     z-index: 9999;
     background: #2a2a2a;
-    border: 1px solid #4a9;
+    border: 1px solid #fff;
     border-radius: 6px;
     padding: 8px 12px;
     font-size: 13px;
@@ -176,6 +177,20 @@ function initCustomDragSystem() {
     customDragState.trackElement = null
     customDragState.currentHighlightedPlaylist = null
   })
+
+  // === DRAG DEPUIS LE PLAYER ===
+  // Permet de glisser la track en cours de lecture vers une playlist
+  const playerLeft = document.querySelector('.player-left')
+  if (playerLeft) {
+    playerLeft.addEventListener('mousedown', (e) => {
+      // Ignore si on clique sur un bouton ou si pas de track en lecture
+      if (e.target.closest('button') || currentTrackIndex < 0) return
+      const currentTrack = tracks[currentTrackIndex]
+      if (!currentTrack) return
+      prepareCustomDrag(e, currentTrack, playerLeft)
+    })
+    playerLeft.style.cursor = 'grab'
+  }
 }
 
 // Prépare un drag custom pour une track (appelé sur mousedown)
@@ -208,6 +223,59 @@ function prepareAlbumDrag(e, albumKey, cardElement) {
   customDragState.startY = e.clientY
 
   return true
+}
+
+// === SCROLLBAR ALPHABÉTIQUE ===
+// Crée une barre de navigation alphabétique rapide pour les pages Artistes/Albums
+function createAlphabetScrollbar(container, items, getFirstLetter, scrollContainer) {
+  // Supprime la scrollbar existante si présente
+  const existing = document.querySelector('.alphabet-nav')
+  if (existing) existing.remove()
+
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ#'.split('')
+  const nav = document.createElement('div')
+  nav.className = 'alphabet-nav'
+
+  // Trouve quelles lettres ont des items
+  const letterSet = new Set()
+  items.forEach(item => {
+    const first = getFirstLetter(item).toUpperCase()
+    if (/[A-Z]/.test(first)) {
+      letterSet.add(first)
+    } else {
+      letterSet.add('#')
+    }
+  })
+
+  for (const letter of letters) {
+    const btn = document.createElement('button')
+    btn.textContent = letter
+    btn.className = 'alphabet-nav-btn'
+
+    // Grise les lettres sans items
+    if (!letterSet.has(letter)) {
+      btn.classList.add('disabled')
+    }
+
+    btn.addEventListener('click', () => {
+      // Trouve le premier item commençant par cette lettre
+      const target = items.find(item => {
+        const first = getFirstLetter(item).toUpperCase()
+        if (letter === '#') {
+          return !/[A-Z]/.test(first)
+        }
+        return first === letter
+      })
+
+      if (target && target.element) {
+        target.element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    })
+
+    nav.appendChild(btn)
+  }
+
+  container.appendChild(nav)
 }
 
 // === ÉLÉMENTS DE LA PAGE ===
@@ -280,6 +348,28 @@ const thumbnailCache = new Map()  // Cache des thumbnails { path: "noir://localh
 // Helper pour vérifier si une valeur est une image valide (data URI ou noir:// URL)
 function isValidImageSrc(src) {
   return src && (src.startsWith('data:image') || src.startsWith('noir://'))
+}
+
+// Helper pour charger une image depuis le cache avec gestion d'erreur
+function loadCachedImage(img, placeholder, cachedSrc) {
+  if (!img || !isValidImageSrc(cachedSrc)) return false
+
+  // Debug: log noir:// protocol usage
+  if (cachedSrc.startsWith('noir://')) {
+    console.log('[NOIR] Loading from protocol:', cachedSrc.substring(0, 60))
+  }
+
+  img.onload = () => {
+    img.style.display = 'block'
+    if (placeholder) placeholder.style.display = 'none'
+  }
+  img.onerror = () => {
+    console.warn('[COVER] Failed to load cached image:', cachedSrc)
+    img.style.display = 'none'
+    if (placeholder) placeholder.style.display = 'flex'
+  }
+  img.src = cachedSrc
+  return true
 }
 let metadataLoaded = false        // Indique si les métadonnées ont été chargées
 let trackAddedDates = {}          // Dates d'ajout des tracks { path: timestamp }
@@ -1179,34 +1269,44 @@ function displayCurrentView() {
     coverObserver.disconnect()
   }
 
-  // Vide le contenu immédiatement pour un feedback visuel instantané
-  // Utilise textContent = '' qui est plus rapide que innerHTML = '' pour le cleanup
-  albumsGridDiv.textContent = ''
-  albumsViewDiv.classList.remove('hidden')
+  // Transition fade-out rapide (100ms)
+  albumsGridDiv.classList.add('view-transitioning')
 
-  // Toggle la classe home-visible pour pauser les animations wave quand hors de la home
-  albumsViewDiv.classList.toggle('home-visible', currentView === 'home')
+  // Attend la fin du fade-out puis render le contenu
+  setTimeout(() => {
+    // Vide le contenu
+    albumsGridDiv.textContent = ''
+    albumsViewDiv.classList.remove('hidden')
 
-  switch (currentView) {
-    case 'home':
-      displayHomeView()
-      break
-    case 'albums':
-      displayAlbumsGrid()
-      break
-    case 'artists':
-      displayArtistsGrid()
-      break
-    case 'tracks':
-      displayTracksGrid()
-      break
-    case 'album-page':
-      displayAlbumPage(currentAlbumPageKey)
-      break
-    case 'artist-page':
-      displayArtistPage(currentArtistPageKey)
-      break
-  }
+    // Toggle la classe home-visible pour pauser les animations wave quand hors de la home
+    albumsViewDiv.classList.toggle('home-visible', currentView === 'home')
+
+    switch (currentView) {
+      case 'home':
+        displayHomeView()
+        break
+      case 'albums':
+        displayAlbumsGrid()
+        break
+      case 'artists':
+        displayArtistsGrid()
+        break
+      case 'tracks':
+        displayTracksGrid()
+        break
+      case 'album-page':
+        displayAlbumPage(currentAlbumPageKey)
+        break
+      case 'artist-page':
+        displayArtistPage(currentArtistPageKey)
+        break
+    }
+
+    // Fade-in après le render
+    requestAnimationFrame(() => {
+      albumsGridDiv.classList.remove('view-transitioning')
+    })
+  }, 80)  // 80ms pour le fade-out
 }
 
 // === HISTORIQUE DE NAVIGATION ===
@@ -1312,6 +1412,10 @@ function navigateBack() {
 function displayAlbumPage(albumKey) {
   const album = albums[albumKey]
   if (!album) return
+
+  // Supprime la scrollbar alphabétique sur la page album
+  const existingNav = document.querySelector('.alphabet-nav')
+  if (existingNav) existingNav.remove()
 
   // Note: albumsGridDiv est déjà vidé par displayCurrentView() ou navigateToAlbumPage()
 
@@ -1524,9 +1628,9 @@ searchInput.addEventListener('input', (e) => {
   searchDebounceTimer = setTimeout(() => {
     updateSearchResultsPanel(query)
 
-    // Si on est sur la vue "tracks", rafraîchit la liste filtrée
+    // Si on est sur la vue "tracks", rafraîchit la liste filtrée (sans reconstruire le DOM)
     if (currentView === 'tracks') {
-      displayTracksGrid()
+      updateTracksFilter()
     }
   }, 200)
 })
@@ -1574,24 +1678,7 @@ document.addEventListener('keydown', (e) => {
   if (isInputFocused) return
 
   switch (e.key) {
-    case ' ': // Espace : Play/Pause
-      e.preventDefault()
-      if (currentTrackIndex !== -1) {
-        if (!audioIsPlaying) {
-          invoke('audio_resume').catch((e) => {
-            console.error('audio_resume error:', e)
-          })
-          audioIsPlaying = true
-          playPauseBtn.textContent = '⏸'
-        } else {
-          invoke('audio_pause').catch((e) => {
-            console.error('audio_pause error:', e)
-          })
-          audioIsPlaying = false
-          playPauseBtn.textContent = '▶'
-        }
-      }
-      break
+    // Note: Space est géré dans initLocalKeyboardShortcuts() avec togglePlay()
 
     case 'ArrowLeft': // Flèche gauche : Track précédente ou restart
       e.preventDefault()
@@ -1653,7 +1740,7 @@ function updateSearchResultsPanel(query) {
 
   const q = query.toLowerCase()
   const results = { artists: [], albums: [], tracks: [] }
-  const maxResults = 5 // Max par catégorie
+  const maxResults = 10 // Max par catégorie
 
   // Recherche dans les artistes
   for (const artistName of Object.keys(artists)) {
@@ -1684,13 +1771,14 @@ function updateSearchResultsPanel(query) {
     }
   }
 
-  // Recherche dans les tracks
+  // Recherche dans les tracks (mot entier exact dans le titre uniquement)
   for (const track of tracks) {
     const title = (track.metadata?.title || track.name).toLowerCase()
-    const artist = (track.metadata?.artist || '').toLowerCase()
-    const albumName = (track.metadata?.album || '').toLowerCase()
+    // Sépare le titre en mots et cherche un match exact
+    const titleWords = title.split(/[\s\-_.,;:!?'"()\[\]{}]+/)
+    const hasExactMatch = titleWords.some(word => word === q)
 
-    if (title.includes(q) || artist.includes(q) || albumName.includes(q)) {
+    if (hasExactMatch) {
       // Trouve l'album pour la pochette
       const trackArtist = track.metadata?.artist || 'Inconnu'
       const trackAlbum = track.metadata?.album || 'Inconnu'
@@ -1825,9 +1913,8 @@ function handleSearchResultClick(item) {
 
   if (type === 'artist') {
     const artistName = item.dataset.artist
-    // Navigue vers la vue albums filtrée par cet artiste
-    filteredArtist = artistName
-    navigateTo('albums')
+    // Navigue vers la page artiste dédiée (avec photo, stats, albums)
+    navigateToArtistPage(artistName)
   } else if (type === 'album') {
     const albumKey = item.dataset.albumKey
     const album = albums[albumKey]
@@ -1913,7 +2000,7 @@ function loadThumbnailAsync(path, imgElement, artist = null, album = null) {
     if (thumbnailCache.has(path)) {
       PERF.thumbnailCacheHits++
       const thumb = thumbnailCache.get(path)
-      if (isValidImageSrc(thumb) && imgElement.isConnected) {
+      if (isValidImageSrc(thumb)) {
         imgElement.src = thumb
         imgElement.style.display = 'block'
       }
@@ -2220,6 +2307,11 @@ function escapeHtml(text) {
 async function displayHomeView() {
   // Note: albumsGridDiv est déjà vidé par displayCurrentView()
   // albumsViewDiv.classList.remove('hidden') aussi
+  albumsGridDiv.classList.remove('tracks-mode')  // Retire le mode tracks
+
+  // Supprime la scrollbar alphabétique si présente
+  const existingNav = document.querySelector('.alphabet-nav')
+  if (existingNav) existingNav.remove()
 
   // Utilise le cache si valide (évite les appels backend répétés)
   const now = Date.now()
@@ -2341,11 +2433,7 @@ async function displayHomeView() {
     if (img && placeholder) {
       // Vérifie d'abord le cache mémoire pour affichage instantané
       const cachedCover = coverCache.get(coverPath) || thumbnailCache.get(coverPath)
-      if (isValidImageSrc(cachedCover)) {
-        img.src = cachedCover
-        img.style.display = 'block'
-        placeholder.style.display = 'none'
-      } else {
+      if (!loadCachedImage(img, placeholder, cachedCover)) {
         // Sinon charge via la queue
         loadThumbnailAsync(coverPath, img, artist, album).then(() => {
           if (img.isConnected && img.style.display === 'block') {
@@ -2412,11 +2500,7 @@ async function displayHomeView() {
       const coverPath = (album && album.coverPath) ? album.coverPath : entry.path
       if (img && placeholder) {
         const cachedCover = coverCache.get(coverPath)
-        if (isValidImageSrc(cachedCover)) {
-          img.src = cachedCover
-          img.style.display = 'block'
-          placeholder.style.display = 'none'
-        } else {
+        if (!loadCachedImage(img, placeholder, cachedCover)) {
           loadThumbnailAsync(coverPath, img, entry.artist, entry.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
@@ -2493,11 +2577,7 @@ async function displayHomeView() {
         // Charge la pochette
         if (album.coverPath && img && placeholder) {
           const cachedCover = coverCache.get(album.coverPath)
-          if (isValidImageSrc(cachedCover)) {
-            img.src = cachedCover
-            img.style.display = 'block'
-            placeholder.style.display = 'none'
-          } else {
+          if (!loadCachedImage(img, placeholder, cachedCover)) {
             loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
               if (img.isConnected && img.style.display === 'block') {
                 placeholder.style.display = 'none'
@@ -2560,14 +2640,8 @@ async function displayHomeView() {
 
       // Charge la pochette - vérifie le cache d'abord pour affichage instantané
       if (album.coverPath && img && placeholder) {
-        // Si déjà en cache, affiche immédiatement (pas de flash)
         const cachedCover = coverCache.get(album.coverPath)
-        if (isValidImageSrc(cachedCover)) {
-          img.src = cachedCover
-          img.style.display = 'block'
-          placeholder.style.display = 'none'
-        } else {
-          // Sinon charge le thumbnail de manière asynchrone
+        if (!loadCachedImage(img, placeholder, cachedCover)) {
           loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
@@ -2683,11 +2757,7 @@ async function displayHomeView() {
       // Charge la pochette (cache d'abord pour affichage instantané)
       if (album.coverPath && img && placeholder) {
         const cachedCover = coverCache.get(album.coverPath)
-        if (isValidImageSrc(cachedCover)) {
-          img.src = cachedCover
-          img.style.display = 'block'
-          placeholder.style.display = 'none'
-        } else {
+        if (!loadCachedImage(img, placeholder, cachedCover)) {
           loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
@@ -2758,11 +2828,7 @@ async function displayHomeView() {
 
       if (album.coverPath && img && placeholder) {
         const cachedCover = coverCache.get(album.coverPath)
-        if (isValidImageSrc(cachedCover)) {
-          img.src = cachedCover
-          img.style.display = 'block'
-          placeholder.style.display = 'none'
-        } else {
+        if (!loadCachedImage(img, placeholder, cachedCover)) {
           loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
@@ -2834,11 +2900,7 @@ async function displayHomeView() {
 
       if (album.coverPath && img && placeholder) {
         const cachedCover = coverCache.get(album.coverPath)
-        if (isValidImageSrc(cachedCover)) {
-          img.src = cachedCover
-          img.style.display = 'block'
-          placeholder.style.display = 'none'
-        } else {
+        if (!loadCachedImage(img, placeholder, cachedCover)) {
           loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
@@ -2892,11 +2954,7 @@ async function displayHomeView() {
 
       if (album.coverPath && img && placeholder) {
         const cachedCover = coverCache.get(album.coverPath)
-        if (isValidImageSrc(cachedCover)) {
-          img.src = cachedCover
-          img.style.display = 'block'
-          placeholder.style.display = 'none'
-        } else {
+        if (!loadCachedImage(img, placeholder, cachedCover)) {
           loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
@@ -2946,7 +3004,8 @@ async function displayHomeView() {
           playPauseBtn.textContent = '⏸'
           playBtn.textContent = '⏸'
         } catch (err) {
-          console.error('audio_resume error:', err)
+          // Audio pas encore chargé (auto-resume) → lancer la lecture complète
+          playTrack(currentTrackIndex)
         }
       }
       return
@@ -2988,6 +3047,33 @@ async function displayHomeView() {
       const albumKey = carouselItem.dataset.albumKey
       if (albumKey && albums[albumKey]) {
         openAlbumFromHome(albumKey, albums[albumKey])
+      }
+      return
+    }
+  })
+
+  // DRAG & DROP DELEGATION - permet de drag les albums/tracks de la home vers playlists
+  homeContainer.addEventListener('mousedown', (e) => {
+    // Ignore si on clique sur un bouton
+    if (e.target.closest('button')) return
+
+    // Drag d'un album depuis un carousel
+    const carouselItem = e.target.closest('.carousel-item')
+    if (carouselItem) {
+      const albumKey = carouselItem.dataset.albumKey
+      if (albumKey && albums[albumKey]) {
+        prepareAlbumDrag(e, albumKey, carouselItem)
+      }
+      return
+    }
+
+    // Drag d'une track récente
+    const recentTrackItem = e.target.closest('.recent-track-item')
+    if (recentTrackItem) {
+      const trackPath = recentTrackItem.dataset.trackPath
+      const track = tracks.find(t => t.path === trackPath)
+      if (track) {
+        prepareCustomDrag(e, track, recentTrackItem)
       }
       return
     }
@@ -3101,7 +3187,12 @@ function openAlbumFromHome(albumKey, album) {
 function displayAlbumsGrid() {
   // Clear explicite du conteneur (peut être appelé récursivement depuis le menu de tri)
   albumsGridDiv.textContent = ''
+  albumsGridDiv.classList.remove('tracks-mode')  // Retire le mode tracks
   if (coverObserver) coverObserver.disconnect()
+
+  // Supprime la scrollbar alphabétique si présente
+  const existingNav = document.querySelector('.alphabet-nav')
+  if (existingNav) existingNav.remove()
 
   // Si on filtre par artiste, affiche un header avec bouton retour
   if (filteredArtist) {
@@ -3276,7 +3367,9 @@ function displayAlbumsGrid() {
 let artistSortMode = 'name-asc'
 
 function displayArtistsGrid() {
-  // Note: albumsGridDiv est déjà vidé par displayCurrentView()
+  // Clear explicite (nécessaire quand appelé directement depuis le menu de tri)
+  albumsGridDiv.textContent = ''
+  albumsGridDiv.classList.remove('tracks-mode')  // Retire le mode tracks
 
   // Header avec titre ET bouton de tri (icône)
   const headerDiv = document.createElement('div')
@@ -3359,6 +3452,9 @@ function displayArtistsGrid() {
     }
   })
 
+  // Collecte pour la scrollbar alphabétique
+  const alphabetItems = []
+
   for (const artistKey of sortedArtists) {
     const artist = artists[artistKey]
 
@@ -3403,9 +3499,26 @@ function displayArtistsGrid() {
     })
 
     gridContainer.appendChild(card)
+
+    // Ajoute à la liste pour la scrollbar alphabétique
+    alphabetItems.push({ name: artist.name, element: card })
   }
 
   albumsGridDiv.appendChild(gridContainer)
+
+  // Ajoute la scrollbar alphabétique si tri A-Z ou Z-A
+  if (artistSortMode === 'name-asc' || artistSortMode === 'name-desc') {
+    createAlphabetScrollbar(
+      document.body,
+      alphabetItems,
+      item => item.name.charAt(0),
+      albumsViewDiv
+    )
+  } else {
+    // Supprime la scrollbar si elle existe
+    const existingNav = document.querySelector('.alphabet-nav')
+    if (existingNav) existingNav.remove()
+  }
 }
 
 // Affiche les albums d'un artiste
@@ -3418,6 +3531,10 @@ function showArtistAlbums(artistKey) {
 function displayArtistPage(artistKey) {
   const artist = artists[artistKey]
   if (!artist) return
+
+  // Supprime la scrollbar alphabétique sur la page artiste individuelle
+  const existingNav = document.querySelector('.alphabet-nav')
+  if (existingNav) existingNav.remove()
 
   // Trouve tous les albums de cet artiste
   const artistAlbums = Object.keys(albums)
@@ -3510,10 +3627,15 @@ function displayArtistPage(artistKey) {
     }
   })
 
+  // Séparer les albums complets des tracks isolées (albums avec 1 seule track)
+  const fullAlbums = artistAlbums.filter(a => a.tracks.length > 1)
+  const looseTracks = artistAlbums.filter(a => a.tracks.length === 1).flatMap(a => a.tracks)
+
   // Grille des albums de l'artiste
   const albumsGrid = pageContainer.querySelector('.artist-albums-grid')
 
-  for (const albumData of artistAlbums) {
+  // Affiche les albums complets en grille
+  for (const albumData of fullAlbums) {
     const card = document.createElement('div')
     card.className = 'album-card'
     card.dataset.albumKey = albumData.key
@@ -3551,6 +3673,51 @@ function displayArtistPage(artistKey) {
     })
 
     albumsGrid.appendChild(card)
+  }
+
+  // Affiche les tracks isolées en liste (si présentes)
+  // NOTE: On affiche aussi cette section même si c'est la seule (pas d'albums complets)
+  if (looseTracks.length > 0) {
+    const looseSection = document.createElement('div')
+    looseSection.className = 'artist-loose-tracks-section'
+
+    // Titre différent si c'est la seule section
+    const sectionTitle = fullAlbums.length === 0 ? 'Titres' : 'Singles & Titres isolés'
+
+    looseSection.innerHTML = `
+      <h3 class="artist-loose-tracks-title">${sectionTitle}</h3>
+      <div class="artist-loose-tracks-list"></div>
+    `
+
+    const trackList = looseSection.querySelector('.artist-loose-tracks-list')
+
+    for (const track of looseTracks) {
+      const trackItem = document.createElement('div')
+      trackItem.className = 'artist-loose-track-item'
+
+      const title = track.metadata?.title || track.name
+      const album = track.metadata?.album || ''
+      const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : ''
+
+      trackItem.innerHTML = `
+        <span class="loose-track-title">${escapeHtml(title)}</span>
+        <span class="loose-track-album">${escapeHtml(album)}</span>
+        <span class="loose-track-duration">${duration}</span>
+      `
+
+      // Clic = lecture
+      trackItem.addEventListener('click', () => {
+        const globalIndex = tracks.findIndex(t => t.path === track.path)
+        if (globalIndex !== -1) {
+          playTrack(globalIndex)
+        }
+      })
+
+      trackList.appendChild(trackItem)
+    }
+
+    // Ajoute directement dans la grille pour qu'elle soit visible
+    albumsGrid.appendChild(looseSection)
   }
 
   albumsGridDiv.appendChild(pageContainer)
@@ -3778,6 +3945,13 @@ function displayTracksGrid() {
 
   // Clear explicite du conteneur (peut être appelé récursivement depuis le tri)
   albumsGridDiv.textContent = ''
+
+  // Active le mode tracks pour éviter double scrollbar
+  albumsGridDiv.classList.add('tracks-mode')
+
+  // Supprime la scrollbar alphabétique si présente
+  const existingNav = document.querySelector('.alphabet-nav')
+  if (existingNav) existingNav.remove()
 
   // Header avec titre
   const headerDiv = document.createElement('div')
@@ -4010,6 +4184,41 @@ function displayTracksGrid() {
   requestAnimationFrame(() => {
     updateVirtualScrollItems()
   })
+}
+
+// Mise à jour légère du filtre (recherche) sans reconstruction DOM
+// Évite de détruire le virtual scroll pendant la lecture audio
+function updateTracksFilter() {
+  // Fallback si le virtual scroll n'est pas initialisé
+  if (!virtualScrollState.scrollContainer || !virtualScrollState.scrollContainer.isConnected) {
+    displayTracksGrid()
+    return
+  }
+
+  // Recalcule les tracks filtrées
+  virtualScrollState.filteredTracks = getSortedAndFilteredTracks()
+  const totalTracks = virtualScrollState.filteredTracks.length
+
+  // Met à jour la hauteur du contenu virtuel (scrollbar)
+  if (virtualScrollState.contentContainer) {
+    virtualScrollState.contentContainer.style.height = (totalTracks * TRACK_ITEM_HEIGHT) + 'px'
+  }
+
+  // Met à jour le compteur de résultats si présent
+  const existingCount = document.querySelector('.search-results-count')
+  if (searchQuery && totalTracks < tracks.length) {
+    if (existingCount) {
+      existingCount.textContent = `${totalTracks} résultat${totalTracks > 1 ? 's' : ''}`
+    }
+  } else if (existingCount) {
+    existingCount.remove()
+  }
+
+  // Reset scroll position et force re-render
+  virtualScrollState.scrollContainer.scrollTop = 0
+  virtualScrollState.visibleStartIndex = -1
+  virtualScrollState.visibleEndIndex = -1
+  updateVirtualScrollItems()
 }
 
 // Formate la qualité audio
@@ -4470,8 +4679,28 @@ let lastToggleAction = null  // 'pause' ou 'resume' - pour éviter l'action inve
 
 // Fonction toggle play/pause (réutilisable par raccourcis clavier)
 async function togglePlay() {
-  // Si pas de track sélectionnée, ne fait rien
-  if (currentTrackIndex < 0 || !tracks[currentTrackIndex]) return
+  // Si pas de track sélectionnée, essayer de charger la dernière jouée ou la première
+  if (currentTrackIndex < 0 || !tracks[currentTrackIndex]) {
+    if (tracks.length === 0) return  // Pas de musique du tout
+
+    try {
+      // Essayer de récupérer la dernière track jouée
+      const lastPlayed = await invoke('get_last_played')
+      if (lastPlayed && lastPlayed.path) {
+        const index = tracks.findIndex(t => t.path === lastPlayed.path)
+        if (index >= 0) {
+          playTrack(index)
+          return
+        }
+      }
+    } catch (e) {
+      console.log('[togglePlay] Could not get last played:', e)
+    }
+
+    // Fallback : jouer la première track
+    playTrack(0)
+    return
+  }
 
   // Évite les appels multiples rapides (debounce strict)
   if (isTogglingPlayState) {
@@ -5098,7 +5327,7 @@ document.addEventListener('DOMContentLoaded', initRustAudioListeners)
 // Met à jour visuellement la barre de progression (couleur de remplissage)
 function updateProgressBarStyle(percent) {
   const clampedPercent = Math.min(Math.max(percent, 0), 100)
-  progressBar.style.background = `linear-gradient(to right, #1db954 0%, #1db954 ${clampedPercent}%, #333 ${clampedPercent}%, #333 100%)`
+  progressBar.style.background = `linear-gradient(to right, #fff 0%, #fff ${clampedPercent}%, #333 ${clampedPercent}%, #333 100%)`
 }
 
 // === SEEK DEBOUNCE ===
@@ -5548,8 +5777,8 @@ exclusiveModeCheckbox.addEventListener('change', async () => {
     await invoke('set_exclusive_mode', { enabled: newState })
     console.log('[AUDIO-OUTPUT] Exclusive mode changed successfully')
 
-    // Met à jour le statut visuel
-    updateHogModeStatus(newState)
+    // Met à jour le statut visuel (player + settings synchronisés)
+    updateHogModeUI(newState)
 
     if (newState) {
       // Le Hog Mode nécessite de relancer la lecture pour prendre effet
@@ -5576,7 +5805,7 @@ exclusiveModeCheckbox.addEventListener('change', async () => {
     console.error('[AUDIO-OUTPUT] Error changing exclusive mode:', e)
     // Revert le checkbox et le statut
     exclusiveModeCheckbox.checked = !newState
-    updateHogModeStatus(!newState)
+    updateHogModeUI(!newState)
     showToast('Erreur lors du changement de mode')
   }
 })
@@ -5675,6 +5904,11 @@ function updateQueueIndicators() {
 
 // Toggle le panel de la queue
 function toggleQueuePanel() {
+  if (!isQueuePanelOpen) {
+    // Ferme les autres panels avant d'ouvrir
+    if (isTrackInfoPanelOpen) closeTrackInfoPanel()
+    if (isSettingsPanelOpen) closeSettings()
+  }
   isQueuePanelOpen = !isQueuePanelOpen
   const panel = document.getElementById('queue-panel')
   const btn = document.getElementById('queue-btn')
@@ -6225,10 +6459,9 @@ async function showTrackInfoPanel(track) {
   const content = document.getElementById('track-info-content')
   if (!panel || !content) return
 
-  // Ferme le queue panel s'il est ouvert
-  if (isQueuePanelOpen) {
-    toggleQueuePanel()
-  }
+  // Ferme les autres panels avant d'ouvrir
+  if (isQueuePanelOpen) toggleQueuePanel()
+  if (isSettingsPanelOpen) closeSettings()
 
   trackInfoCurrentTrack = track
   isTrackInfoPanelOpen = true
@@ -6247,6 +6480,7 @@ async function showTrackInfoPanel(track) {
   const sampleRate = meta.sampleRate || null
   const bitrate = meta.bitrate || null
   const codec = meta.codec || null
+  const genre = meta.genre || null
 
   // Détermine le format de fichier depuis le path
   const fileExt = track.path ? track.path.split('.').pop().toUpperCase() : null
@@ -6312,50 +6546,45 @@ async function showTrackInfoPanel(track) {
     </div>
 
     <div class="track-info-specs">
-      <h4 class="track-info-specs-title">Caractéristiques Audio</h4>
       <div class="track-info-specs-grid">
-        ${sampleRate ? `
         <div class="track-info-spec">
-          <svg class="track-info-spec-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>
-          </svg>
-          <span class="track-info-spec-value">${formatSampleRate(sampleRate)}</span>
-          <span class="track-info-spec-label">Fréquence</span>
+          <span class="track-info-spec-label">Qualité</span>
+          <span class="track-info-spec-value">${quality.label}</span>
+        </div>
+        <div class="track-info-spec">
+          <span class="track-info-spec-label">Durée</span>
+          <span class="track-info-spec-value">${duration}</span>
+        </div>
+        ${fileExt ? `
+        <div class="track-info-spec">
+          <span class="track-info-spec-label">Format</span>
+          <span class="track-info-spec-value">${fileExt}${codec ? ` (${codec})` : ''}</span>
         </div>
         ` : ''}
-        ${bitDepth ? `
+        ${sampleRate ? `
         <div class="track-info-spec">
-          <svg class="track-info-spec-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M7 7h10"/><path d="M7 12h10"/><path d="M7 17h10"/>
-          </svg>
-          <span class="track-info-spec-value">${bitDepth}-bit</span>
-          <span class="track-info-spec-label">Profondeur</span>
+          <span class="track-info-spec-label">Fréquence</span>
+          <span class="track-info-spec-value">${formatSampleRate(sampleRate)}</span>
         </div>
         ` : ''}
         ${bitrate ? `
         <div class="track-info-spec">
-          <svg class="track-info-spec-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-          </svg>
-          <span class="track-info-spec-value">${Math.round(bitrate)} kbps</span>
           <span class="track-info-spec-label">Débit</span>
+          <span class="track-info-spec-value">${Math.round(bitrate)} kbps</span>
+        </div>
+        ` : ''}
+        ${bitDepth ? `
+        <div class="track-info-spec">
+          <span class="track-info-spec-label">Profondeur</span>
+          <span class="track-info-spec-value">${bitDepth}-bit</span>
         </div>
         ` : ''}
       </div>
     </div>
 
+    ${year || trackNum || genre ? `
     <div class="track-info-metadata">
       <div class="track-info-metadata-grid">
-        <div class="track-info-metadata-item">
-          <span class="track-info-metadata-label">Durée</span>
-          <span class="track-info-metadata-value">${duration}</span>
-        </div>
-        ${fileExt ? `
-        <div class="track-info-metadata-item">
-          <span class="track-info-metadata-label">Format</span>
-          <span class="track-info-metadata-value">${fileExt}</span>
-        </div>
-        ` : ''}
         ${year ? `
         <div class="track-info-metadata-item">
           <span class="track-info-metadata-label">Année</span>
@@ -6368,18 +6597,29 @@ async function showTrackInfoPanel(track) {
           <span class="track-info-metadata-value">${disc ? `${disc}-` : ''}${trackNum}</span>
         </div>
         ` : ''}
-        ${codec ? `
+        ${genre ? `
         <div class="track-info-metadata-item">
-          <span class="track-info-metadata-label">Codec</span>
-          <span class="track-info-metadata-value">${codec}</span>
+          <span class="track-info-metadata-label">Genre</span>
+          <span class="track-info-metadata-value">${escapeHtml(genre)}</span>
         </div>
         ` : ''}
       </div>
     </div>
+    ` : ''}
 
     <div class="track-info-file">
       <span class="track-info-metadata-label">Fichier</span>
       <div class="track-info-file-path">${escapeHtml(track.path || '')}</div>
+    </div>
+
+    <div class="track-info-actions">
+      <button class="track-info-refresh-btn" id="track-info-refresh-btn" title="Rafraîchir les métadonnées">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+          <path d="M21 3v5h-5"/>
+        </svg>
+        Rafraîchir les métadonnées
+      </button>
     </div>
   `
 
@@ -6412,6 +6652,33 @@ async function showTrackInfoPanel(track) {
     })
   }
 
+  // Event listener pour le bouton refresh métadonnées
+  const refreshBtn = document.getElementById('track-info-refresh-btn')
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      refreshBtn.disabled = true
+      refreshBtn.textContent = 'Actualisation...'
+      try {
+        const newMeta = await invoke('refresh_metadata', { path: track.path })
+        // Met à jour le track en mémoire
+        track.metadata = newMeta
+        // Met à jour aussi dans le tableau global tracks
+        const idx = tracks.findIndex(t => t.path === track.path)
+        if (idx >= 0) tracks[idx].metadata = newMeta
+        // Invalide le cache cover pour forcer le rechargement
+        coverCache.delete(track.path)
+        // Recharge le panel avec les nouvelles données
+        showTrackInfoPanel(track)
+        showToast('Métadonnées mises à jour')
+      } catch (e) {
+        console.error('Erreur refresh metadata:', e)
+        showToast('Erreur lors de la mise à jour')
+        refreshBtn.disabled = false
+        refreshBtn.textContent = 'Rafraîchir les métadonnées'
+      }
+    })
+  }
+
   // Charge l'artwork de façon asynchrone - FORCE le chargement
   const imgEl = document.getElementById('track-info-artwork-img')
   const placeholderEl = document.getElementById('track-info-artwork-placeholder')
@@ -6428,8 +6695,7 @@ async function showTrackInfoPanel(track) {
       const cover = await invoke('get_cover', { path: track.path })
 
       if (cover) {
-        const src = `data:image/jpeg;base64,${cover}`
-        imgEl.src = src
+        imgEl.src = cover
         imgEl.onload = () => {
           loaderEl.style.display = 'none'
           imgEl.style.display = 'block'
@@ -6441,7 +6707,7 @@ async function showTrackInfoPanel(track) {
           placeholderEl.style.display = 'flex'
         }
         // Met en cache
-        coverCache.set(track.path, src)
+        coverCache.set(track.path, cover)
       } else {
         // Pas de cover, affiche le placeholder
         loaderEl.style.display = 'none'
@@ -7977,6 +8243,13 @@ function initLocalKeyboardShortcuts() {
         break
     }
 
+    // Cmd+, = Settings (standard macOS)
+    if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+      e.preventDefault()
+      toggleSettings()
+      return
+    }
+
     // Gère les lettres par leur caractère (compatible AZERTY/QWERTY)
     // Ignore si un modifier est appuyé (sauf Shift pour les majuscules)
     if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -8110,6 +8383,11 @@ function closeAllPanels() {
   if (playlistModal && !playlistModal.classList.contains('hidden')) {
     playlistModal.classList.add('hidden')
   }
+
+  // Ferme les panneaux latéraux
+  if (isQueuePanelOpen) toggleQueuePanel()
+  if (isTrackInfoPanelOpen) closeTrackInfoPanel()
+  if (isSettingsPanelOpen) closeSettings()
 }
 
 // Seek relatif en secondes
@@ -8182,3 +8460,350 @@ function toggleShuffleMode() {
 
 // Initialise les raccourcis locaux
 document.addEventListener('DOMContentLoaded', initLocalKeyboardShortcuts)
+
+// === SIDEBAR RESIZE ===
+function initSidebarResize() {
+  const sidebar = document.querySelector('.sidebar')
+  const resizeHandle = document.getElementById('sidebar-resize-handle')
+
+  if (!sidebar || !resizeHandle) return
+
+  let isResizing = false
+  let startX = 0
+  let startWidth = 0
+
+  // Charge la largeur sauvegardée
+  const savedWidth = localStorage.getItem('sidebarWidth')
+  if (savedWidth) {
+    const width = parseInt(savedWidth, 10)
+    if (width >= 180 && width <= 400) {
+      sidebar.style.width = `${width}px`
+    }
+  }
+
+  resizeHandle.addEventListener('mousedown', (e) => {
+    isResizing = true
+    startX = e.clientX
+    startWidth = sidebar.offsetWidth
+    resizeHandle.classList.add('active')
+    document.body.classList.add('sidebar-resizing')
+    e.preventDefault()
+  })
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isResizing) return
+
+    const delta = e.clientX - startX
+    let newWidth = startWidth + delta
+
+    // Limites min/max
+    newWidth = Math.max(180, Math.min(400, newWidth))
+
+    sidebar.style.width = `${newWidth}px`
+  })
+
+  document.addEventListener('mouseup', () => {
+    if (isResizing) {
+      isResizing = false
+      resizeHandle.classList.remove('active')
+      document.body.classList.remove('sidebar-resizing')
+
+      // Sauvegarde la largeur
+      localStorage.setItem('sidebarWidth', sidebar.offsetWidth.toString())
+    }
+  })
+}
+
+document.addEventListener('DOMContentLoaded', initSidebarResize)
+
+// === PANNEAU PARAMÈTRES (SETTINGS) ===
+let isSettingsPanelOpen = false
+
+function openSettings() {
+  const panel = document.getElementById('settings-panel')
+  if (!panel) return
+
+  // Ferme les autres panels
+  if (isQueuePanelOpen) toggleQueuePanel()
+  if (isTrackInfoPanelOpen) closeTrackInfoPanel()
+
+  isSettingsPanelOpen = true
+  panel.classList.add('open')
+
+  // Peuple les données
+  populateSettingsAudioDevices()
+  populateSettingsLibraryPaths()
+  populateSettingsValues()
+}
+
+function closeSettings() {
+  const panel = document.getElementById('settings-panel')
+  if (!panel) return
+  isSettingsPanelOpen = false
+  panel.classList.remove('open')
+}
+
+function toggleSettings() {
+  if (isSettingsPanelOpen) {
+    closeSettings()
+  } else {
+    openSettings()
+  }
+}
+
+// Peuple le select des périphériques audio dans les settings
+async function populateSettingsAudioDevices() {
+  const select = document.getElementById('settings-audio-device')
+  if (!select) return
+
+  try {
+    const devices = await invoke('get_audio_devices')
+    const currentDevice = await invoke('get_current_audio_device')
+    const currentId = currentDevice?.id || null
+
+    select.innerHTML = ''
+    for (const device of devices) {
+      const option = document.createElement('option')
+      option.value = device.id
+      option.textContent = device.name
+      if (device.id === currentId) option.selected = true
+      select.appendChild(option)
+    }
+  } catch (e) {
+    console.error('[SETTINGS] Error loading audio devices:', e)
+    select.innerHTML = '<option value="">Erreur de chargement</option>'
+  }
+}
+
+// Peuple la liste des dossiers de bibliothèque
+async function populateSettingsLibraryPaths() {
+  const container = document.getElementById('settings-library-paths')
+  if (!container) return
+
+  try {
+    const paths = await invoke('get_library_paths')
+    container.innerHTML = ''
+
+    if (paths.length === 0) {
+      container.innerHTML = '<div style="font-size: 11px; color: #555; padding: 8px 0;">Aucun dossier configuré</div>'
+      return
+    }
+
+    for (const p of paths) {
+      const item = document.createElement('div')
+      item.className = 'settings-path-item'
+      item.innerHTML = `
+        <span class="settings-path-text" title="${p}">${p}</span>
+        <button class="settings-path-remove" title="Retirer ce dossier" data-path="${p}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
+          </svg>
+        </button>
+      `
+      container.appendChild(item)
+    }
+
+    // Event listeners pour supprimer
+    container.querySelectorAll('.settings-path-remove').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const pathToRemove = btn.dataset.path
+        // Note: pas de commande Tauri remove_library_path, on retire visuellement
+        // et on pourrait sauvegarder la config manuellement
+        btn.closest('.settings-path-item').remove()
+        showToast(`Dossier retiré : ${pathToRemove.split('/').pop()}`)
+      })
+    })
+  } catch (e) {
+    console.error('[SETTINGS] Error loading library paths:', e)
+  }
+}
+
+// Peuple les valeurs actuelles des settings
+async function populateSettingsValues() {
+  // Hog Mode
+  const hogToggle = document.getElementById('settings-exclusive-mode')
+  if (hogToggle) {
+    try {
+      const isExclusive = await invoke('is_exclusive_mode')
+      hogToggle.checked = isExclusive
+    } catch (e) {
+      console.error('[SETTINGS] Error loading hog mode:', e)
+    }
+  }
+
+  // Volume par défaut
+  const volumeRange = document.getElementById('settings-default-volume')
+  const volumeValue = document.getElementById('settings-volume-value')
+  const savedVolume = localStorage.getItem('settings_default_volume')
+  if (volumeRange) {
+    volumeRange.value = savedVolume !== null ? savedVolume : 100
+    if (volumeValue) volumeValue.textContent = `${volumeRange.value}%`
+  }
+
+  // Reprise auto
+  const autoResume = document.getElementById('settings-auto-resume')
+  if (autoResume) {
+    autoResume.checked = localStorage.getItem('settings_auto_resume') === 'true'
+  }
+}
+
+// Initialise les événements du panneau settings
+function initSettingsPanel() {
+  // Bouton ouverture
+  const btnSettings = document.getElementById('btn-settings')
+  if (btnSettings) {
+    btnSettings.addEventListener('click', toggleSettings)
+  }
+
+  // Bouton fermeture
+  const closeBtn = document.getElementById('close-settings')
+  if (closeBtn) {
+    closeBtn.addEventListener('click', closeSettings)
+  }
+
+  // Changement de périphérique audio
+  const audioSelect = document.getElementById('settings-audio-device')
+  if (audioSelect) {
+    audioSelect.addEventListener('change', async () => {
+      const deviceId = audioSelect.value
+      if (!deviceId) return
+      try {
+        await invoke('set_audio_device', { deviceId })
+        const selectedName = audioSelect.options[audioSelect.selectedIndex].text
+        showToast(`Sortie audio : ${selectedName}`)
+        // Met à jour aussi le menu player
+        loadAudioDevices()
+      } catch (e) {
+        console.error('[SETTINGS] Error changing audio device:', e)
+        showToast('Erreur lors du changement de sortie audio')
+      }
+    })
+  }
+
+  // Toggle Hog Mode (settings)
+  const hogToggle = document.getElementById('settings-exclusive-mode')
+  if (hogToggle) {
+    hogToggle.addEventListener('change', async () => {
+      const enabled = hogToggle.checked
+      try {
+        await invoke('set_exclusive_mode', { enabled })
+        updateHogModeUI(enabled)
+        showToast(enabled ? 'Mode exclusif activé (bit-perfect)' : 'Mode exclusif désactivé')
+
+        // Relance la lecture si nécessaire
+        if (enabled && audioIsPlaying && currentTrackIndex >= 0) {
+          const currentTrack = tracks[currentTrackIndex]
+          if (currentTrack) {
+            await invoke('audio_play', { path: currentTrack.path })
+          }
+        }
+      } catch (e) {
+        console.error('[SETTINGS] Error toggling exclusive mode:', e)
+        hogToggle.checked = !enabled
+        showToast('Erreur lors du changement de mode')
+      }
+    })
+  }
+
+  // Volume par défaut
+  const volumeRange = document.getElementById('settings-default-volume')
+  const volumeValue = document.getElementById('settings-volume-value')
+  if (volumeRange) {
+    volumeRange.addEventListener('input', () => {
+      const val = volumeRange.value
+      if (volumeValue) volumeValue.textContent = `${val}%`
+      localStorage.setItem('settings_default_volume', val)
+    })
+  }
+
+  // Ajouter un dossier
+  const addFolderBtn = document.getElementById('settings-add-folder')
+  if (addFolderBtn) {
+    addFolderBtn.addEventListener('click', async () => {
+      try {
+        const selected = await invoke('select_folder')
+        if (selected) {
+          await invoke('add_library_path', { path: selected })
+          showToast(`Dossier ajouté : ${selected.split('/').pop()}`)
+          populateSettingsLibraryPaths()
+          // Déclenche un scan
+          invoke('scan_folder_with_metadata', { path: selected })
+        }
+      } catch (e) {
+        console.error('[SETTINGS] Error adding folder:', e)
+      }
+    })
+  }
+
+  // Reprise auto
+  const autoResume = document.getElementById('settings-auto-resume')
+  if (autoResume) {
+    autoResume.addEventListener('change', () => {
+      localStorage.setItem('settings_auto_resume', autoResume.checked)
+      showToast(autoResume.checked ? 'Reprise automatique activée' : 'Reprise automatique désactivée')
+    })
+  }
+}
+
+// Synchronise le Hog Mode entre player bar et settings panel
+function updateHogModeUI(enabled) {
+  // Met à jour le toggle du player bar
+  const playerCheckbox = document.getElementById('exclusive-mode-checkbox')
+  if (playerCheckbox) playerCheckbox.checked = enabled
+
+  // Met à jour le toggle des settings
+  const settingsCheckbox = document.getElementById('settings-exclusive-mode')
+  if (settingsCheckbox) settingsCheckbox.checked = enabled
+
+  // Met à jour le statut texte
+  updateHogModeStatus(enabled)
+}
+
+// Applique le volume par défaut au démarrage
+function applyDefaultVolume() {
+  const savedVolume = localStorage.getItem('settings_default_volume')
+  if (savedVolume !== null) {
+    const vol = parseInt(savedVolume, 10)
+    const volumeBarEl = document.getElementById('volume')
+    if (volumeBarEl) {
+      volumeBarEl.value = vol
+      const normalizedVol = vol / 100
+      currentVolume = normalizedVol
+      updateVolumeIcon(normalizedVol)
+      invoke('audio_set_volume', { volume: normalizedVol }).catch(console.error)
+    }
+  }
+}
+
+// Reprise auto au démarrage
+async function handleAutoResume() {
+  if (localStorage.getItem('settings_auto_resume') !== 'true') return
+
+  try {
+    const lastPlayed = await invoke('get_last_played')
+    if (lastPlayed && lastPlayed.path) {
+      // Trouve le track dans la bibliothèque
+      const trackIndex = tracks.findIndex(t => t.path === lastPlayed.path)
+      if (trackIndex >= 0) {
+        currentTrackIndex = trackIndex
+        // Affiche les infos sans lancer la lecture
+        const track = tracks[trackIndex]
+        const meta = track.metadata || {}
+        document.getElementById('track-name').textContent = meta.title || track.name || 'Titre inconnu'
+        document.getElementById('track-folder').textContent = meta.artist || 'Artiste inconnu'
+        // Affiche le player bar
+        const player = document.getElementById('player')
+        if (player) player.classList.remove('hidden')
+      }
+    }
+  } catch (e) {
+    console.error('[SETTINGS] Error auto-resume:', e)
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initSettingsPanel()
+  applyDefaultVolume()
+  // Auto-resume après un délai pour laisser la bibliothèque se charger
+  setTimeout(handleAutoResume, 3000)
+})

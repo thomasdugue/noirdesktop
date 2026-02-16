@@ -8,12 +8,20 @@
 </head>
 <body>
   <!-- Zone de drag pour déplacer la fenêtre (barre de titre macOS) -->
-  <div class="titlebar" data-tauri-drag-region></div>
+  <div class="titlebar" data-tauri-drag-region>
+    <button class="titlebar-settings-btn" id="btn-settings" title="Paramètres">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </div>
 
   <!-- Conteneur principal -->
   <div class="app">
     <!-- Sidebar : navigation -->
     <aside class="sidebar">
+      <!-- Handle pour resize la sidebar -->
+      <div class="sidebar-resize-handle" id="sidebar-resize-handle"></div>
       <div class="sidebar-header">
         <h2>Noir</h2>
         <button id="select-folder" class="btn-icon" title="Ajouter un dossier">+</button>
@@ -278,9 +286,87 @@
     </div>
   </aside>
 
+  <!-- Panel Paramètres (Settings) -->
+  <aside id="settings-panel" class="settings-panel">
+    <div class="settings-header">
+      <h3>Paramètres</h3>
+      <button id="close-settings" class="btn-close-panel" title="Fermer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <div class="settings-content">
+      <!-- Section AUDIO -->
+      <div class="settings-section">
+        <div class="settings-section-title">Audio</div>
+
+        <div class="settings-row">
+          <label class="settings-label" for="settings-audio-device">Sortie audio</label>
+          <select id="settings-audio-device" class="settings-select">
+            <option value="">Chargement...</option>
+          </select>
+        </div>
+
+        <div class="settings-row">
+          <div class="settings-row-left">
+            <label class="settings-label">Mode exclusif</label>
+            <span class="settings-description">Accès exclusif au DAC pour une lecture bit-perfect.</span>
+          </div>
+          <label class="settings-toggle">
+            <input type="checkbox" id="settings-exclusive-mode">
+            <span class="settings-toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="settings-row settings-row-vertical">
+          <div class="settings-row-top">
+            <label class="settings-label" for="settings-default-volume">Volume au démarrage</label>
+            <span id="settings-volume-value" class="settings-value">100%</span>
+          </div>
+          <input type="range" id="settings-default-volume" class="settings-range" value="100" min="0" max="100">
+        </div>
+      </div>
+
+      <!-- Section BIBLIOTHÈQUE -->
+      <div class="settings-section">
+        <div class="settings-section-title">Bibliothèque</div>
+        <div id="settings-library-paths" class="settings-path-list">
+          <!-- Paths populated dynamically -->
+        </div>
+        <button id="settings-add-folder" class="settings-btn-add">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14"/><path d="M5 12h14"/>
+          </svg>
+          Ajouter un dossier
+        </button>
+      </div>
+
+      <!-- Section LECTURE -->
+      <div class="settings-section">
+        <div class="settings-section-title">Lecture</div>
+        <div class="settings-row">
+          <div class="settings-row-left">
+            <label class="settings-label">Reprise automatique</label>
+            <span class="settings-description">Reprendre la dernière piste au démarrage.</span>
+          </div>
+          <label class="settings-toggle">
+            <input type="checkbox" id="settings-auto-resume">
+            <span class="settings-toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Footer version -->
+      <div class="settings-footer">
+        <span class="settings-version">Noir v0.1.0</span>
+      </div>
+    </div>
+  </aside>
+
   <!-- Lecteur (fixé en bas, pleine largeur) -->
   <div id="player" class="player hidden">
-    <!-- Zone gauche : cover + infos piste -->
+    <!-- 1. Zone gauche : cover + infos piste -->
     <div class="player-left">
       <div id="cover-art" class="cover-art cover-art-clickable" title="Voir l'album">
         <div class="cover-placeholder">♪</div>
@@ -292,103 +378,106 @@
         </span>
       </div>
     </div>
-    <!-- Zone centrale : contrôles (position fixe) -->
+
+    <!-- 2. Queue button -->
+    <button id="queue-btn" class="btn-mode btn-queue" title="File d'attente">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
+      </svg>
+    </button>
+
+    <!-- 3. Progress bar (prend l'espace flexible) -->
+    <div class="progress-container">
+      <span id="current-time">0:00</span>
+      <input type="range" id="progress" class="progress-bar" value="0" min="0" max="100">
+      <span id="duration">0:00</span>
+    </div>
+
+    <!-- 4. Shuffle -->
+    <button id="shuffle" class="btn-mode" title="Lecture aléatoire">⤮</button>
+
+    <!-- 5. Contrôles de lecture -->
     <div class="player-controls">
-      <button id="shuffle" class="btn-mode" title="Lecture aléatoire">⤮</button>
-      <button id="prev" class="btn-control btn-small">⏮</button>
-      <button id="play-pause" class="btn-control">▶</button>
-      <button id="next" class="btn-control btn-small">⏭</button>
-      <button id="repeat" class="btn-mode" title="Répéter">⟳</button>
-      <button id="queue-btn" class="btn-mode" title="File d'attente">
+      <button id="prev" class="btn-control btn-nav">⏮</button>
+      <button id="play-pause" class="btn-control btn-play">▶</button>
+      <button id="next" class="btn-control btn-nav">⏭</button>
+    </div>
+
+    <!-- 6. Repeat -->
+    <button id="repeat" class="btn-mode" title="Répéter">⟳</button>
+
+    <!-- 7. SRC OUT specs -->
+    <span id="audio-specs" class="audio-specs">
+      <span class="specs-source">
+        <span class="specs-label">SRC</span>
+        <span id="source-specs" class="specs-value">-</span>
+      </span>
+      <span class="specs-separator">→</span>
+      <span class="specs-output">
+        <span class="specs-label">OUT</span>
+        <span id="output-specs" class="specs-value">-</span>
+      </span>
+    </span>
+
+    <!-- 8. Volume : mute + slider -->
+    <div class="volume-container">
+      <button id="volume-btn" class="btn-volume" title="Volume">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
+          <path id="volume-icon-path" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
         </svg>
       </button>
+      <input type="range" id="volume" class="volume-bar" value="100" min="0" max="100">
     </div>
-    <!-- Zone droite : progress + volume + specs -->
-    <div class="player-right">
-      <div class="progress-container">
-        <span id="current-time">0:00</span>
-        <input type="range" id="progress" class="progress-bar" value="0" min="0" max="100">
-        <span id="duration">0:00</span>
-      </div>
-      <div class="player-right-bottom">
-        <span id="audio-specs" class="audio-specs">
-          <span class="specs-source">
-            <span class="specs-label">SRC</span>
-            <span id="source-specs" class="specs-value">-</span>
-          </span>
-          <span class="specs-separator">→</span>
-          <span class="specs-output">
-            <span class="specs-label">OUT</span>
-            <span id="output-specs" class="specs-value">-</span>
-          </span>
-        </span>
-        <div class="volume-container">
-        <button id="volume-btn" class="btn-volume" title="Volume">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path id="volume-icon-path" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-          </svg>
-        </button>
-        <input type="range" id="volume" class="volume-bar" value="100" min="0" max="100">
+
+    <!-- 9. Sélecteur de sortie audio -->
+    <div class="audio-output-container">
+      <button id="audio-output-btn" class="btn-audio-output" title="Sortie audio">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-5 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm0 16c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+        </svg>
+      </button>
+      <div id="audio-output-menu" class="audio-output-menu hidden">
+        <div class="audio-output-header">Sortie audio</div>
+        <div id="audio-output-list" class="audio-output-list">
+          <!-- Devices will be populated dynamically -->
         </div>
-        <!-- Sélecteur de sortie audio -->
-        <div class="audio-output-container">
-          <button id="audio-output-btn" class="btn-audio-output" title="Sortie audio">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M2 10v4"/>
-              <path d="M6 6v12"/>
-              <path d="M10 3v18"/>
-              <path d="M14 6v12"/>
-              <path d="M18 10v4"/>
-              <path d="M22 8v8"/>
-            </svg>
-          </button>
-          <div id="audio-output-menu" class="audio-output-menu hidden">
-            <div class="audio-output-header">Sortie audio</div>
-            <div id="audio-output-list" class="audio-output-list">
-              <!-- Devices will be populated dynamically -->
+        <div class="audio-output-footer">
+          <div class="hog-mode-container">
+            <div class="hog-mode-toggle-wrapper">
+              <label class="hog-mode-switch">
+                <input type="checkbox" id="exclusive-mode-checkbox">
+                <span class="hog-mode-slider"></span>
+              </label>
+              <div class="hog-mode-label">
+                <span class="hog-mode-text">Mode Exclusif</span>
+                <span class="hog-mode-status" id="hog-mode-status">Désactivé</span>
+              </div>
             </div>
-            <div class="audio-output-footer">
-              <div class="hog-mode-container">
-                <div class="hog-mode-toggle-wrapper">
-                  <label class="hog-mode-switch">
-                    <input type="checkbox" id="exclusive-mode-checkbox">
-                    <span class="hog-mode-slider"></span>
-                  </label>
-                  <div class="hog-mode-label">
-                    <span class="hog-mode-text">Mode Exclusif</span>
-                    <span class="hog-mode-status" id="hog-mode-status">Désactivé</span>
-                  </div>
-                </div>
-                <button class="hog-mode-info-btn" id="hog-mode-info-btn" type="button">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
-                  </svg>
-                </button>
-                <div class="hog-mode-tooltip" id="hog-mode-tooltip">
-                  <div class="hog-mode-tooltip-title">Mode Exclusif (Hog Mode)</div>
-                  <p>Prend le contrôle exclusif du périphérique audio pour une lecture bit-perfect.</p>
-                  <ul>
-                    <li>Désactive le mixeur système macOS</li>
-                    <li>Signal audio envoyé sans altération</li>
-                    <li>Idéal pour les DAC audiophiles</li>
-                  </ul>
-                  <div class="hog-mode-tooltip-warning">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                      <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-                    </svg>
-                    <span>Aucune autre application ne pourra utiliser ce périphérique.</span>
-                  </div>
-                </div>
+            <button class="hog-mode-info-btn" id="hog-mode-info-btn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+              </svg>
+            </button>
+            <div class="hog-mode-tooltip" id="hog-mode-tooltip">
+              <div class="hog-mode-tooltip-title">Mode Exclusif (Hog Mode)</div>
+              <p>Prend le contrôle exclusif du périphérique audio pour une lecture bit-perfect.</p>
+              <ul>
+                <li>Désactive le mixeur système macOS</li>
+                <li>Signal audio envoyé sans altération</li>
+                <li>Idéal pour les DAC audiophiles</li>
+              </ul>
+              <div class="hog-mode-tooltip-warning">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                <span>Aucune autre application ne pourra utiliser ce périphérique.</span>
               </div>
             </div>
           </div>
         </div>
       </div>
     </div>
-    <!-- HTML5 audio element removed - all audio handled by Rust/CPAL -->
   </div>
 
   <!-- Modale création/renommage playlist -->

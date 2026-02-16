@@ -48,6 +48,8 @@ struct Metadata {
     track: u32,
     disc: Option<u32>,
     year: Option<u32>,
+    #[serde(default)]
+    genre: Option<String>,
     duration: f64,
     #[serde(rename = "bitDepth")]
     bit_depth: Option<u8>,
@@ -837,6 +839,346 @@ fn scan_folder(path: &str) -> Vec<AudioTrack> {
     files
 }
 
+// === NORMALISATION DES GENRES MUSICAUX ===
+
+// Genres ID3v1 standards (index 0-79)
+static ID3V1_GENRES: &[&str] = &[
+    "Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge",
+    "Hip-Hop", "Jazz", "Metal", "New Wave", "Oldies", "Other", "Pop", "R&B",
+    "Rap", "Reggae", "Rock", "Techno", "Industrial", "Alternative", "Ska",
+    "Death Metal", "Pranks", "Soundtrack", "Euro-Techno", "Ambient",
+    "Trip-Hop", "Vocal", "Jazz+Funk", "Fusion", "Trance", "Classical",
+    "Instrumental", "Acid", "House", "Game", "Sound Clip", "Gospel", "Noise",
+    "Alternative Rock", "Bass", "Soul", "Punk", "Space", "Meditative",
+    "Instrumental Pop", "Instrumental Rock", "Ethnic", "Gothic", "Darkwave",
+    "Techno-Industrial", "Electronic", "Pop-Folk", "Eurodance", "Dream",
+    "Southern Rock", "Comedy", "Cult", "Gangsta", "Top 40", "Christian Rap",
+    "Pop/Funk", "Jungle", "Native American", "Cabaret", "New Wave", "Psychedelic",
+    "Rave", "Showtunes", "Trailer", "Lo-Fi", "Tribal", "Acid Punk",
+    "Acid Jazz", "Polka", "Retro", "Musical", "Rock & Roll", "Hard Rock",
+];
+
+// Table de correspondance des variantes de genres → genre canonique
+// Les clés sont en lowercase, sans tirets/underscores/slashs (remplacés par espaces), & → "and"
+static GENRE_MAP: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
+    let mut m = HashMap::new();
+
+    // === Hip-Hop / Rap ===
+    m.insert("hip hop", "Hip-Hop");
+    m.insert("hiphop", "Hip-Hop");
+    m.insert("hip hop rap", "Hip-Hop");
+    m.insert("rap hip hop", "Hip-Hop");
+    m.insert("hip hop and rap", "Hip-Hop");
+    m.insert("rap and hip hop", "Hip-Hop");
+    m.insert("hip hop soul", "Hip-Hop");
+    m.insert("gangsta rap", "Hip-Hop");
+    m.insert("gangsta", "Hip-Hop");
+    m.insert("rap", "Rap");
+    m.insert("conscious rap", "Rap");
+    m.insert("trap", "Trap");
+    m.insert("trap music", "Trap");
+
+    // === R&B / Soul ===
+    m.insert("randb", "R&B");
+    m.insert("r and b", "R&B");
+    m.insert("rnb", "R&B");
+    m.insert("rhythm and blues", "R&B");
+    m.insert("r and b soul", "R&B");
+    m.insert("randb soul", "R&B");
+    m.insert("contemporary randb", "R&B");
+    m.insert("soul", "Soul");
+    m.insert("neo soul", "Neo Soul");
+    m.insert("neosoul", "Neo Soul");
+    m.insert("neo soul", "Neo Soul");
+    m.insert("motown", "Soul");
+
+    // === Rock ===
+    m.insert("rock", "Rock");
+    m.insert("rock and roll", "Rock & Roll");
+    m.insert("rock n roll", "Rock & Roll");
+    m.insert("rock 'n' roll", "Rock & Roll");
+    m.insert("rockandroll", "Rock & Roll");
+    m.insert("alternative rock", "Alternative Rock");
+    m.insert("alt rock", "Alternative Rock");
+    m.insert("alt. rock", "Alternative Rock");
+    m.insert("altrock", "Alternative Rock");
+    m.insert("alternative", "Alternative");
+    m.insert("indie rock", "Indie Rock");
+    m.insert("indierock", "Indie Rock");
+    m.insert("indie", "Indie");
+    m.insert("indie pop", "Indie Pop");
+    m.insert("indiepop", "Indie Pop");
+    m.insert("classic rock", "Classic Rock");
+    m.insert("classicrock", "Classic Rock");
+    m.insert("hard rock", "Hard Rock");
+    m.insert("hardrock", "Hard Rock");
+    m.insert("soft rock", "Soft Rock");
+    m.insert("softrock", "Soft Rock");
+    m.insert("progressive rock", "Progressive Rock");
+    m.insert("prog rock", "Progressive Rock");
+    m.insert("progrock", "Progressive Rock");
+    m.insert("southern rock", "Southern Rock");
+    m.insert("psychedelic rock", "Psychedelic Rock");
+    m.insert("garage rock", "Garage Rock");
+    m.insert("stoner rock", "Stoner Rock");
+
+    // === Metal ===
+    m.insert("metal", "Metal");
+    m.insert("heavy metal", "Metal");
+    m.insert("heavymetal", "Metal");
+    m.insert("death metal", "Death Metal");
+    m.insert("deathmetal", "Death Metal");
+    m.insert("black metal", "Black Metal");
+    m.insert("blackmetal", "Black Metal");
+    m.insert("thrash metal", "Thrash Metal");
+    m.insert("doom metal", "Doom Metal");
+    m.insert("progressive metal", "Progressive Metal");
+    m.insert("prog metal", "Progressive Metal");
+    m.insert("nu metal", "Nu Metal");
+    m.insert("numetal", "Nu Metal");
+
+    // === Pop ===
+    m.insert("pop", "Pop");
+    m.insert("pop rock", "Pop Rock");
+    m.insert("pop and rock", "Pop Rock");
+    m.insert("synth pop", "Synth Pop");
+    m.insert("synthpop", "Synth Pop");
+    m.insert("electropop", "Electropop");
+    m.insert("electro pop", "Electropop");
+    m.insert("dream pop", "Dream Pop");
+    m.insert("dreampop", "Dream Pop");
+    m.insert("chamber pop", "Chamber Pop");
+    m.insert("art pop", "Art Pop");
+    m.insert("power pop", "Power Pop");
+    m.insert("k pop", "K-Pop");
+    m.insert("kpop", "K-Pop");
+    m.insert("j pop", "J-Pop");
+    m.insert("jpop", "J-Pop");
+
+    // === Electronic / Dance ===
+    m.insert("electronic", "Electronic");
+    m.insert("electronica", "Electronic");
+    m.insert("electronic music", "Electronic");
+    m.insert("electro", "Electro");
+    m.insert("edm", "EDM");
+    m.insert("dance", "Dance");
+    m.insert("dance music", "Dance");
+    m.insert("house", "House");
+    m.insert("house music", "House");
+    m.insert("deep house", "Deep House");
+    m.insert("tech house", "Tech House");
+    m.insert("progressive house", "Progressive House");
+    m.insert("techno", "Techno");
+    m.insert("techno music", "Techno");
+    m.insert("minimal techno", "Minimal Techno");
+    m.insert("trance", "Trance");
+    m.insert("trance music", "Trance");
+    m.insert("drum and bass", "Drum & Bass");
+    m.insert("drum n bass", "Drum & Bass");
+    m.insert("drumnbass", "Drum & Bass");
+    m.insert("dnb", "Drum & Bass");
+    m.insert("dandb", "Drum & Bass");
+    m.insert("d'n'b", "Drum & Bass");
+    m.insert("jungle", "Jungle");
+    m.insert("dubstep", "Dubstep");
+    m.insert("garage", "UK Garage");
+    m.insert("uk garage", "UK Garage");
+    m.insert("ambient", "Ambient");
+    m.insert("ambient music", "Ambient");
+    m.insert("downtempo", "Downtempo");
+    m.insert("chillout", "Chillout");
+    m.insert("chill out", "Chillout");
+    m.insert("idm", "IDM");
+    m.insert("breakbeat", "Breakbeat");
+    m.insert("eurodance", "Eurodance");
+    m.insert("euro dance", "Eurodance");
+
+    // === Jazz ===
+    m.insert("jazz", "Jazz");
+    m.insert("jazz music", "Jazz");
+    m.insert("jazz fusion", "Jazz Fusion");
+    m.insert("jazz and funk", "Jazz Fusion");
+    m.insert("acid jazz", "Acid Jazz");
+    m.insert("acidjazz", "Acid Jazz");
+    m.insert("smooth jazz", "Smooth Jazz");
+    m.insert("bebop", "Bebop");
+    m.insert("free jazz", "Free Jazz");
+    m.insert("latin jazz", "Latin Jazz");
+    m.insert("cool jazz", "Cool Jazz");
+
+    // === Classical ===
+    m.insert("classical", "Classical");
+    m.insert("classical music", "Classical");
+    m.insert("baroque", "Baroque");
+    m.insert("romantic", "Romantic");
+    m.insert("opera", "Opera");
+    m.insert("orchestral", "Orchestral");
+    m.insert("chamber music", "Chamber Music");
+    m.insert("contemporary classical", "Contemporary Classical");
+
+    // === Country / Folk ===
+    m.insert("country", "Country");
+    m.insert("country and western", "Country");
+    m.insert("candw", "Country");
+    m.insert("country rock", "Country Rock");
+    m.insert("folk", "Folk");
+    m.insert("folk music", "Folk");
+    m.insert("folk rock", "Folk Rock");
+    m.insert("folkrock", "Folk Rock");
+    m.insert("singer songwriter", "Singer-Songwriter");
+    m.insert("singersongwriter", "Singer-Songwriter");
+    m.insert("americana", "Americana");
+
+    // === Reggae / Dub / Ska ===
+    m.insert("reggae", "Reggae");
+    m.insert("reggae dancehall", "Reggae");
+    m.insert("dancehall", "Dancehall");
+    m.insert("dub", "Dub");
+    m.insert("dub music", "Dub");
+    m.insert("ska", "Ska");
+    m.insert("ska punk", "Ska Punk");
+    m.insert("reggaeton", "Reggaeton");
+
+    // === Blues ===
+    m.insert("blues", "Blues");
+    m.insert("blues rock", "Blues Rock");
+    m.insert("bluesrock", "Blues Rock");
+    m.insert("delta blues", "Delta Blues");
+    m.insert("electric blues", "Electric Blues");
+    m.insert("chicago blues", "Chicago Blues");
+
+    // === Funk ===
+    m.insert("funk", "Funk");
+    m.insert("funk soul", "Funk");
+    m.insert("funk and soul", "Funk");
+    m.insert("p funk", "P-Funk");
+    m.insert("disco", "Disco");
+    m.insert("disco music", "Disco");
+
+    // === Punk ===
+    m.insert("punk", "Punk");
+    m.insert("punk rock", "Punk Rock");
+    m.insert("punkrock", "Punk Rock");
+    m.insert("post punk", "Post-Punk");
+    m.insert("postpunk", "Post-Punk");
+    m.insert("pop punk", "Pop Punk");
+    m.insert("poppunk", "Pop Punk");
+    m.insert("hardcore", "Hardcore");
+    m.insert("hardcore punk", "Hardcore Punk");
+
+    // === World / Afro / Latin ===
+    m.insert("world", "World");
+    m.insert("world music", "World");
+    m.insert("afrobeat", "Afrobeat");
+    m.insert("afro beat", "Afrobeat");
+    m.insert("afrobeats", "Afrobeats");
+    m.insert("afro beats", "Afrobeats");
+    m.insert("afro pop", "Afro Pop");
+    m.insert("latin", "Latin");
+    m.insert("latin music", "Latin");
+    m.insert("bossa nova", "Bossa Nova");
+    m.insert("salsa", "Salsa");
+    m.insert("flamenco", "Flamenco");
+    m.insert("cumbia", "Cumbia");
+    m.insert("samba", "Samba");
+    m.insert("celtic", "Celtic");
+
+    // === Autres genres courants ===
+    m.insert("trip hop", "Trip-Hop");
+    m.insert("triphop", "Trip-Hop");
+    m.insert("lo fi", "Lo-Fi");
+    m.insert("lofi", "Lo-Fi");
+    m.insert("new wave", "New Wave");
+    m.insert("newwave", "New Wave");
+    m.insert("post rock", "Post-Rock");
+    m.insert("postrock", "Post-Rock");
+    m.insert("shoegaze", "Shoegaze");
+    m.insert("shoe gaze", "Shoegaze");
+    m.insert("grunge", "Grunge");
+    m.insert("emo", "Emo");
+    m.insert("goth", "Gothic");
+    m.insert("gothic", "Gothic");
+    m.insert("gothic rock", "Gothic Rock");
+    m.insert("darkwave", "Darkwave");
+    m.insert("dark wave", "Darkwave");
+    m.insert("industrial", "Industrial");
+    m.insert("industrial music", "Industrial");
+    m.insert("noise", "Noise");
+    m.insert("noise rock", "Noise Rock");
+    m.insert("experimental", "Experimental");
+    m.insert("avant garde", "Avant-Garde");
+    m.insert("avantgarde", "Avant-Garde");
+    m.insert("new age", "New Age");
+    m.insert("newage", "New Age");
+    m.insert("gospel", "Gospel");
+    m.insert("gospel music", "Gospel");
+    m.insert("christian", "Christian");
+    m.insert("christian rock", "Christian Rock");
+    m.insert("soundtrack", "Soundtrack");
+    m.insert("ost", "Soundtrack");
+    m.insert("film score", "Soundtrack");
+    m.insert("score", "Soundtrack");
+    m.insert("spoken word", "Spoken Word");
+    m.insert("spokenword", "Spoken Word");
+    m.insert("podcast", "Podcast");
+    m.insert("audiobook", "Audiobook");
+    m.insert("asmr", "ASMR");
+
+    m
+});
+
+/// Normalise un genre musical brut en forme canonique
+fn normalize_genre(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // Gère les genres ID3v1 numériques : "(17)" → lookup
+    if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        if let Ok(num) = trimmed[1..trimmed.len()-1].parse::<usize>() {
+            if num < ID3V1_GENRES.len() {
+                return ID3V1_GENRES[num].to_string();
+            }
+        }
+    }
+
+    // Nettoyage pour matching : lowercase, supprime ponctuation, collapse espaces
+    let cleaned = trimmed.to_lowercase();
+    let key = cleaned
+        .replace('-', " ")
+        .replace('_', " ")
+        .replace('&', "and")
+        .replace('/', " ")
+        .replace('.', "")
+        .replace('\'', "")
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+
+    // Lookup dans la table de correspondance
+    if let Some(canonical) = GENRE_MAP.get(key.as_str()) {
+        return canonical.to_string();
+    }
+
+    // Pas trouvé dans la table : title-case le genre original
+    title_case(trimmed)
+}
+
+/// Met en majuscule la première lettre de chaque mot
+fn title_case(s: &str) -> String {
+    s.split_whitespace()
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().to_string() + &c.as_str().to_lowercase(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 // Fonction interne pour obtenir les métadonnées (utilisée par le scan parallèle)
 fn get_metadata_internal(path: &str) -> Metadata {
     // Vérifie le cache mémoire d'abord
@@ -860,6 +1202,7 @@ fn get_metadata_internal(path: &str) -> Metadata {
         track: 0,
         disc: None,
         year: None,
+        genre: None,
         duration: 0.0,
         bit_depth: None,
         sample_rate: None,
@@ -892,6 +1235,12 @@ fn get_metadata_internal(path: &str) -> Metadata {
             }
             if let Some(year) = tag.year() {
                 metadata.year = Some(year);
+            }
+            if let Some(genre) = tag.genre() {
+                let normalized = normalize_genre(&genre);
+                if !normalized.is_empty() {
+                    metadata.genre = Some(normalized);
+                }
             }
         }
     }
@@ -1160,6 +1509,7 @@ fn get_metadata(path: &str) -> Metadata {
         track: 0,
         disc: None,
         year: None,
+        genre: None,
         duration: 0.0,
         bit_depth: None,
         sample_rate: None,
@@ -1190,6 +1540,12 @@ fn get_metadata(path: &str) -> Metadata {
             if let Some(year) = tag.year() {
                 metadata.year = Some(year);
             }
+            if let Some(genre) = tag.genre() {
+                let normalized = normalize_genre(&genre);
+                if !normalized.is_empty() {
+                    metadata.genre = Some(normalized);
+                }
+            }
         }
     }
 
@@ -1215,6 +1571,17 @@ fn get_metadata(path: &str) -> Metadata {
     }
 
     metadata
+}
+
+// Forcer la relecture des métadonnées d'un fichier (vide le cache puis relit)
+#[tauri::command]
+fn refresh_metadata(path: &str) -> Metadata {
+    // Supprime du cache pour forcer la relecture depuis le fichier
+    if let Ok(mut cache) = METADATA_CACHE.lock() {
+        cache.entries.remove(path);
+    }
+    // Relit depuis le fichier (get_metadata re-cachera automatiquement)
+    get_metadata(path)
 }
 
 // Charger tout le cache de métadonnées (pour le frontend)
@@ -2134,8 +2501,10 @@ pub fn run() {
                     .unwrap();
             };
 
+            println!("[NOIR PROTOCOL] Request: {} -> {:?}", path, file_path);
             match std::fs::read(&file_path) {
                 Ok(data) => {
+                    println!("[NOIR PROTOCOL] OK: {} bytes", data.len());
                     let mime = if path.ends_with(".png") {
                         "image/png"
                     } else if path.ends_with(".webp") {
@@ -2177,6 +2546,7 @@ pub fn run() {
             scan_folder,
             scan_folder_with_metadata,
             get_metadata,
+            refresh_metadata,
             load_all_metadata_cache,
             get_added_dates,
             get_cover,

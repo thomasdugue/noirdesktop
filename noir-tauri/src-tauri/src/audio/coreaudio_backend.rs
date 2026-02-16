@@ -39,6 +39,8 @@ pub struct CoreAudioBackend {
     event_callback: Option<DeviceEventCallback>,
     /// Last known device ID (to detect changes)
     last_device_id: AudioObjectID,
+    /// Whether the device was locked by hog mode (to prevent device switching)
+    hog_locked_device: bool,
 }
 
 impl CoreAudioBackend {
@@ -55,6 +57,7 @@ impl CoreAudioBackend {
             original_sample_rates: HashMap::new(),
             event_callback: None,
             last_device_id: default_device,
+            hog_locked_device: false,
         };
 
         // Cache device info on startup
@@ -678,6 +681,7 @@ impl AudioBackend for CoreAudioBackend {
         // Set manual device (stops following system default)
         self.manual_device_id = Some(id);
         self.last_device_id = id;
+        self.hog_locked_device = false; // User chose manually, not hog-locked
 
         println!("[CoreAudio] Manually switched to device: {}", device_id);
         Ok(())
@@ -751,9 +755,17 @@ impl AudioBackend for CoreAudioBackend {
         match mode {
             ExclusiveMode::Exclusive => {
                 Self::enable_hog_mode_internal(device_id)?;
+                // Lock on this device to prevent macOS default-device switching
+                self.manual_device_id = Some(device_id);
+                self.hog_locked_device = true;
             }
             ExclusiveMode::Shared => {
                 Self::disable_hog_mode_internal(device_id)?;
+                // Release the lock if it was set by hog mode
+                if self.hog_locked_device {
+                    self.manual_device_id = None;
+                    self.hog_locked_device = false;
+                }
             }
         }
 
@@ -855,6 +867,12 @@ impl AudioBackend for CoreAudioBackend {
                 let _ = Self::disable_hog_mode_internal(device_id);
             }
             self.exclusive_mode = ExclusiveMode::Shared;
+        }
+
+        // Release hog device lock
+        if self.hog_locked_device {
+            self.manual_device_id = None;
+            self.hog_locked_device = false;
         }
 
         // Restore original sample rates for all modified devices
