@@ -14,6 +14,7 @@ use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use parking_lot::Mutex;
 
 use coreaudio_sys::{
     AudioComponentDescription, AudioComponentFindNext, AudioComponentInstanceNew,
@@ -34,6 +35,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::audio_decoder::StreamingState;
 use crate::audio_engine::PlaybackProgress;
+use crate::eq::{EqProcessor, EqSharedState};
 use super::stream::{AudioOutputStream, AudioStreamConfig};
 
 /// CoreAudio-based audio output stream using raw coreaudio-sys
@@ -72,6 +74,13 @@ struct CallbackData {
     debug_sample_log_countdown: u32,
     progress_ticks_after_seek: u32,
     debug_last_seek_target: f64,
+    // EQ processing (biquad filters - NOT thread-safe, lives in callback)
+    eq_processor: EqProcessor,
+    eq_shared: EqSharedState,
+    // Gapless playback: next track preloaded consumer/state
+    next_consumer: Arc<Mutex<Option<HeapCons<f32>>>>,
+    next_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>>,
+    gapless_enabled: Arc<AtomicBool>,
 }
 
 const EMPTY_CALLBACKS_THRESHOLD: u32 = 3;
@@ -93,6 +102,10 @@ impl CoreAudioStream {
         is_playing_global: Arc<AtomicBool>,
         app_handle: Option<AppHandle>,
         duration_seconds: f64,
+        eq_shared: EqSharedState,
+        next_consumer: Arc<Mutex<Option<HeapCons<f32>>>>,
+        next_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>>,
+        gapless_enabled: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         unsafe {
             // 1. Find the HAL output audio component (allows device selection)
@@ -206,6 +219,11 @@ impl CoreAudioStream {
                 debug_sample_log_countdown: 0,
                 progress_ticks_after_seek: 0,
                 debug_last_seek_target: 0.0,
+                eq_processor: EqProcessor::new(sample_rate_f64 as f32),
+                eq_shared,
+                next_consumer,
+                next_streaming_state,
+                gapless_enabled,
             });
 
             // 6. Set up the render callback
@@ -378,6 +396,16 @@ unsafe extern "C" fn render_callback(
         data.debug_sample_log_countdown -= 1;
     }
 
+    // Apply EQ processing BEFORE volume (operates on the raw signal)
+    if read > 0 {
+        let frames_for_eq = read / data.channels_count as usize;
+        data.eq_processor.process_interleaved(
+            &mut interleaved_buf[..read],
+            frames_for_eq,
+            &data.eq_shared,
+        );
+    }
+
     // Write to output buffers with volume applied
     // CoreAudio on macOS typically uses interleaved stereo in a single buffer
     if num_buffers == 1 && data.channels_count == 2 {
@@ -434,6 +462,43 @@ unsafe extern "C" fn render_callback(
         && data.empty_callbacks >= EMPTY_CALLBACKS_THRESHOLD
         && !data.end_emitted
     {
+        // === GAPLESS: try to swap to next consumer ===
+        if data.gapless_enabled.load(Ordering::Relaxed) {
+            let mut next_cons_guard = data.next_consumer.lock();
+            let mut next_state_guard = data.next_streaming_state.lock();
+
+            if let (Some(new_consumer), Some(new_state)) = (next_cons_guard.take(), next_state_guard.take()) {
+                println!("[CoreAudioStream] GAPLESS TRANSITION at {:.3}s",
+                    data.playback_samples as f64 / data.channels_count as f64 / data.sample_rate_f64);
+
+                // Swap consumer and streaming state
+                data.consumer = new_consumer;
+                data.streaming_state = new_state;
+
+                // Reset playback tracking for the new track
+                data.playback_samples = 0;
+                data.empty_callbacks = 0;
+                data.end_emitted = false;
+                data.emit_counter = 0;
+                data.duration_seconds = data.streaming_state.info.duration_seconds;
+                data.duration_samples = data.streaming_state.info.total_frames * data.channels_count;
+
+                // Emit gapless transition event to frontend
+                if let Some(ref app) = data.app_handle {
+                    let _ = app.emit("playback_gapless_transition", ());
+                }
+
+                // Drop the guards
+                drop(next_cons_guard);
+                drop(next_state_guard);
+
+                // Don't return 0 — continue to output from new consumer in THIS callback
+                // The next emit cycle will send progress from the new track
+                return 0;
+            }
+        }
+
+        // No gapless next available — normal end
         data.end_emitted = true;
         data.is_playing_global.store(false, Ordering::Relaxed);
         println!("[CoreAudioStream] Track finished at {:.3}s",

@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter};
 use crate::audio_decoder::{start_streaming_with_config, StreamingState};
 use crate::audio::{AudioBackend, create_backend, ExclusiveMode, StreamConfig};
 use crate::audio::{AudioOutputStream, AudioStreamConfig, create_audio_stream};
+use crate::eq::EqSharedState;
 
 // NOTE: Device capabilities are now obtained directly from the backend
 // via backend.current_device() which returns DeviceInfo with all necessary info.
@@ -85,6 +86,10 @@ pub enum AudioCommand {
     /// Seek à une position (en secondes)
     Seek(f64),
     SetVolume(f32),
+    /// Précharge le prochain fichier pour gapless playback
+    PreloadNext(String),
+    /// Active/désactive le gapless
+    SetGapless(bool),
 }
 
 /// État de lecture partagé avec le frontend
@@ -145,6 +150,8 @@ pub struct AudioEngine {
     _audio_thread: thread::JoinHandle<()>,
     /// Audio backend for device control (sample rate, exclusive mode)
     backend: Arc<Mutex<Box<dyn AudioBackend>>>,
+    /// EQ shared state (gains atomiques partagés avec le callback audio)
+    pub eq_state: EqSharedState,
 }
 
 impl AudioEngine {
@@ -169,8 +176,12 @@ impl AudioEngine {
         let backend = Arc::new(Mutex::new(backend));
         let backend_clone = Arc::clone(&backend);
 
+        // EQ shared state (partagé entre le thread audio et les commandes Tauri)
+        let eq_state = EqSharedState::new();
+        let eq_state_clone = eq_state.clone();
+
         let audio_thread = thread::spawn(move || {
-            Self::audio_thread_main(command_rx, state_clone, app_handle, backend_clone);
+            Self::audio_thread_main(command_rx, state_clone, app_handle, backend_clone, eq_state_clone);
         });
 
         Self {
@@ -178,6 +189,7 @@ impl AudioEngine {
             state,
             _audio_thread: audio_thread,
             backend,
+            eq_state,
         }
     }
 
@@ -246,6 +258,7 @@ impl AudioEngine {
         state: Arc<PlaybackState>,
         app_handle: Option<AppHandle>,
         backend: Arc<Mutex<Box<dyn AudioBackend>>>,
+        eq_state: EqSharedState,
     ) {
         // PURE COREAUDIO - no CPAL!
         // Get device info from backend directly.
@@ -273,6 +286,15 @@ impl AudioEngine {
         // Chemin du fichier actuel (pour relancer après seek)
         let current_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
+        // === GAPLESS PLAYBACK ===
+        // Consumer/state préchargés pour le prochain track
+        use ringbuf::HeapCons;
+        let next_consumer: Arc<Mutex<Option<HeapCons<f32>>>> = Arc::new(Mutex::new(None));
+        let next_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>> = Arc::new(Mutex::new(None));
+        let next_session_cmd: Arc<Mutex<Option<Sender<crate::audio_decoder::DecoderCommand>>>> = Arc::new(Mutex::new(None));
+        let next_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let gapless_enabled = Arc::new(AtomicBool::new(true));
+
         // Rate-limiting pour les seeks (évite le flood)
         let mut last_seek_time = std::time::Instant::now();
         let mut last_seek_position: f64 = -1.0;  // Dernière position de seek (pour éviter les doublons)
@@ -284,6 +306,12 @@ impl AudioEngine {
                 Ok(AudioCommand::Play(path, start_position)) => {
                     println!("=== Starting playback: {} at {:?}s ===", path, start_position);
                     let start_time = std::time::Instant::now();
+
+                    // Clear gapless preload (manual play cancels it)
+                    *next_consumer.lock() = None;
+                    *next_streaming_state.lock() = None;
+                    *next_session_cmd.lock() = None;
+                    *next_path.lock() = None;
 
                     // Reset de l'état de lecture AVANT tout
                     state.is_playing.store(false, Ordering::Relaxed);
@@ -325,6 +353,7 @@ impl AudioEngine {
                         Err(e) => {
                             eprintln!("Failed to probe file: {}", e);
                             if let Some(ref app) = app_handle {
+                                emit_error(app, "file_probe_failed", "Fichier audio illisible ou corrompu", &e);
                                 let _ = app.emit("playback_loading", false);
                             }
                             continue;
@@ -413,12 +442,19 @@ impl AudioEngine {
                                     Arc::clone(&state.is_playing),
                                     app_handle.clone(),
                                     session.state.info.duration_seconds,
+                                    eq_state.clone(),
+                                    Arc::clone(&next_consumer),
+                                    Arc::clone(&next_streaming_state),
+                                    Arc::clone(&gapless_enabled),
                                 );
 
                                 match stream_result {
                                     Ok(mut s) => {
                                         if let Err(e) = s.start() {
                                             eprintln!("Failed to start stream: {}", e);
+                                            if let Some(ref app) = app_handle {
+                                                emit_error(app, "stream_start_failed", "Erreur de lecture audio", &e);
+                                            }
                                         } else {
                                             state.is_playing.store(true, Ordering::Relaxed);
                                             state.is_paused.store(false, Ordering::Relaxed);
@@ -445,10 +481,16 @@ impl AudioEngine {
                                     }
                                     Err(e) => {
                                         eprintln!("Failed to create audio stream: {}", e);
+                                        if let Some(ref app) = app_handle {
+                                            emit_error(app, "stream_create_failed", "Impossible de créer le flux audio", &e);
+                                        }
                                     }
                                 }
                             } else {
                                 eprintln!("Failed to take consumer from session");
+                                if let Some(ref app) = app_handle {
+                                    emit_error(app, "decode_failed", "Erreur de décodage du fichier", "Consumer unavailable");
+                                }
                             }
 
                             if let Some(ref app) = app_handle {
@@ -458,6 +500,7 @@ impl AudioEngine {
                         Err(e) => {
                             eprintln!("Failed to start streaming: {}", e);
                             if let Some(ref app) = app_handle {
+                                emit_error(app, "decode_failed", "Erreur de décodage du fichier", &e);
                                 let _ = app.emit("playback_loading", false);
                             }
                         }
@@ -570,10 +613,11 @@ impl AudioEngine {
                                 Ok(info) => info,
                                 Err(e) => {
                                     eprintln!("Failed to probe file: {}", e);
-                                    state.is_seeking.store(false, Ordering::Relaxed);
                                     if let Some(ref app) = app_handle {
+                                        emit_error(app, "seek_failed", "Erreur lors du repositionnement", &e);
                                         let _ = app.emit("playback_loading", false);
                                     }
+                                    state.is_seeking.store(false, Ordering::Relaxed);
                                     continue;
                                 }
                             };
@@ -625,10 +669,17 @@ impl AudioEngine {
                                             Arc::clone(&state.is_playing),
                                             app_handle.clone(),
                                             session.state.info.duration_seconds,
+                                            eq_state.clone(),
+                                            Arc::clone(&next_consumer),
+                                            Arc::clone(&next_streaming_state),
+                                            Arc::clone(&gapless_enabled),
                                         ) {
                                             Ok(mut s) => {
                                                 if let Err(e) = s.start() {
                                                     eprintln!("Failed to restart stream: {}", e);
+                                                    if let Some(ref app) = app_handle {
+                                                        emit_error(app, "stream_start_failed", "Erreur de lecture audio", &e);
+                                                    }
                                                 } else {
                                                     state.is_playing.store(true, Ordering::Relaxed);
                                                     state.is_paused.store(false, Ordering::Relaxed);
@@ -650,6 +701,9 @@ impl AudioEngine {
                                             }
                                             Err(e) => {
                                                 eprintln!("Failed to create restart stream: {}", e);
+                                                if let Some(ref app) = app_handle {
+                                                    emit_error(app, "stream_create_failed", "Impossible de créer le flux audio", &e);
+                                                }
                                             }
                                         }
                                     }
@@ -660,6 +714,7 @@ impl AudioEngine {
                                 Err(e) => {
                                     eprintln!("Failed to restart for seek: {}", e);
                                     if let Some(ref app) = app_handle {
+                                        emit_error(app, "seek_failed", "Erreur lors du repositionnement", &e);
                                         let _ = app.emit("playback_loading", false);
                                     }
                                 }
@@ -757,6 +812,64 @@ impl AudioEngine {
                     state.set_volume(vol);
                 }
 
+                Ok(AudioCommand::PreloadNext(path)) => {
+                    if !gapless_enabled.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    println!("[Gapless] Preloading next: {}", path);
+
+                    // Clear previous preload
+                    *next_consumer.lock() = None;
+                    *next_streaming_state.lock() = None;
+                    *next_session_cmd.lock() = None;
+
+                    // Probe the file
+                    let source_info = match crate::audio_decoder::probe_audio_file(&path) {
+                        Ok(info) => info,
+                        Err(e) => {
+                            eprintln!("[Gapless] Failed to probe next file: {}", e);
+                            continue;
+                        }
+                    };
+
+                    // Use the CURRENT stream's output rate for the next track
+                    // to avoid sample rate mismatch during gapless transition
+                    let current_output_rate = state.sample_rate.load(Ordering::Relaxed) as u32;
+                    let target_rate = if source_info.sample_rate != current_output_rate {
+                        Some(current_output_rate)
+                    } else {
+                        None
+                    };
+
+                    match start_streaming_with_config(&path, 0.0, source_info.sample_rate, target_rate) {
+                        Ok(mut session) => {
+                            if let Some(consumer) = session.take_consumer() {
+                                *next_consumer.lock() = Some(consumer);
+                                *next_streaming_state.lock() = Some(Arc::clone(&session.state));
+                                *next_session_cmd.lock() = Some(session.command_tx.clone());
+                                *next_path.lock() = Some(path.clone());
+                                println!("[Gapless] Next track preloaded: {} ({}Hz → {}Hz)",
+                                    path, source_info.sample_rate, session.state.info.output_sample_rate);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[Gapless] Failed to preload: {}", e);
+                        }
+                    }
+                }
+
+                Ok(AudioCommand::SetGapless(enabled)) => {
+                    gapless_enabled.store(enabled, Ordering::Relaxed);
+                    if !enabled {
+                        // Clear preloaded data
+                        *next_consumer.lock() = None;
+                        *next_streaming_state.lock() = None;
+                        *next_session_cmd.lock() = None;
+                        *next_path.lock() = None;
+                    }
+                    println!("[Gapless] {}", if enabled { "Enabled" } else { "Disabled" });
+                }
+
                 Err(_) => break,
             }
         }
@@ -799,8 +912,14 @@ impl AudioEngine {
             .map_err(|e| e.to_string())
     }
 
-    pub fn preload_next(&self, _path: &str) -> Result<(), String> {
-        Ok(()) // TODO
+    pub fn preload_next(&self, path: &str) -> Result<(), String> {
+        self.command_tx.send(AudioCommand::PreloadNext(path.to_string()))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn set_gapless(&self, enabled: bool) -> Result<(), String> {
+        self.command_tx.send(AudioCommand::SetGapless(enabled))
+            .map_err(|e| e.to_string())
     }
 
     pub fn is_playing(&self) -> bool {
@@ -821,6 +940,25 @@ impl AudioEngine {
 pub struct PlaybackProgress {
     pub position: f64,
     pub duration: f64,
+}
+
+/// Erreur de lecture structurée, envoyée au frontend via l'événement `playback_error`
+#[derive(Clone, serde::Serialize)]
+pub struct PlaybackError {
+    pub code: String,
+    pub message: String,
+    pub details: String,
+}
+
+/// Émet une erreur structurée vers le frontend
+pub fn emit_error(app: &AppHandle, code: &str, message: &str, details: &str) {
+    let error = PlaybackError {
+        code: code.to_string(),
+        message: message.to_string(),
+        details: details.to_string(),
+    };
+    eprintln!("[ERROR:{}] {} — {}", code, message, details);
+    let _ = app.emit("playback_error", error);
 }
 
 /// Spécifications audio SOURCE vs OUTPUT pour le moniteur de debug

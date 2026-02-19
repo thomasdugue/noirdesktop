@@ -6,7 +6,10 @@
 //! Key feature: `reset()` method allows flushing internal buffers for instant seek.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use parking_lot::Mutex;
 use crate::audio_decoder::StreamingState;
+use crate::eq::EqSharedState;
 use ringbuf::HeapCons;
 
 /// Trait for audio output streams
@@ -75,6 +78,11 @@ pub fn create_audio_stream(
     is_playing: Arc<std::sync::atomic::AtomicBool>,
     app_handle: Option<tauri::AppHandle>,
     duration_seconds: f64,
+    eq_shared: EqSharedState,
+    // Gapless playback: shared state for next track
+    next_consumer: Arc<Mutex<Option<HeapCons<f32>>>>,
+    next_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>>,
+    gapless_enabled: Arc<AtomicBool>,
 ) -> Result<Box<dyn AudioOutputStream>, String> {
     use super::coreaudio_stream::CoreAudioStream;
     CoreAudioStream::new(
@@ -87,6 +95,10 @@ pub fn create_audio_stream(
         is_playing,
         app_handle,
         duration_seconds,
+        eq_shared,
+        next_consumer,
+        next_streaming_state,
+        gapless_enabled,
     ).map(|s| Box::new(s) as Box<dyn AudioOutputStream>)
 }
 

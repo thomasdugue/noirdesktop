@@ -1902,100 +1902,51 @@ body.sidebar-resizing * {
   overflow: hidden;
 }
 
-/* Animation sinusoïdale CSS en background */
-.home-resume-tile .sine-wave-animation {
+/* Animation waveform barres en background (inspirée du hero landing page) */
+.home-resume-tile .waveform-animation {
   position: absolute;
-  top: 50%;
+  top: 0;
   left: 0;
-  width: 100%;
-  height: 100px;
-  transform: translateY(-50%);
-  opacity: 0.25;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 16px;
   pointer-events: none;
   z-index: 0;
+  opacity: 0.12;
 }
 
-.sine-wave {
-  fill: none;
-  stroke-width: 2;
-  stroke-linecap: round;
+.waveform-bar {
+  flex: 1;
+  max-width: 4px;
+  background: #fff;
+  border-radius: 2px 2px 0 0;
+  animation: waveformPulse ease-in-out infinite alternate;
+  transform-origin: bottom;
 }
 
-/* Ligne 1 - Vert teal, animation très rapide */
-.sine-wave-1 {
-  stroke: #fff;
-  stroke-width: 3;
-  animation: wave-flow-1 0.8s linear infinite;
-}
-
-/* Ligne 2 - Vert clair, animation rapide déphasée */
-.sine-wave-2 {
-  stroke: #aaa;
-  stroke-width: 2.5;
-  animation: wave-flow-2 0.6s linear infinite;
-}
-
-/* Ligne 3 - Vert foncé, animation ultra rapide */
-.sine-wave-3 {
-  stroke: #666;
-  stroke-width: 2;
-  animation: wave-flow-3 0.5s linear infinite;
-}
-
-@keyframes wave-flow-1 {
-  0% {
-    d: path("M0,50 Q30,10 60,50 T120,50 T180,50 T240,50 T300,50 T360,50 T420,50 T480,50 T540,50");
-  }
-  25% {
-    d: path("M0,50 Q30,90 60,50 T120,50 T180,50 T240,50 T300,50 T360,50 T420,50 T480,50 T540,50");
-  }
-  50% {
-    d: path("M0,50 Q30,10 60,50 T120,50 T180,50 T240,50 T300,50 T360,50 T420,50 T480,50 T540,50");
-  }
-  75% {
-    d: path("M0,50 Q30,90 60,50 T120,50 T180,50 T240,50 T300,50 T360,50 T420,50 T480,50 T540,50");
-  }
-  100% {
-    d: path("M0,50 Q30,10 60,50 T120,50 T180,50 T240,50 T300,50 T360,50 T420,50 T480,50 T540,50");
-  }
-}
-
-@keyframes wave-flow-2 {
-  0% {
-    d: path("M0,50 Q40,85 80,50 T160,50 T240,50 T320,50 T400,50 T480,50 T560,50");
-  }
-  33% {
-    d: path("M0,50 Q40,15 80,50 T160,50 T240,50 T320,50 T400,50 T480,50 T560,50");
-  }
-  66% {
-    d: path("M0,50 Q40,85 80,50 T160,50 T240,50 T320,50 T400,50 T480,50 T560,50");
-  }
-  100% {
-    d: path("M0,50 Q40,15 80,50 T160,50 T240,50 T320,50 T400,50 T480,50 T560,50");
-  }
-}
-
-@keyframes wave-flow-3 {
-  0% {
-    d: path("M0,50 Q25,20 50,80 T100,20 T150,80 T200,20 T250,80 T300,20 T350,80 T400,20 T450,80 T500,50");
-  }
-  50% {
-    d: path("M0,50 Q25,80 50,20 T100,80 T150,20 T200,80 T250,20 T300,80 T350,20 T400,80 T450,20 T500,50");
-  }
-  100% {
-    d: path("M0,50 Q25,20 50,80 T100,20 T150,80 T200,20 T250,80 T300,20 T350,80 T400,20 T450,80 T500,50");
-  }
+@keyframes waveformPulse {
+  0% { transform: scaleY(0.2); }
+  100% { transform: scaleY(1); }
 }
 
 /* Le contenu de la tuile doit être au-dessus de l'animation */
-.home-resume-tile > *:not(.sine-wave-animation) {
+.home-resume-tile > *:not(.waveform-animation) {
   position: relative;
   z-index: 1;
 }
 
-/* Pause les animations wave quand la home n'est pas visible (économie CPU) */
-.home-hidden .sine-wave-animation,
-.albums-view:not(.home-visible) .sine-wave-animation {
+/* Pause les animations waveform quand la home n'est pas visible (économie CPU) */
+.home-hidden .waveform-animation,
+.albums-view:not(.home-visible) .waveform-animation {
+  animation-play-state: paused;
+}
+
+.home-hidden .waveform-bar,
+.albums-view:not(.home-visible) .waveform-bar {
   animation-play-state: paused;
 }
 
@@ -2440,6 +2391,70 @@ body.sidebar-resizing * {
   padding: 2px 6px;
   border-radius: 4px;
   backdrop-filter: blur(4px);
+}
+
+/* === Discovery Mix carousel items === */
+.discovery-mix-cover {
+  position: relative;
+  overflow: hidden;
+}
+
+.discovery-mix-bg-img {
+  filter: blur(6px) brightness(0.5);
+  transform: scale(1.15);
+}
+
+.discovery-mix-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+.discovery-mix-label {
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85);
+  padding: 4px 8px;
+  line-height: 1.3;
+  letter-spacing: 0.3px;
+}
+
+/* === Mix Page (detail view) === */
+.mix-page-cover-container {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.mix-page-cover-blurred {
+  filter: blur(8px) brightness(0.45);
+  transform: scale(1.15);
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mix-page-cover-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mix-page-title-overlay {
+  color: #fff;
+  font-size: 22px;
+  font-weight: 700;
+  text-align: center;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+  padding: 8px 16px;
+  letter-spacing: 0.5px;
 }
 
 /* Message vide */
@@ -3309,6 +3324,371 @@ body.player-visible .app {
   font-size: 11px;
   color: #ffc107;
   line-height: 1.4;
+}
+
+/* === ÉGALISEUR (EQ 8 BANDES) === */
+
+/* Container EQ dans le footer — même pattern que .hog-mode-container */
+.eq-mode-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #222;
+}
+
+.eq-mode-toggle-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+/* Toggle switch — identique au Hog Mode */
+.eq-mode-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.eq-mode-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.eq-mode-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 24px;
+  transition: background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.eq-mode-slider::before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 2px;
+  bottom: 2px;
+  background: #666;
+  border-radius: 50%;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.eq-mode-switch input:checked + .eq-mode-slider {
+  background: linear-gradient(135deg, #2a2a2a 0%, #222 100%);
+  border-color: #555;
+}
+
+.eq-mode-switch input:checked + .eq-mode-slider::before {
+  transform: translateX(20px);
+  background: #fff;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.3);
+}
+
+.eq-mode-switch:hover .eq-mode-slider {
+  border-color: #555;
+}
+
+.eq-mode-switch input:checked:hover + .eq-mode-slider {
+  border-color: #777;
+}
+
+/* Labels — identique au Hog Mode */
+.eq-mode-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.eq-mode-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: #ccc;
+  letter-spacing: 0.3px;
+}
+
+.eq-mode-status {
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  transition: color 0.3s ease;
+}
+
+.eq-mode-status.active {
+  color: #fff;
+}
+
+/* Bouton info/ouvrir — identique au Hog Mode info button */
+.eq-mode-info-btn {
+  background: transparent;
+  border: 1px solid #333;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+  flex-shrink: 0;
+  color: #666;
+}
+
+.eq-mode-info-btn:hover {
+  color: #fff;
+  background: #222;
+  border-color: #555;
+}
+
+.eq-mode-info-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* === PANNEAU ÉGALISEUR (SIDE PANEL) === */
+.eq-panel {
+  position: fixed;
+  top: 38px;
+  right: 0;
+  bottom: 80px;
+  width: 320px;
+  background: #111;
+  border-left: 1px solid #1a1a1a;
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  z-index: 510;
+  overflow: hidden;
+}
+
+.eq-panel.open {
+  transform: translateX(0);
+}
+
+body:not(.player-visible) .eq-panel {
+  bottom: 0;
+}
+
+.eq-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.eq-panel-header h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  margin: 0;
+}
+
+.eq-panel-content {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Toggle row inside EQ panel */
+.eq-panel-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.eq-panel-toggle-label {
+  font-size: 11px;
+  color: #666;
+  transition: color 0.2s;
+}
+
+.eq-panel-toggle-label.active {
+  color: #fff;
+}
+
+/* Controls row (preset + reset) */
+.eq-panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.eq-flat-btn {
+  background: transparent;
+  border: 1px solid #333;
+  color: #666;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.eq-flat-btn:hover {
+  color: #fff;
+  border-color: #555;
+}
+
+/* Preset dropdown */
+.eq-preset-dropdown-container {
+  position: relative;
+}
+
+.eq-preset-dropdown-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid #333;
+  color: #999;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.eq-preset-dropdown-btn:hover {
+  color: #fff;
+  border-color: #555;
+}
+
+.eq-preset-dropdown-btn svg {
+  opacity: 0.5;
+}
+
+.eq-preset-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 140px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 520;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.eq-preset-dropdown.hidden {
+  display: none;
+}
+
+.eq-preset-dropdown-item {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #888;
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: color 0.1s, background-color 0.1s;
+}
+
+.eq-preset-dropdown-item:hover {
+  color: #fff;
+  background: #222;
+}
+
+.eq-preset-dropdown-item.active {
+  color: #fff;
+  background: #222;
+}
+
+/* Courbe SVG */
+.eq-curve-container {
+  position: relative;
+}
+
+#eq-curve-svg {
+  width: 100%;
+  height: 140px;
+  background: #111;
+  border-radius: 6px;
+  border: 1px solid #222;
+}
+
+/* Grille de fond */
+.eq-grid-line {
+  stroke: #222;
+  stroke-width: 0.5;
+}
+
+.eq-zero-line {
+  stroke: #333;
+  stroke-width: 1;
+}
+
+/* Courbe */
+.eq-curve-path {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Remplissage sous la courbe */
+.eq-curve-fill {
+  fill: rgba(255, 255, 255, 0.03);
+  stroke: none;
+}
+
+/* Points draggables */
+.eq-point {
+  fill: #1a1a1a;
+  stroke: #fff;
+  stroke-width: 1.5;
+  cursor: ns-resize;
+  transition: r 0.15s, fill 0.15s;
+}
+
+.eq-point:hover,
+.eq-point.dragging {
+  fill: #fff;
+}
+
+/* Labels dB sur le graphe */
+.eq-db-label {
+  font-size: 8px;
+  fill: #444;
+  font-family: inherit;
+}
+
+/* Labels fréquences */
+.eq-freq-labels {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 20px 0;
+  font-size: 9px;
+  color: #555;
+  letter-spacing: 0.5px;
 }
 
 /* Scrollbar personnalisée */
@@ -4430,6 +4810,60 @@ body:not(.player-visible) .track-info-panel {
 .settings-btn-add:hover {
   color: #fff;
   border-color: #555;
+}
+
+/* Settings: Raccourcis clavier */
+.settings-shortcuts-list {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.settings-shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.settings-shortcut-row:last-child {
+  border-bottom: none;
+}
+
+.settings-shortcut-label {
+  font-size: 12px;
+  color: #888;
+}
+
+.settings-shortcut-key {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #ccc;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+  padding: 3px 8px;
+  min-width: 40px;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.settings-shortcut-key:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: #555;
+}
+
+.settings-shortcut-key.capturing {
+  background: rgba(255, 165, 0, 0.15);
+  border-color: #e08700;
+  color: #e08700;
+  animation: shortcut-pulse 1s ease-in-out infinite;
+}
+
+@keyframes shortcut-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 /* Settings footer */

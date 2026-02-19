@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,7 +9,7 @@
 <body>
   <!-- Zone de drag pour déplacer la fenêtre (barre de titre macOS) -->
   <div class="titlebar" data-tauri-drag-region>
-    <button class="titlebar-settings-btn" id="btn-settings" title="Paramètres">
+    <button class="titlebar-settings-btn" id="btn-settings" title="Settings">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
@@ -24,15 +24,15 @@
       <div class="sidebar-resize-handle" id="sidebar-resize-handle"></div>
       <div class="sidebar-header">
         <h2>Noir</h2>
-        <button id="select-folder" class="btn-icon" title="Ajouter un dossier">+</button>
+        <button id="select-folder" class="btn-icon" title="Add folder">+</button>
       </div>
 
       <nav class="sidebar-nav">
-        <button class="nav-item active" data-view="home" data-tooltip="Accueil">
+        <button class="nav-item active" data-view="home" data-tooltip="Home">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
           </svg>
-          <span class="nav-item-label">Accueil</span>
+          <span class="nav-item-label">Home</span>
         </button>
         <button class="nav-item" data-view="albums" data-tooltip="Albums">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -40,17 +40,17 @@
           </svg>
           <span class="nav-item-label">Albums</span>
         </button>
-        <button class="nav-item" data-view="artists" data-tooltip="Artistes">
+        <button class="nav-item" data-view="artists" data-tooltip="Artists">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
           </svg>
-          <span class="nav-item-label">Artistes</span>
+          <span class="nav-item-label">Artists</span>
         </button>
-        <button class="nav-item" data-view="tracks" data-tooltip="Titres">
+        <button class="nav-item" data-view="tracks" data-tooltip="Tracks">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
           </svg>
-          <span class="nav-item-label">Titres</span>
+          <span class="nav-item-label">Tracks</span>
         </button>
       </nav>
 
@@ -58,7 +58,7 @@
       <div class="sidebar-playlists">
         <div class="playlists-header">
           <span class="playlists-title">Playlists</span>
-          <button id="create-playlist-btn" class="btn-icon-small" title="Nouvelle playlist">
+          <button id="create-playlist-btn" class="btn-icon-small" title="New playlist">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
             </svg>
@@ -73,7 +73,7 @@
       <div id="indexation-module" class="indexation-module">
         <!-- Header (toujours visible, cliquable pour toggle) -->
         <div class="indexation-header" id="indexation-header">
-          <span class="indexation-title">Indexation</span>
+          <span class="indexation-title">Indexing</span>
 
           <!-- Contenu replié: progress mini (visible pendant indexation) -->
           <div id="indexation-progress-mini" class="indexation-progress-mini hidden">
@@ -83,7 +83,7 @@
           </div>
 
           <!-- Contenu replié: bouton refresh (visible quand inactif) -->
-          <button id="refresh-indexation-collapsed" class="btn-refresh-collapsed" title="Relancer l'indexation">
+          <button id="refresh-indexation-collapsed" class="btn-refresh-collapsed" title="Reindex">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
               <path d="M21 3v5h-5"/>
@@ -91,7 +91,7 @@
           </button>
 
           <!-- Flèche toggle -->
-          <button class="btn-toggle-indexation" id="btn-toggle-indexation" title="Afficher/masquer les détails">
+          <button class="btn-toggle-indexation" id="btn-toggle-indexation" title="Show/hide details">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 9l6 6 6-6"/>
             </svg>
@@ -116,7 +116,7 @@
             <div class="indexation-stats-grid">
               <div class="indexation-stat">
                 <span id="stat-artists" class="stat-value">-</span>
-                <span class="stat-label">Artistes</span>
+                <span class="stat-label">Artists</span>
               </div>
               <div class="indexation-stat">
                 <span id="stat-albums" class="stat-value">-</span>
@@ -135,12 +135,12 @@
                 <span class="stat-label">FLAC 24</span>
               </div>
             </div>
-            <button id="add-content-btn" class="btn-add-content" title="Ajouter un dossier de musique">
+            <button id="add-content-btn" class="btn-add-content" title="Add a music folder">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 5v14"/>
                 <path d="M5 12h14"/>
               </svg>
-              Ajouter du contenu
+              Add content
             </button>
           </div>
         </div>
@@ -152,7 +152,7 @@
       <!-- Barre de recherche en haut -->
       <div class="search-bar">
         <div class="search-bar-inner">
-          <input type="text" id="search-input" class="search-input" placeholder="Rechercher..." autocomplete="off">
+          <input type="text" id="search-input" class="search-input" placeholder="Search..." autocomplete="off">
           <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
           </svg>
@@ -166,9 +166,9 @@
       <!-- Message de bienvenue -->
       <div id="welcome" class="welcome">
         <h1>Noir</h1>
-        <p>Lecteur audio minimaliste</p>
+        <p>Minimalist audio player</p>
         <button id="open-folder-welcome" class="btn-primary">
-          Choisir un dossier de musique
+          Choose a music folder
         </button>
       </div>
 
@@ -183,19 +183,19 @@
   <div id="context-menu" class="context-menu hidden">
     <button class="context-menu-item" data-action="play">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      <span>Lecture</span>
+      <span>Play</span>
     </button>
     <button class="context-menu-item" data-action="add-to-queue">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
       </svg>
-      <span>Ajouter à la file</span>
+      <span>Add to queue</span>
     </button>
     <button class="context-menu-item context-menu-has-submenu" data-action="add-to-playlist">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
       </svg>
-      <span>Ajouter à une playlist</span>
+      <span>Add to playlist</span>
       <svg class="submenu-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
     </button>
     <!-- Sous-menu des playlists (généré dynamiquement) -->
@@ -206,7 +206,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
         </svg>
-        <span>Nouvelle playlist...</span>
+        <span>New playlist...</span>
       </button>
     </div>
     <div class="context-menu-separator"></div>
@@ -214,34 +214,34 @@
       <svg viewBox="0 0 24 24" fill="currentColor">
         <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/>
       </svg>
-      <span>Voir l'album</span>
+      <span>Go to album</span>
     </button>
     <button class="context-menu-item" data-action="go-to-artist">
       <svg viewBox="0 0 24 24" fill="currentColor">
         <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
       </svg>
-      <span>Voir l'artiste</span>
+      <span>Go to artist</span>
     </button>
     <button class="context-menu-item" data-action="show-info">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
       </svg>
-      <span>Informations</span>
+      <span>Info</span>
     </button>
     <div class="context-menu-separator"></div>
     <button class="context-menu-item context-menu-item-danger" data-action="remove-from-library">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
       </svg>
-      <span>Supprimer de la bibliothèque</span>
+      <span>Remove from library</span>
     </button>
   </div>
 
   <!-- Panel File d'attente (Queue) -->
   <aside id="queue-panel" class="queue-panel">
     <div class="queue-header">
-      <h3>File d'attente</h3>
-      <button id="close-queue" class="btn-close-queue" title="Fermer">
+      <h3>Queue</h3>
+      <button id="close-queue" class="btn-close-queue" title="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
         </svg>
@@ -249,14 +249,14 @@
     </div>
 
     <div class="queue-now-playing">
-      <span class="queue-label">En cours</span>
+      <span class="queue-label">Now playing</span>
       <div id="queue-current" class="queue-current"></div>
     </div>
 
     <div id="queue-next" class="queue-next hidden">
       <div class="queue-next-header">
-        <span class="queue-label">À suivre</span>
-        <button id="clear-queue" class="btn-clear-queue" title="Vider la liste de lecture" style="display: none;">
+        <span class="queue-label">Up next</span>
+        <button id="clear-queue" class="btn-clear-queue" title="Clear queue" style="display: none;">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
           </svg>
@@ -266,16 +266,16 @@
     </div>
 
     <div id="queue-empty" class="queue-empty">
-      <p>La file d'attente est vide</p>
-      <p class="queue-hint">Cliquez sur l'icône de liste pour ajouter un morceau</p>
+      <p>Queue is empty</p>
+      <p class="queue-hint">Click the list icon to add a track</p>
     </div>
   </aside>
 
   <!-- Panel Informations Track -->
   <aside id="track-info-panel" class="track-info-panel">
     <div class="track-info-header">
-      <h3>Informations</h3>
-      <button id="close-track-info" class="btn-close-panel" title="Fermer">
+      <h3>Info</h3>
+      <button id="close-track-info" class="btn-close-panel" title="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
         </svg>
@@ -289,8 +289,8 @@
   <!-- Panel Paramètres (Settings) -->
   <aside id="settings-panel" class="settings-panel">
     <div class="settings-header">
-      <h3>Paramètres</h3>
-      <button id="close-settings" class="btn-close-panel" title="Fermer">
+      <h3>Settings</h3>
+      <button id="close-settings" class="btn-close-panel" title="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
         </svg>
@@ -302,16 +302,16 @@
         <div class="settings-section-title">Audio</div>
 
         <div class="settings-row">
-          <label class="settings-label" for="settings-audio-device">Sortie audio</label>
+          <label class="settings-label" for="settings-audio-device">Audio output</label>
           <select id="settings-audio-device" class="settings-select">
-            <option value="">Chargement...</option>
+            <option value="">Loading...</option>
           </select>
         </div>
 
         <div class="settings-row">
           <div class="settings-row-left">
-            <label class="settings-label">Mode exclusif</label>
-            <span class="settings-description">Accès exclusif au DAC pour une lecture bit-perfect.</span>
+            <label class="settings-label">Exclusive mode</label>
+            <span class="settings-description">Exclusive access to DAC for bit-perfect playback.</span>
           </div>
           <label class="settings-toggle">
             <input type="checkbox" id="settings-exclusive-mode">
@@ -321,7 +321,7 @@
 
         <div class="settings-row settings-row-vertical">
           <div class="settings-row-top">
-            <label class="settings-label" for="settings-default-volume">Volume au démarrage</label>
+            <label class="settings-label" for="settings-default-volume">Startup volume</label>
             <span id="settings-volume-value" class="settings-value">100%</span>
           </div>
           <input type="range" id="settings-default-volume" class="settings-range" value="100" min="0" max="100">
@@ -330,7 +330,7 @@
 
       <!-- Section BIBLIOTHÈQUE -->
       <div class="settings-section">
-        <div class="settings-section-title">Bibliothèque</div>
+        <div class="settings-section-title">Library</div>
         <div id="settings-library-paths" class="settings-path-list">
           <!-- Paths populated dynamically -->
         </div>
@@ -338,28 +338,76 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14"/><path d="M5 12h14"/>
           </svg>
-          Ajouter un dossier
+          Add folder
         </button>
       </div>
 
       <!-- Section LECTURE -->
       <div class="settings-section">
-        <div class="settings-section-title">Lecture</div>
+        <div class="settings-section-title">Playback</div>
         <div class="settings-row">
           <div class="settings-row-left">
-            <label class="settings-label">Reprise automatique</label>
-            <span class="settings-description">Reprendre la dernière piste au démarrage.</span>
+            <label class="settings-label">Auto-resume</label>
+            <span class="settings-description">Resume last track on startup.</span>
           </div>
           <label class="settings-toggle">
             <input type="checkbox" id="settings-auto-resume">
             <span class="settings-toggle-slider"></span>
           </label>
         </div>
+        <div class="settings-row">
+          <div class="settings-row-left">
+            <label class="settings-label">Gapless playback</label>
+            <span class="settings-description">Plays tracks without interruption.</span>
+          </div>
+          <label class="settings-toggle">
+            <input type="checkbox" id="settings-gapless" checked>
+            <span class="settings-toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Section RACCOURCIS -->
+      <div class="settings-section">
+        <div class="settings-section-title">Keyboard shortcuts</div>
+        <div id="settings-shortcuts-list" class="settings-shortcuts-list">
+          <!-- Populated dynamically by populateShortcutsList() -->
+        </div>
+        <button id="settings-reset-shortcuts" class="settings-btn-add" style="margin-top: 8px;">
+          Reset shortcuts
+        </button>
+      </div>
+
+      <!-- Section MISES À JOUR -->
+      <div class="settings-section">
+        <div class="settings-section-title">Updates</div>
+        <div class="settings-row">
+          <div class="settings-row-left">
+            <label class="settings-label">Auto-check</label>
+            <span class="settings-description">Check for updates on startup.</span>
+          </div>
+          <label class="settings-toggle">
+            <input type="checkbox" id="settings-auto-update" checked>
+            <span class="settings-toggle-slider"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <span id="settings-update-status" class="settings-label" style="color:#555;">Current version: 0.1.0</span>
+          <button id="settings-check-update" class="settings-btn-add" style="width:auto; padding:4px 12px;">
+            Check
+          </button>
+        </div>
+        <div id="settings-update-available" class="settings-row" style="display:none;">
+          <span id="settings-update-version" class="settings-label" style="color:#e08700;"></span>
+          <button id="settings-install-update" class="settings-btn-add" style="width:auto; padding:4px 12px; border-color:#e08700; color:#e08700;">
+            Install
+          </button>
+        </div>
       </div>
 
       <!-- Footer version -->
       <div class="settings-footer">
-        <span class="settings-version">Noir v0.1.0</span>
+        <span class="settings-version" id="settings-version-label">Noir v0.1.0</span>
       </div>
     </div>
   </aside>
@@ -368,7 +416,7 @@
   <div id="player" class="player hidden">
     <!-- 1. Zone gauche : cover + infos piste -->
     <div class="player-left">
-      <div id="cover-art" class="cover-art cover-art-clickable" title="Voir l'album">
+      <div id="cover-art" class="cover-art cover-art-clickable" title="Go to album">
         <div class="cover-placeholder">♪</div>
       </div>
       <div class="now-playing">
@@ -380,7 +428,7 @@
     </div>
 
     <!-- 2. Queue button -->
-    <button id="queue-btn" class="btn-mode btn-queue" title="File d'attente">
+    <button id="queue-btn" class="btn-mode btn-queue" title="Queue">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
         <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
       </svg>
@@ -394,7 +442,7 @@
     </div>
 
     <!-- 4. Shuffle -->
-    <button id="shuffle" class="btn-mode" title="Lecture aléatoire">⤮</button>
+    <button id="shuffle" class="btn-mode" title="Shuffle">⤮</button>
 
     <!-- 5. Contrôles de lecture -->
     <div class="player-controls">
@@ -404,7 +452,7 @@
     </div>
 
     <!-- 6. Repeat -->
-    <button id="repeat" class="btn-mode" title="Répéter">⟳</button>
+    <button id="repeat" class="btn-mode" title="Repeat">⟳</button>
 
     <!-- 7. SRC OUT specs -->
     <span id="audio-specs" class="audio-specs">
@@ -431,13 +479,13 @@
 
     <!-- 9. Sélecteur de sortie audio -->
     <div class="audio-output-container">
-      <button id="audio-output-btn" class="btn-audio-output" title="Sortie audio">
+      <button id="audio-output-btn" class="btn-audio-output" title="Audio output">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
           <path d="M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-5 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm0 16c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
         </svg>
       </button>
       <div id="audio-output-menu" class="audio-output-menu hidden">
-        <div class="audio-output-header">Sortie audio</div>
+        <div class="audio-output-header">Audio output</div>
         <div id="audio-output-list" class="audio-output-list">
           <!-- Devices will be populated dynamically -->
         </div>
@@ -449,8 +497,8 @@
                 <span class="hog-mode-slider"></span>
               </label>
               <div class="hog-mode-label">
-                <span class="hog-mode-text">Mode Exclusif</span>
-                <span class="hog-mode-status" id="hog-mode-status">Désactivé</span>
+                <span class="hog-mode-text">Exclusive Mode</span>
+                <span class="hog-mode-status" id="hog-mode-status">Disabled</span>
               </div>
             </div>
             <button class="hog-mode-info-btn" id="hog-mode-info-btn" type="button">
@@ -459,36 +507,98 @@
               </svg>
             </button>
             <div class="hog-mode-tooltip" id="hog-mode-tooltip">
-              <div class="hog-mode-tooltip-title">Mode Exclusif (Hog Mode)</div>
-              <p>Prend le contrôle exclusif du périphérique audio pour une lecture bit-perfect.</p>
+              <div class="hog-mode-tooltip-title">Exclusive Mode (Hog Mode)</div>
+              <p>Takes exclusive control of the audio device for bit-perfect playback.</p>
               <ul>
-                <li>Désactive le mixeur système macOS</li>
-                <li>Signal audio envoyé sans altération</li>
-                <li>Idéal pour les DAC audiophiles</li>
+                <li>Disables macOS system mixer</li>
+                <li>Audio signal sent unaltered</li>
+                <li>Ideal for audiophile DACs</li>
               </ul>
               <div class="hog-mode-tooltip-warning">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
                   <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
                 </svg>
-                <span>Aucune autre application ne pourra utiliser ce périphérique.</span>
+                <span>No other application will be able to use this device.</span>
               </div>
             </div>
+          </div>
+          <!-- Bouton Equalizer — ouvre le side panel EQ -->
+          <div class="eq-mode-container">
+            <div class="eq-mode-toggle-wrapper">
+              <div class="eq-mode-label">
+                <span class="eq-mode-text">Equalizer</span>
+                <span class="eq-mode-status" id="eq-mode-status">Disabled</span>
+              </div>
+            </div>
+            <button class="eq-mode-info-btn" id="eq-mode-info-btn" type="button" title="Open equalizer">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M2 20h4l3-16h2l3 10h2l3-8h3"/>
+              </svg>
+            </button>
           </div>
         </div>
       </div>
     </div>
   </div>
 
+  <!-- Panel Equalizer (side panel droit) -->
+  <aside id="eq-panel" class="eq-panel">
+    <div class="eq-panel-header">
+      <h3>Equalizer</h3>
+      <button id="close-eq-panel" class="btn-close-panel" title="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="eq-panel-content">
+      <!-- Toggle On/Off -->
+      <div class="eq-panel-toggle-row">
+        <label class="eq-mode-switch">
+          <input type="checkbox" id="eq-enabled-checkbox">
+          <span class="eq-mode-slider"></span>
+        </label>
+        <span class="eq-panel-toggle-label" id="eq-panel-enabled-label">Disabled</span>
+      </div>
+
+      <!-- Preset dropdown + Reset -->
+      <div class="eq-panel-controls">
+        <div class="eq-preset-dropdown-container">
+          <button id="eq-preset-dropdown-btn" class="eq-preset-dropdown-btn">
+            <span id="eq-preset-label">Flat</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+          <div id="eq-preset-dropdown" class="eq-preset-dropdown hidden">
+            <!-- Presets generated dynamically -->
+          </div>
+        </div>
+        <button id="eq-flat-btn" class="eq-flat-btn">Reset</button>
+      </div>
+
+      <!-- SVG Curve -->
+      <div class="eq-curve-container">
+        <svg id="eq-curve-svg" viewBox="0 0 280 140"></svg>
+        <div class="eq-freq-labels">
+          <span>32</span><span>64</span><span>250</span><span>1k</span>
+          <span>2k</span><span>4k</span><span>8k</span><span>16k</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
   <!-- Modale création/renommage playlist -->
   <div id="playlist-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
     <div class="modal-content">
-      <h3 id="playlist-modal-title">Nouvelle playlist</h3>
-      <input type="text" id="playlist-name-input" class="modal-input" placeholder="Nom de la playlist" autofocus>
+      <h3 id="playlist-modal-title">New playlist</h3>
+      <input type="text" id="playlist-name-input" class="modal-input" placeholder="Playlist name" autofocus>
       <div class="modal-buttons">
-        <button id="playlist-modal-cancel" class="btn-modal-secondary">Annuler</button>
-        <button id="playlist-modal-confirm" class="btn-modal-primary">Créer</button>
+        <button id="playlist-modal-cancel" class="btn-modal-secondary">Cancel</button>
+        <button id="playlist-modal-confirm" class="btn-modal-primary">Create</button>
       </div>
     </div>
   </div>
@@ -497,11 +607,11 @@
   <div id="confirm-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
     <div class="modal-content">
-      <h3 id="confirm-modal-title">Confirmer</h3>
-      <p id="confirm-modal-message">Êtes-vous sûr ?</p>
+      <h3 id="confirm-modal-title">Confirm</h3>
+      <p id="confirm-modal-message">Are you sure?</p>
       <div class="modal-buttons">
-        <button id="confirm-modal-cancel" class="btn-modal-secondary">Annuler</button>
-        <button id="confirm-modal-confirm" class="btn-modal-primary btn-danger">Supprimer</button>
+        <button id="confirm-modal-cancel" class="btn-modal-secondary">Cancel</button>
+        <button id="confirm-modal-confirm" class="btn-modal-primary btn-danger">Delete</button>
       </div>
     </div>
   </div>

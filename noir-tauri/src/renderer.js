@@ -25,6 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
 let audioIsPlaying = false;
 let audioDurationFromRust = 0;
 let audioPositionFromRust = 0;
+let gaplessPreloadTriggered = false;
 
 // === FAVORIS ===
 // Set des chemins de tracks favorites (pour lookup O(1))
@@ -160,7 +161,7 @@ function initCustomDragSystem() {
             for (const track of album.tracks) {
               await addTrackToPlaylist(playlistId, track)
             }
-            showToast(`Album "${album.album}" ajouté à la playlist`)
+            showToast(`Album "${album.album}" added to playlist`)
           } else if (customDragState.track) {
             // Sinon ajoute juste la track
             await addTrackToPlaylist(playlistId, customDragState.track)
@@ -563,16 +564,26 @@ function getCodecFromPath(path) {
   return codecMap[ext] || ext?.toUpperCase()
 }
 
-// === ANIMATION CSS SINUSOIDALE POUR "LECTURE EN COURS" ===
-// Génère le HTML pour l'animation de 3 lignes sinusoïdales asynchrones
+// === ANIMATION WAVEFORM POUR "LECTURE EN COURS" ===
+// Génère le HTML pour l'animation barres waveform (inspirée du hero de la landing page)
+function getWaveformAnimationHTML() {
+  const bars = 48
+  const center = bars / 2
+  let html = '<div class="waveform-animation">'
+  for (let i = 0; i < bars; i++) {
+    const dist = Math.abs(i - center) / center
+    const maxH = 60 * (1 - dist * 0.7)
+    const delay = (i * 0.05).toFixed(2)
+    const duration = (1.2 + Math.random() * 0.8).toFixed(2)
+    html += `<div class="waveform-bar" style="height:${maxH}px;animation-delay:${delay}s;animation-duration:${duration}s"></div>`
+  }
+  html += '</div>'
+  return html
+}
+
+// Alias pour compatibilité
 function getSineWaveAnimationHTML() {
-  return `
-    <svg class="sine-wave-animation" viewBox="0 0 500 100" preserveAspectRatio="none">
-      <path class="sine-wave sine-wave-1" d="M0,50 Q62.5,25 125,50 T250,50 T375,50 T500,50" />
-      <path class="sine-wave sine-wave-2" d="M0,50 Q62.5,30 125,50 T250,50 T375,50 T500,50" />
-      <path class="sine-wave sine-wave-3" d="M0,50 Q62.5,35 125,50 T250,50 T375,50 T500,50" />
-    </svg>
-  `
+  return getWaveformAnimationHTML()
 }
 
 // === INDICATEUR DE CHARGEMENT ===
@@ -629,11 +640,11 @@ async function addFolder(folderPath) {
 
   if (tracksWithMetadata.length === 0) {
     hideLoading()
-    alert('Aucun fichier audio trouvé dans ce dossier.')
+    alert('No audio files found in this folder.')
     return
   }
 
-  updateLoading(`${tracksWithMetadata.length} fichiers chargés`)
+  updateLoading(`${tracksWithMetadata.length} files loaded`)
 
   // Sauvegarde le chemin pour la prochaine fois
   await invoke('add_library_path', { path: folderPath })
@@ -684,8 +695,8 @@ async function loadMetadataForTracks(trackList) {
           console.error('Erreur metadata:', track.path, e)
           track.metadata = {
             title: track.name,
-            artist: 'Artiste inconnu',
-            album: 'Album inconnu',
+            artist: 'Unknown Artist',
+            album: 'Unknown Album',
             track: 0,
             duration: 0
           }
@@ -695,7 +706,7 @@ async function loadMetadataForTracks(trackList) {
     }))
 
     // Met à jour le message de progression
-    updateLoading(`Métadonnées: ${loaded}/${total}`, `${Math.round(loaded/total*100)}%`)
+    updateLoading(`Metadata: ${loaded}/${total}`, `${Math.round(loaded/total*100)}%`)
   }
 }
 
@@ -708,7 +719,7 @@ function groupTracksIntoAlbumsAndArtists() {
     if (!track.metadata) continue
 
     // Groupe par nom d'album uniquement (pas par artiste-album)
-    const albumKey = track.metadata.album || 'Album inconnu'
+    const albumKey = track.metadata.album || 'Unknown Album'
     const artistKey = track.metadata.artist
 
     // Groupe par album
@@ -760,7 +771,7 @@ function groupTracksIntoAlbumsAndArtists() {
       // Compte le nombre de tracks par artiste
       const artistCounts = {}
       for (const track of albums[albumKey].tracks) {
-        const artist = track.metadata?.artist || 'Artiste inconnu'
+        const artist = track.metadata?.artist || 'Unknown Artist'
         artistCounts[artist] = (artistCounts[artist] || 0) + 1
       }
 
@@ -779,11 +790,11 @@ function groupTracksIntoAlbumsAndArtists() {
         albums[albumKey].isVariousArtists = true // Garde true pour afficher l'artiste sur chaque track
       } else {
         // Pas d'artiste majoritaire = Artistes Variés
-        albums[albumKey].artist = 'Artistes Variés'
+        albums[albumKey].artist = 'Various Artists'
         albums[albumKey].isVariousArtists = true
       }
     } else {
-      albums[albumKey].artist = artistsArray[0] || 'Artiste inconnu'
+      albums[albumKey].artist = artistsArray[0] || 'Unknown Artist'
       albums[albumKey].isVariousArtists = false
     }
 
@@ -832,9 +843,9 @@ function buildSearchIndex() {
 
 // Recherche rapide utilisant l'index inversé
 function searchTracksWithIndex(query) {
-  if (!query || query.length < 2) return null // Fallback vers recherche classique
+  if (!query || query.length < 1) return null // Fallback vers recherche classique
 
-  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length >= 2)
+  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length >= 1)
   if (queryWords.length === 0) return null
 
   let resultSet = null
@@ -1035,7 +1046,7 @@ async function initScanListeners() {
     updateIndexationStats(stats)
 
     // Affiche le toast
-    showToast(`Indexation terminée - ${stats.total_tracks} fichiers`)
+    showToast(`Indexing complete - ${stats.total_tracks} files`)
 
     // Recharge la bibliothèque si:
     // 1. Des changements ont été détectés (new_tracks > 0 ou removed_tracks > 0)
@@ -1043,7 +1054,43 @@ async function initScanListeners() {
     const shouldReload = new_tracks > 0 || removed_tracks > 0 || (tracks.length === 0 && stats.total_tracks > 0)
     if (shouldReload) {
       console.log(`Reloading library: new=${new_tracks}, removed=${removed_tracks}, local=${tracks.length}, scanned=${stats.total_tracks}`)
+      invalidateDiscoveryMixCache()  // Invalide les mixes de découverte après un rescan
       reloadLibraryFromCache()
+    }
+  })
+
+  // Enrichissement des genres via Deezer (arrière-plan post-scan)
+  await listen('genre_enrichment_progress', (event) => {
+    const { current, total, enriched } = event.payload
+    console.log(`[Genre Enrichment] ${current}/${total} albums (${enriched} enriched)`)
+  })
+
+  await listen('genre_enrichment_complete', async (event) => {
+    const { enriched_albums, total_albums } = event.payload
+    console.log(`[Genre Enrichment] Complete: ${enriched_albums}/${total_albums} albums enriched`)
+
+    if (enriched_albums > 0) {
+      // Recharge les tracks avec les genres enrichis
+      try {
+        const [updatedTracks] = await invoke('load_tracks_from_cache')
+        tracks.length = 0
+        for (const t of updatedTracks) tracks.push(t)
+        filteredTracks = [...tracks]
+        groupTracksIntoAlbumsAndArtists()
+        buildTrackLookup()
+
+        // Invalide et régénère les mixes de découverte
+        invalidateDiscoveryMixCache()
+
+        // Refresh la home si on y est
+        if (currentView === 'home') {
+          displayHomeView()
+        }
+
+        showToast(`Genres enriched for ${enriched_albums} albums`)
+      } catch (e) {
+        console.error('[Genre Enrichment] Failed to reload tracks:', e)
+      }
     }
   })
 
@@ -1077,13 +1124,13 @@ function showInaccessiblePathsWarning(paths) {
   warning.innerHTML = `
     <div class="warning-icon">⚠️</div>
     <div class="warning-content">
-      <div class="warning-title">Bibliothèque inaccessible</div>
+      <div class="warning-title">Library unavailable</div>
       <div class="warning-message">
-        Certains dossiers de votre bibliothèque ne sont pas accessibles : <strong>${pathsList}</strong>
-        <br>Vérifiez que votre disque externe est bien connecté.
+        Some folders in your library are not accessible: <strong>${pathsList}</strong>
+        <br>Check that your external drive is connected.
       </div>
     </div>
-    <button class="warning-close" title="Fermer">×</button>
+    <button class="warning-close" title="Close">×</button>
   `
 
   // Ajoute le bouton de fermeture
@@ -1300,6 +1347,9 @@ function displayCurrentView() {
       case 'artist-page':
         displayArtistPage(currentArtistPageKey)
         break
+      case 'mix-page':
+        if (currentMixData) displayMixPage(currentMixData)
+        break
     }
 
     // Fade-in après le render
@@ -1313,8 +1363,165 @@ function displayCurrentView() {
 let navigationHistory = []
 let currentAlbumPageKey = null
 let currentArtistPageKey = null
+let currentMixData = null  // Mix de découverte en cours d'affichage
+
+// === DISCOVERY MIX CACHE ===
+const DISCOVERY_MIX_CACHE_KEY = 'discovery_mixes_cache'
+const DISCOVERY_MIX_TTL = 24 * 60 * 60 * 1000  // 24h en ms
+let discoveryMixes = []  // Mixes courants : [{ id, title, genre, decade, tracks, coverPath, trackCount }]
 
 // Navigue vers la page dédiée d'un artiste
+// === DISCOVERY MIX GENERATION ===
+
+async function generateDiscoveryMixes() {
+  // Vérifie le cache localStorage
+  try {
+    const cached = localStorage.getItem(DISCOVERY_MIX_CACHE_KEY)
+    if (cached) {
+      const parsed = JSON.parse(cached)
+      if (parsed.timestamp && (Date.now() - parsed.timestamp < DISCOVERY_MIX_TTL)) {
+        // Valide que les paths cachés existent encore dans la bibliothèque
+        const pathSet = new Set(tracks.map(t => t.path))
+        const validMixes = parsed.mixes.filter(mix =>
+          mix.tracks.some(path => pathSet.has(path))
+        )
+        if (validMixes.length > 0) {
+          discoveryMixes = validMixes
+          console.log(`[Discovery] Loaded ${validMixes.length} mixes from cache`)
+          return discoveryMixes
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[Discovery] Cache invalid:', e)
+  }
+
+  // Récupère tous les paths jamais écoutés depuis le backend
+  let playedPathsSet
+  try {
+    const playedPaths = await invoke('get_all_played_paths')
+    playedPathsSet = new Set(playedPaths || [])
+  } catch (err) {
+    console.error('[Discovery] Failed to get played paths:', err)
+    playedPathsSet = new Set()
+  }
+
+  // Groupe les tracks non-écoutées par genre+décennie
+  // Tracks sans genre → groupées par décennie seule avec label "Découverte"
+  const genreDecadeMap = new Map()
+
+  for (const track of tracks) {
+    if (!track.metadata) continue
+    if (playedPathsSet.has(track.path)) continue   // Skip tracks écoutées
+    if (!track.metadata.year) continue               // Skip sans année
+
+    const genre = track.metadata.genre || null
+    const decade = Math.floor(track.metadata.year / 10) * 10  // 1994 → 1990
+
+    // Tracks avec genre → genre+décennie, tracks sans genre → "Découverte"+décennie
+    const key = genre ? `${genre}|${decade}` : `Discovery|${decade}`
+    if (!genreDecadeMap.has(key)) {
+      genreDecadeMap.set(key, [])
+    }
+    genreDecadeMap.get(key).push(track)
+  }
+
+  // Seuil : min 10 tracks ET au moins 3 artistes différents pour un vrai mix
+  const MIN_TRACKS_PER_MIX = 10
+  const MAX_TRACKS_PER_MIX = 50
+  const MAX_TRACKS_PER_ARTIST = 3  // Diversité : max 3 tracks par artiste dans un mix
+  const MIN_ARTISTS_PER_MIX = 3
+
+  const eligibleCombos = []
+  for (const [key, trackList] of genreDecadeMap) {
+    if (trackList.length >= MIN_TRACKS_PER_MIX) {
+      // Vérifie qu'il y a assez d'artistes distincts
+      const uniqueArtists = new Set(trackList.map(t => t.metadata?.artist || ''))
+      if (uniqueArtists.size >= MIN_ARTISTS_PER_MIX) {
+        const [genre, decade] = key.split('|')
+        eligibleCombos.push({ genre, decade: parseInt(decade), tracks: trackList })
+      }
+    }
+  }
+
+  if (eligibleCombos.length === 0) {
+    discoveryMixes = []
+    console.log(`[Discovery] No eligible genre+decade combos (need ≥${MIN_TRACKS_PER_MIX} tracks, ≥${MIN_ARTISTS_PER_MIX} artists)`)
+    return discoveryMixes
+  }
+
+  // Shuffle et prend max 20
+  const shuffled = eligibleCombos.sort(() => Math.random() - 0.5)
+  const selected = shuffled.slice(0, 20)
+
+  // Pour chaque combo, sélectionne des tracks avec diversité d'artistes
+  discoveryMixes = selected.map((combo, index) => {
+    // Diversification : limite max N tracks par artiste, mélange les artistes
+    const artistCount = new Map()
+    const shuffledTracks = [...combo.tracks].sort(() => Math.random() - 0.5)
+    const mixTracks = []
+    for (const track of shuffledTracks) {
+      if (mixTracks.length >= MAX_TRACKS_PER_MIX) break
+      const artist = track.metadata?.artist || 'Unknown'
+      const count = artistCount.get(artist) || 0
+      if (count < MAX_TRACKS_PER_ARTIST) {
+        mixTracks.push(track)
+        artistCount.set(artist, count + 1)
+      }
+    }
+    // Si pas assez après la limite, complète sans contrainte
+    if (mixTracks.length < MIN_TRACKS_PER_MIX) {
+      const usedPaths = new Set(mixTracks.map(t => t.path))
+      for (const track of shuffledTracks) {
+        if (mixTracks.length >= MAX_TRACKS_PER_MIX) break
+        if (!usedPaths.has(track.path)) {
+          mixTracks.push(track)
+          usedPaths.add(track.path)
+        }
+      }
+    }
+
+    // Choisit une track aléatoire pour la cover
+    const coverTrack = mixTracks[Math.floor(Math.random() * mixTracks.length)]
+
+    // Label décennie : "90" pour 1990, "2000" pour 2000+
+    const decadeLabel = combo.decade >= 2000
+      ? combo.decade.toString()
+      : (combo.decade % 100).toString()
+
+    return {
+      id: `discovery-mix-${index}`,
+      title: `Mix ${combo.genre} ${decadeLabel}`,
+      genre: combo.genre,
+      decade: combo.decade,
+      decadeLabel,
+      tracks: mixTracks.map(t => t.path),
+      coverPath: coverTrack.path,
+      trackCount: mixTracks.length
+    }
+  })
+
+  // Sauvegarde dans localStorage
+  try {
+    localStorage.setItem(DISCOVERY_MIX_CACHE_KEY, JSON.stringify({
+      timestamp: Date.now(),
+      mixes: discoveryMixes
+    }))
+  } catch (e) {
+    console.warn('[Discovery] Failed to cache mixes:', e)
+  }
+
+  console.log(`[Discovery] Generated ${discoveryMixes.length} mixes`)
+  return discoveryMixes
+}
+
+function invalidateDiscoveryMixCache() {
+  localStorage.removeItem(DISCOVERY_MIX_CACHE_KEY)
+  discoveryMixes = []
+}
+
+// === NAVIGATION ===
+
 function navigateToArtistPage(artistKey) {
   if (!artistKey || !artists[artistKey]) return
 
@@ -1366,6 +1573,169 @@ function navigateToAlbumPage(albumKey) {
   albumsViewDiv.classList.remove('hidden')
 
   displayAlbumPage(albumKey)
+}
+
+// Navigue vers la page d'un mix de découverte
+function navigateToMixPage(mix) {
+  if (!mix) return
+
+  navigationHistory.push({
+    view: currentView,
+    filteredArtist: filteredArtist,
+    scrollPosition: document.querySelector('.albums-view')?.scrollTop || 0,
+    artistPageKey: currentArtistPageKey
+  })
+
+  currentMixData = mix
+  currentView = 'mix-page'
+
+  navItems.forEach(i => i.classList.remove('active'))
+
+  closeAlbumDetail()
+  if (coverObserver) coverObserver.disconnect()
+  albumsGridDiv.textContent = ''
+  albumsViewDiv.classList.remove('hidden')
+
+  displayMixPage(mix)
+}
+
+// Affiche la page détail d'un mix de découverte
+function displayMixPage(mix) {
+  if (!mix) return
+
+  const existingNav = document.querySelector('.alphabet-nav')
+  if (existingNav) existingNav.remove()
+
+  // Résout les objets track depuis les paths
+  const mixTracks = mix.tracks
+    .map(path => tracks.find(t => t.path === path))
+    .filter(Boolean)
+
+  if (mixTracks.length === 0) return
+
+  const totalDuration = mixTracks.reduce((acc, t) => acc + (t.metadata?.duration || 0), 0)
+  const cover = coverCache.get(mix.coverPath) || thumbnailCache.get(mix.coverPath)
+
+  const pageContainer = document.createElement('div')
+  pageContainer.className = 'album-page-container mix-page-container'
+
+  pageContainer.innerHTML = `
+    <div class="album-page-header">
+      <button class="btn-back-nav" title="Retour">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 12H5"/>
+          <path d="M12 19l-7-7 7-7"/>
+        </svg>
+      </button>
+      <h1 class="album-page-title">${escapeHtml(mix.title)}</h1>
+    </div>
+    <div class="album-page-content">
+      <div class="album-page-cover mix-page-cover-container">
+        ${isValidImageSrc(cover)
+          ? `<img src="${cover}" alt="${escapeHtml(mix.title)}" class="mix-page-cover-blurred">`
+          : '<div class="album-cover-placeholder">♪</div>'
+        }
+        <div class="mix-page-cover-overlay">
+          <span class="mix-page-title-overlay">${escapeHtml(mix.title)}</span>
+        </div>
+      </div>
+      <div class="album-page-info">
+        <p class="album-page-artist">${escapeHtml(mix.genre)} — ${mix.decadeLabel}</p>
+        <p class="album-page-meta">
+          ${mixTracks.length} titres &bull; ${formatTime(totalDuration)}
+        </p>
+        <div class="album-page-buttons">
+          <button class="btn-primary-small play-mix-btn">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            Play
+          </button>
+          <button class="btn-add-queue-album add-mix-queue-btn" title="Add to queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14"/><path d="M5 12h14"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="album-page-tracks mix-page-tracks"></div>
+  `
+
+  // Bouton retour
+  pageContainer.querySelector('.btn-back-nav').addEventListener('click', navigateBack)
+
+  // Bouton Lecture
+  pageContainer.querySelector('.play-mix-btn').addEventListener('click', () => {
+    playMixTracks(mixTracks)
+  })
+
+  // Bouton Ajouter à la file
+  pageContainer.querySelector('.add-mix-queue-btn').addEventListener('click', () => {
+    for (const track of mixTracks) {
+      addToQueue(track)
+    }
+    showToast(`${mix.title} added to queue`)
+  })
+
+  // Liste des tracks
+  const tracksContainer = pageContainer.querySelector('.mix-page-tracks')
+
+  mixTracks.forEach((track, idx) => {
+    const trackItem = document.createElement('div')
+    trackItem.className = 'album-track-item'
+    trackItem.dataset.trackPath = track.path
+
+    const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-'
+    const trackArtist = track.metadata?.artist || 'Unknown Artist'
+    const trackTitle = track.metadata?.title || track.name
+
+    trackItem.innerHTML = `
+      ${getFavoriteButtonHtml(track.path)}
+      <span class="track-number">${idx + 1}</span>
+      <div class="track-info">
+        <span class="track-title">${escapeHtml(trackTitle)}</span>
+        <span class="track-artist">${escapeHtml(trackArtist)}</span>
+      </div>
+      <span class="track-duration">${duration}</span>
+    `
+
+    trackItem.addEventListener('click', (e) => {
+      if (e.target.closest('.favorite-btn')) return
+      const globalIndex = tracks.findIndex(t => t.path === track.path)
+      if (globalIndex !== -1) playTrack(globalIndex)
+    })
+
+    trackItem.addEventListener('contextmenu', (e) => {
+      e.preventDefault()
+      const globalIndex = tracks.findIndex(t => t.path === track.path)
+      if (globalIndex !== -1) showContextMenu(e, track, globalIndex)
+    })
+
+    tracksContainer.appendChild(trackItem)
+  })
+
+  // Charge la cover si pas en cache
+  if (!isValidImageSrc(cover) && mix.coverPath) {
+    const pageImg = pageContainer.querySelector('.mix-page-cover-blurred')
+    if (pageImg) {
+      loadThumbnailAsync(mix.coverPath, pageImg, '', '').catch(() => {})
+    }
+  }
+
+  albumsGridDiv.appendChild(pageContainer)
+}
+
+// Joue un mix : lance la première track et ajoute le reste à la queue
+function playMixTracks(mixTracks) {
+  if (!mixTracks || mixTracks.length === 0) return
+  const firstTrack = mixTracks[0]
+  const globalIndex = tracks.findIndex(t => t.path === firstTrack.path)
+  if (globalIndex !== -1) {
+    // Ajoute les tracks restantes à la queue
+    for (let i = 1; i < mixTracks.length; i++) {
+      addToQueue(mixTracks[i])
+    }
+    playTrack(globalIndex)
+  }
 }
 
 // Retour arrière dans l'historique
@@ -1465,9 +1835,9 @@ function displayAlbumPage(albumKey) {
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z"/>
             </svg>
-            Lecture
+            Play
           </button>
-          <button class="btn-add-queue-album add-album-queue-btn" title="Ajouter à la file d'attente">
+          <button class="btn-add-queue-album add-album-queue-btn" title="Add to queue">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
             </svg>
@@ -1497,7 +1867,7 @@ function displayAlbumPage(albumKey) {
   // Event listener pour ajouter à la queue
   pageContainer.querySelector('.add-album-queue-btn').addEventListener('click', () => {
     addAlbumToQueue(albumKey)
-    showQueueNotification(`Album "${album.album}" ajouté à la file d'attente`)
+    showQueueNotification(`Album "${album.album}" added to queue`)
   })
 
   // Liste des tracks
@@ -1525,12 +1895,12 @@ function displayAlbumPage(albumKey) {
           </div>`
         : `<span class="track-title">${track.metadata?.title || track.name}</span>`
       }
-      <button class="track-add-queue${queue.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Ajouter à la file d'attente">
+      <button class="track-add-queue${queue.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
         </svg>
       </button>
-      <button class="track-add-playlist" title="Ajouter à une playlist">
+      <button class="track-add-playlist" title="Add to playlist">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 5v14"/><path d="M5 12h14"/>
         </svg>
@@ -1551,7 +1921,7 @@ function displayAlbumPage(albumKey) {
     trackItem.querySelector('.track-add-queue').addEventListener('click', (e) => {
       e.stopPropagation()
       addToQueue(track)
-      showQueueNotification(`"${track.metadata?.title || track.name}" ajouté à la file d'attente`)
+      showQueueNotification(`"${track.metadata?.title || track.name}" added to queue`)
       trackItem.querySelector('.track-add-queue').classList.add('in-queue')
     })
 
@@ -1771,35 +2141,72 @@ function updateSearchResultsPanel(query) {
     }
   }
 
-  // Recherche dans les tracks (mot entier exact dans le titre uniquement)
-  for (const track of tracks) {
+  // Recherche dans les tracks — multi-mots, title + artist + album, scoring
+  const queryWords = q.split(/\s+/).filter(w => w.length >= 1)
+  const scoredTracks = []
+
+  for (let i = 0; i < tracks.length; i++) {
+    const track = tracks[i]
     const title = (track.metadata?.title || track.name).toLowerCase()
-    // Sépare le titre en mots et cherche un match exact
-    const titleWords = title.split(/[\s\-_.,;:!?'"()\[\]{}]+/)
-    const hasExactMatch = titleWords.some(word => word === q)
+    const trackArtist = (track.metadata?.artist || '').toLowerCase()
+    const trackAlbum = (track.metadata?.album || '').toLowerCase()
+    const fullText = title + ' ' + trackArtist + ' ' + trackAlbum
 
-    if (hasExactMatch) {
-      // Trouve l'album pour la pochette
-      const trackArtist = track.metadata?.artist || 'Inconnu'
-      const trackAlbum = track.metadata?.album || 'Inconnu'
-      const albumKey = trackAlbum
-      const album = albums[albumKey]
+    // Chaque mot de la query doit matcher quelque part (AND logic)
+    let allMatch = true
+    let score = 0
 
-      results.tracks.push({
+    for (const qw of queryWords) {
+      const inTitle = title.includes(qw)
+      const inArtist = trackArtist.includes(qw)
+      const inAlbum = trackAlbum.includes(qw)
+
+      if (!inTitle && !inArtist && !inAlbum) {
+        allMatch = false
+        break
+      }
+
+      // Scoring: titre pèse plus, début de mot > milieu
+      if (inTitle) {
+        if (title === qw) score += 100              // titre exact
+        else if (title.startsWith(qw)) score += 60  // début du titre
+        else {
+          // Vérifie si c'est un début de mot dans le titre
+          const titleWords = title.split(/[\s\-_.,;:!?'"()\[\]{}]+/)
+          if (titleWords.some(w => w === qw)) score += 50       // mot exact dans titre
+          else if (titleWords.some(w => w.startsWith(qw))) score += 40 // début de mot
+          else score += 20  // substring quelconque dans titre
+        }
+      } else if (inArtist) {
+        if (trackArtist === qw) score += 30
+        else if (trackArtist.startsWith(qw)) score += 20
+        else score += 10
+      } else if (inAlbum) {
+        score += 5
+      }
+    }
+
+    if (allMatch && queryWords.length > 0) {
+      const albumObj = albums[track.metadata?.album || '']
+      scoredTracks.push({
         path: track.path,
         title: track.metadata?.title || track.name,
-        artist: trackArtist,
-        album: trackAlbum,
-        coverPath: album?.coverPath || null,
-        index: tracks.indexOf(track)
+        artist: track.metadata?.artist || 'Inconnu',
+        album: track.metadata?.album || 'Inconnu',
+        coverPath: albumObj?.coverPath || null,
+        index: i,
+        score
       })
-      if (results.tracks.length >= maxResults) break
     }
   }
 
+  // Trie par score décroissant, prend les N premiers
+  scoredTracks.sort((a, b) => b.score - a.score)
+  results.tracks = scoredTracks.slice(0, maxResults)
+
   // Si aucun résultat
   if (results.artists.length === 0 && results.albums.length === 0 && results.tracks.length === 0) {
-    content.innerHTML = `<div class="search-no-results">Aucun résultat pour "${escapeHtml(query)}"</div>`
+    content.innerHTML = `<div class="search-no-results">No results for "${escapeHtml(query)}"</div>`
     searchResultsPanel.classList.remove('hidden')
     return
   }
@@ -1810,7 +2217,7 @@ function updateSearchResultsPanel(query) {
   // Section Artistes
   if (results.artists.length > 0) {
     html += `<div class="search-section">
-      <div class="search-section-title">Artistes</div>`
+      <div class="search-section-title">Artists</div>`
     for (const artist of results.artists) {
       html += `
         <div class="search-result-item" data-type="artist" data-artist="${escapeHtml(artist.name)}">
@@ -1848,7 +2255,7 @@ function updateSearchResultsPanel(query) {
   // Section Titres
   if (results.tracks.length > 0) {
     html += `<div class="search-section">
-      <div class="search-section-title">Titres</div>`
+      <div class="search-section-title">Tracks</div>`
     for (const track of results.tracks) {
       html += `
         <div class="search-result-item" data-type="track" data-track-index="${track.index}">
@@ -2357,6 +2764,9 @@ async function displayHomeView() {
     }
   }
 
+  // Génère les mixes de découverte (utilise le cache si valide)
+  await generateDiscoveryMixes()
+
   const homeContainer = document.createElement('div')
   homeContainer.className = 'home-container'
 
@@ -2378,9 +2788,9 @@ async function displayHomeView() {
 
     // Détermine le titre, l'artiste, l'album et les specs
     const title = currentTrack?.metadata?.title || currentTrack?.name || displayTrack.title || 'Titre inconnu'
-    const artist = currentTrack?.metadata?.artist || displayTrack.artist || 'Artiste inconnu'
+    const artist = currentTrack?.metadata?.artist || displayTrack.artist || 'Unknown Artist'
     const album = currentTrack?.metadata?.album || displayTrack.album || ''
-    const label = isCurrentlyPlaying ? 'Lecture en cours' : 'Reprendre la lecture'
+    const label = isCurrentlyPlaying ? 'Now Playing' : 'Resume Playback'
 
     // Specs techniques : bit depth et sample rate en tags colorés, codec et durée en texte
     let specsTagsHtml = ''
@@ -2454,7 +2864,7 @@ async function displayHomeView() {
 
     const recentHeader = document.createElement('h2')
     recentHeader.className = 'home-section-title'
-    recentHeader.textContent = 'Écouté récemment'
+    recentHeader.textContent = 'Recently Played'
     recentSection.appendChild(recentHeader)
 
     const grid = document.createElement('div')
@@ -2475,7 +2885,7 @@ async function displayHomeView() {
     }
 
     for (const entry of uniqueTracks) {
-      const albumKey = entry.album || 'Album inconnu'
+      const albumKey = entry.album || 'Unknown Album'
       const album = albums[albumKey]
 
       const item = document.createElement('div')
@@ -2488,7 +2898,7 @@ async function displayHomeView() {
         </div>
         <div class="recent-track-info">
           <span class="recent-track-title">${escapeHtml(entry.title) || 'Titre inconnu'}</span>
-          <span class="recent-track-artist">${escapeHtml(entry.artist) || 'Artiste inconnu'}</span>
+          <span class="recent-track-artist">${escapeHtml(entry.artist) || 'Unknown Artist'}</span>
           <span class="recent-track-album">${escapeHtml(entry.album) || ''}</span>
         </div>
       `
@@ -2545,7 +2955,7 @@ async function displayHomeView() {
 
       const newHeader = document.createElement('h2')
       newHeader.className = 'home-section-title'
-      newHeader.textContent = 'nouveautés'
+      newHeader.textContent = 'New Releases'
       newSection.appendChild(newHeader)
 
       const newCarousel = document.createElement('div')
@@ -2605,7 +3015,7 @@ async function displayHomeView() {
 
     const discoverHeader = document.createElement('h2')
     discoverHeader.className = 'home-section-title'
-    discoverHeader.textContent = 'À découvrir'
+    discoverHeader.textContent = 'Discover'
     discoverSection.appendChild(discoverHeader)
 
     const carousel = document.createElement('div')
@@ -2664,7 +3074,7 @@ async function displayHomeView() {
 
     const artistsHeader = document.createElement('h2')
     artistsHeader.className = 'home-section-title'
-    artistsHeader.textContent = 'Tes artistes préférés'
+    artistsHeader.textContent = 'Your Favorite Artists'
     artistsSection.appendChild(artistsHeader)
 
     const artistsCarousel = document.createElement('div')
@@ -2680,7 +3090,7 @@ async function displayHomeView() {
           <div class="carousel-cover-placeholder">👤</div>
         </div>
         <div class="carousel-title">${escapeHtml(artist.name)}</div>
-        <div class="carousel-artist">${artist.play_count} écoutes</div>
+        <div class="carousel-artist">${artist.play_count} plays</div>
       `
 
       const img = item.querySelector('.carousel-cover-img')
@@ -2722,7 +3132,7 @@ async function displayHomeView() {
 
     const hiResHeader = document.createElement('h2')
     hiResHeader.className = 'home-section-title'
-    hiResHeader.textContent = 'Qualité Audiophile'
+    hiResHeader.textContent = 'Audiophile Quality'
     hiResSection.appendChild(hiResHeader)
 
     const hiResCarousel = document.createElement('div')
@@ -2789,7 +3199,7 @@ async function displayHomeView() {
 
     const longHeader = document.createElement('h2')
     longHeader.className = 'home-section-title'
-    longHeader.textContent = 'Albums longs'
+    longHeader.textContent = 'Long Albums'
     longSection.appendChild(longHeader)
 
     const longCarousel = document.createElement('div')
@@ -2869,7 +3279,7 @@ async function displayHomeView() {
 
     const weekHeader = document.createElement('h2')
     weekHeader.className = 'home-section-title'
-    weekHeader.textContent = 'Ajoutés cette semaine'
+    weekHeader.textContent = 'Added This Week'
     weekSection.appendChild(weekHeader)
 
     const weekCarousel = document.createElement('div')
@@ -2924,7 +3334,7 @@ async function displayHomeView() {
 
     const mixHeader = document.createElement('h2')
     mixHeader.className = 'home-section-title'
-    mixHeader.textContent = 'Mix aléatoire'
+    mixHeader.textContent = 'Random Mix'
     mixSection.appendChild(mixHeader)
 
     const mixCarousel = document.createElement('div')
@@ -2970,13 +3380,66 @@ async function displayHomeView() {
     homeContainer.appendChild(mixSection)
   }
 
+  // === 10. Carrousel "Mix de découverte" (playlists genre+décennie) ===
+  if (discoveryMixes.length > 0) {
+    const discoverySection = document.createElement('section')
+    discoverySection.className = 'home-section'
+    discoverySection.id = 'home-discovery-mix-section'
+
+    const discoveryHeader = document.createElement('h2')
+    discoveryHeader.className = 'home-section-title'
+    discoveryHeader.textContent = 'Discovery Mix'
+    discoverySection.appendChild(discoveryHeader)
+
+    const discoveryCarousel = document.createElement('div')
+    discoveryCarousel.className = 'home-carousel'
+    discoveryCarousel.id = 'discovery-mix-carousel'
+
+    for (const mix of discoveryMixes) {
+      const item = document.createElement('div')
+      item.className = 'carousel-item discovery-mix-item'
+      item.dataset.mixId = mix.id
+      item.innerHTML = `
+        <div class="carousel-cover discovery-mix-cover">
+          <img class="carousel-cover-img discovery-mix-bg-img" style="display: none;" alt="">
+          <div class="carousel-cover-placeholder">♪</div>
+          <div class="discovery-mix-overlay">
+            <span class="discovery-mix-label">${escapeHtml(mix.title)}</span>
+          </div>
+        </div>
+        <div class="carousel-title">${escapeHtml(mix.title)}</div>
+        <div class="carousel-artist">${mix.trackCount} titres</div>
+      `
+
+      const img = item.querySelector('.discovery-mix-bg-img')
+      const placeholder = item.querySelector('.carousel-cover-placeholder')
+
+      // Charge la cover depuis la track représentative du mix
+      if (mix.coverPath && img && placeholder) {
+        const cachedCover = coverCache.get(mix.coverPath) || thumbnailCache.get(mix.coverPath)
+        if (!loadCachedImage(img, placeholder, cachedCover)) {
+          loadThumbnailAsync(mix.coverPath, img, '', '').then(() => {
+            if (img.isConnected && img.style.display === 'block') {
+              placeholder.style.display = 'none'
+            }
+          })
+        }
+      }
+
+      discoveryCarousel.appendChild(item)
+    }
+
+    discoverySection.appendChild(discoveryCarousel)
+    homeContainer.appendChild(discoverySection)
+  }
+
   // Message si rien à afficher
   if (!lastPlayed && recentTracks.length === 0 && unplayedAlbums.length === 0) {
     const emptyMessage = document.createElement('div')
     emptyMessage.className = 'home-empty'
     emptyMessage.innerHTML = `
-      <h2>Bienvenue sur Noir</h2>
-      <p>Commencez à écouter de la musique pour remplir cette page.</p>
+      <h2>Welcome to Noir</h2>
+      <p>Start listening to music to fill this page.</p>
     `
     homeContainer.appendChild(emptyMessage)
   }
@@ -3033,6 +3496,15 @@ async function displayHomeView() {
       return
     }
 
+    // Clic sur un mix de découverte
+    const mixItem = e.target.closest('.discovery-mix-item')
+    if (mixItem) {
+      const mixId = mixItem.dataset.mixId
+      const mix = discoveryMixes.find(m => m.id === mixId)
+      if (mix) navigateToMixPage(mix)
+      return
+    }
+
     // Clic sur album "À découvrir" ou artiste
     const carouselItem = e.target.closest('.carousel-item')
     if (carouselItem) {
@@ -3079,6 +3551,20 @@ async function displayHomeView() {
     }
   })
 
+  // CONTEXT MENU sur les tracks de la Home (Écouté récemment)
+  homeContainer.addEventListener('contextmenu', (e) => {
+    const recentItem = e.target.closest('.recent-track-item')
+    if (recentItem) {
+      e.preventDefault()
+      e.stopPropagation()
+      const trackPath = recentItem.dataset.trackPath
+      const trackIndex = tracks.findIndex(t => t.path === trackPath)
+      if (trackIndex !== -1) {
+        showContextMenu(e, tracks[trackIndex], trackIndex)
+      }
+    }
+  })
+
   albumsGridDiv.appendChild(homeContainer)
 }
 
@@ -3103,7 +3589,7 @@ function updateHomeNowPlayingSection() {
 
   // Détermine les infos
   const title = currentTrack.metadata?.title || currentTrack.name || 'Titre inconnu'
-  const artist = currentTrack.metadata?.artist || 'Artiste inconnu'
+  const artist = currentTrack.metadata?.artist || 'Unknown Artist'
   const album = currentTrack.metadata?.album || ''
 
   // Specs techniques
@@ -3143,7 +3629,7 @@ function updateHomeNowPlayingSection() {
       <div class="resume-cover-placeholder">♪</div>
     </div>
     <div class="resume-info">
-      <span class="resume-label resume-label-active">Lecture en cours</span>
+      <span class="resume-label resume-label-active">Now Playing</span>
       <span class="resume-title">${escapeHtml(title)}</span>
       <span class="resume-artist">${escapeHtml(artist)}</span>
       ${album ? `<span class="resume-album">${escapeHtml(album)}</span>` : ''}
@@ -3580,7 +4066,7 @@ function displayArtistPage(artistKey) {
             </svg>
             Tout lire
           </button>
-          <button class="btn-add-queue-album add-artist-queue-btn" title="Ajouter à la file d'attente">
+          <button class="btn-add-queue-album add-artist-queue-btn" title="Add to queue">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
             </svg>
@@ -3612,7 +4098,7 @@ function displayArtistPage(artistKey) {
         queue.push(track)
       }
     })
-    showQueueNotification(`${artist.tracks.length} titres ajoutés à la file d'attente`)
+    showQueueNotification(`${artist.tracks.length} tracks added to queue`)
   })
 
   // Charge la photo de l'artiste
@@ -3682,7 +4168,7 @@ function displayArtistPage(artistKey) {
     looseSection.className = 'artist-loose-tracks-section'
 
     // Titre différent si c'est la seule section
-    const sectionTitle = fullAlbums.length === 0 ? 'Titres' : 'Singles & Titres isolés'
+    const sectionTitle = fullAlbums.length === 0 ? 'Tracks' : 'Singles & Loose Tracks'
 
     looseSection.innerHTML = `
       <h3 class="artist-loose-tracks-title">${sectionTitle}</h3>
@@ -3705,6 +4191,9 @@ function displayArtistPage(artistKey) {
         <span class="loose-track-duration">${duration}</span>
       `
 
+      // Stocke le path pour le context menu
+      trackItem.dataset.trackPath = track.path
+
       // Clic = lecture
       trackItem.addEventListener('click', () => {
         const globalIndex = tracks.findIndex(t => t.path === track.path)
@@ -3715,6 +4204,20 @@ function displayArtistPage(artistKey) {
 
       trackList.appendChild(trackItem)
     }
+
+    // Context menu sur les loose tracks
+    trackList.addEventListener('contextmenu', (e) => {
+      const trackItem = e.target.closest('.artist-loose-track-item')
+      if (trackItem) {
+        e.preventDefault()
+        e.stopPropagation()
+        const trackPath = trackItem.dataset.trackPath
+        const trackIndex = tracks.findIndex(t => t.path === trackPath)
+        if (trackIndex !== -1) {
+          showContextMenu(e, tracks[trackIndex], trackIndex)
+        }
+      }
+    })
 
     // Ajoute directement dans la grille pour qu'elle soit visible
     albumsGrid.appendChild(looseSection)
@@ -3772,8 +4275,8 @@ function getSortedAndFilteredTracks() {
         valueB = b.metadata?.title || b.name
         break
       case 'artist':
-        valueA = a.metadata?.artist || 'Artiste inconnu'
-        valueB = b.metadata?.artist || 'Artiste inconnu'
+        valueA = a.metadata?.artist || 'Unknown Artist'
+        valueB = b.metadata?.artist || 'Unknown Artist'
         break
       case 'album':
         valueA = a.metadata?.album || ''
@@ -3834,12 +4337,12 @@ function createPoolNode() {
     <span class="tracks-list-album"></span>
     <span class="tracks-list-quality"><span class="quality-tag"></span></span>
     <span class="tracks-list-duration"></span>
-    <button class="tracks-list-add-playlist" title="Ajouter à une playlist">
+    <button class="tracks-list-add-playlist" title="Add to playlist">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
       </svg>
     </button>
-    <button class="tracks-list-add-queue" title="Ajouter à la file">
+    <button class="tracks-list-add-queue" title="Add to queue">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
       </svg>
@@ -3907,7 +4410,7 @@ function updateVirtualScrollItems() {
 
       // Mise à jour du contenu texte (pas de innerHTML = pas de parse)
       el._title.textContent = track.metadata?.title || track.name
-      el._artist.textContent = track.metadata?.artist || 'Artiste inconnu'
+      el._artist.textContent = track.metadata?.artist || 'Unknown Artist'
       el._album.textContent = track.metadata?.album || ''
       el._duration.textContent = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
       el._quality.textContent = quality.label
@@ -3918,7 +4421,7 @@ function updateVirtualScrollItems() {
       el._favBtn.title = isFav ? 'Retirer des favoris' : 'Ajouter aux favoris'
       el._favSvg.setAttribute('fill', isFav ? 'currentColor' : 'none')
       el._queueBtn.classList.toggle('in-queue', isInQueue)
-      el._queueBtn.title = isInQueue ? 'Retirer de la file' : 'Ajouter à la file'
+      el._queueBtn.title = isInQueue ? 'Remove from queue' : 'Add to queue'
       el.classList.toggle('selected', virtualScrollState.selectedTrackPaths.has(track.path))
     } else {
       // Cache les nœuds non utilisés
@@ -3956,7 +4459,7 @@ function displayTracksGrid() {
   // Header avec titre
   const headerDiv = document.createElement('div')
   headerDiv.className = 'view-header-simple'
-  headerDiv.innerHTML = `<h1 class="view-title">Titres</h1>`
+  headerDiv.innerHTML = `<h1 class="view-title">Tracks</h1>`
   albumsGridDiv.appendChild(headerDiv)
 
   // Récupère les tracks triées et filtrées
@@ -3975,7 +4478,7 @@ function displayTracksGrid() {
     <span class="sortable" data-sort="artist">Artiste ${getSortIndicator('artist')}</span>
     <span class="sortable" data-sort="album">Album ${getSortIndicator('album')}</span>
     <span>Qualité</span>
-    <span class="sortable" data-sort="duration">Durée ${getSortIndicator('duration')}</span>
+    <span class="sortable" data-sort="duration">Duration ${getSortIndicator('duration')}</span>
   `
 
   // Ajoute les événements de clic pour le tri
@@ -4037,7 +4540,7 @@ function displayTracksGrid() {
     const countDiv = document.createElement('div')
     countDiv.className = 'search-results-count'
     countDiv.style.cssText = 'padding: 8px 16px; color: #666; font-size: 13px;'
-    countDiv.textContent = `${totalTracks} résultat${totalTracks > 1 ? 's' : ''}`
+    countDiv.textContent = `${totalTracks} result${totalTracks > 1 ? 's' : ''}`
     tracksContainer.insertBefore(countDiv, scrollContainer)
   }
 
@@ -4097,12 +4600,12 @@ function displayTracksGrid() {
           removeFromQueue(queueIndex)
         }
         addQueueBtn.classList.remove('in-queue')
-        addQueueBtn.title = 'Ajouter à la file'
+        addQueueBtn.title = 'Add to queue'
       } else {
         // Ajoute à la queue
         addToQueue(track)
         addQueueBtn.classList.add('in-queue')
-        addQueueBtn.title = 'Retirer de la file'
+        addQueueBtn.title = 'Remove from queue'
       }
       return
     }
@@ -4208,7 +4711,7 @@ function updateTracksFilter() {
   const existingCount = document.querySelector('.search-results-count')
   if (searchQuery && totalTracks < tracks.length) {
     if (existingCount) {
-      existingCount.textContent = `${totalTracks} résultat${totalTracks > 1 ? 's' : ''}`
+      existingCount.textContent = `${totalTracks} result${totalTracks > 1 ? 's' : ''}`
     }
   } else if (existingCount) {
     existingCount.remove()
@@ -4311,9 +4814,9 @@ function showAlbumDetail(albumKey, cover, clickedCard) {
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z"/>
             </svg>
-            Lecture
+            Play
           </button>
-          <button class="btn-add-queue-album add-album-queue-btn" title="Ajouter tout à la file">
+          <button class="btn-add-queue-album add-album-queue-btn" title="Add all to queue">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
             </svg>
@@ -4333,18 +4836,18 @@ function showAlbumDetail(albumKey, cover, clickedCard) {
     trackItem.dataset.trackPath = track.path
 
     const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
-    const trackArtist = track.metadata?.artist || 'Artiste inconnu'
+    const trackArtist = track.metadata?.artist || 'Unknown Artist'
 
     // Vérifie si le track est déjà dans la queue
     const isInQueue = queue.some(q => q.path === track.path)
     const inQueueClass = isInQueue ? 'in-queue' : ''
     const buttonsHtml = `
-      <button class="track-add-playlist" title="Ajouter à une playlist">
+      <button class="track-add-playlist" title="Add to playlist">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
         </svg>
       </button>
-      <button class="track-add-queue ${inQueueClass}" title="${isInQueue ? 'Déjà dans la file' : 'Ajouter à la file'}">
+      <button class="track-add-queue ${inQueueClass}" title="${isInQueue ? 'Already in queue' : 'Add to queue'}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
         </svg>
@@ -4397,12 +4900,12 @@ function showAlbumDetail(albumKey, cover, clickedCard) {
           removeFromQueue(queueIndex)
         }
         addQueueBtn.classList.remove('in-queue')
-        addQueueBtn.title = 'Ajouter à la file'
+        addQueueBtn.title = 'Add to queue'
       } else {
         // Ajoute à la queue
         addToQueue(track)
         addQueueBtn.classList.add('in-queue')
-        addQueueBtn.title = 'Retirer de la file'
+        addQueueBtn.title = 'Remove from queue'
       }
       return
     }
@@ -4485,7 +4988,7 @@ function showAlbumDetail(albumKey, cover, clickedCard) {
     if (selectedAlbumKey) {
       const album = albums[selectedAlbumKey]
       album.tracks.forEach(track => addToQueue(track))
-      showQueueNotification(`${album.tracks.length} titres ajoutés à la file`)
+      showQueueNotification(`${album.tracks.length} tracks added to queue`)
     }
   })
 
@@ -4567,6 +5070,7 @@ async function playTrack(index) {
 
   // Reset complet de l'UI AVANT tout (évite les états incohérents)
   resetPlayerUI()
+  gaplessPreloadTriggered = false
 
   currentTrackIndex = index
   const track = tracks[index]
@@ -4578,7 +5082,7 @@ async function playTrack(index) {
 
   // Met à jour l'affichage avec les métadonnées
   const title = track.metadata?.title || track.name || 'Titre inconnu'
-  const artist = track.metadata?.artist || track.folder || 'Artiste inconnu'
+  const artist = track.metadata?.artist || track.folder || 'Unknown Artist'
   trackNameEl.textContent = title
   trackFolderEl.textContent = artist
 
@@ -4598,8 +5102,8 @@ async function playTrack(index) {
     // 2. Si pas de pochette, cherche sur Internet
     if (!cover && track.metadata) {
       cover = await invoke('fetch_internet_cover', {
-        artist: track.metadata.artist || 'Artiste inconnu',
-        album: track.metadata.album || 'Album inconnu'
+        artist: track.metadata.artist || 'Unknown Artist',
+        album: track.metadata.album || 'Unknown Album'
       })
     }
 
@@ -4638,17 +5142,10 @@ async function playTrack(index) {
 
   // Note: resetPlayerUI() est appelé en début de fonction
 
-  // Précharge le prochain track pour gapless (si disponible)
-  const nextTrackIndex = currentTrackIndex + 1
-  if (nextTrackIndex < tracks.length) {
-    const nextTrack = tracks[nextTrackIndex]
-    invoke('audio_preload_next', { path: nextTrack.path }).catch(e => {
-      console.log('Preload next track failed (non-critical):', e)
-    })
-  }
+  // Note: gapless preload is now triggered by playback_progress when < 10s remaining
 
   // Track l'album en cours de lecture (utilise le nom d'album seul comme clé, cohérent avec groupTracksIntoAlbumsAndArtists)
-  currentPlayingAlbumKey = track.metadata?.album || 'Album inconnu'
+  currentPlayingAlbumKey = track.metadata?.album || 'Unknown Album'
 
   // Affiche le lecteur
   playerDiv.classList.remove('hidden')
@@ -4663,12 +5160,60 @@ async function playTrack(index) {
   // Enregistre la lecture dans l'historique et invalide le cache Home
   invoke('record_play', {
     path: track.path,
-    artist: track.metadata?.artist || 'Artiste inconnu',
+    artist: track.metadata?.artist || 'Unknown Artist',
     album: track.metadata?.album || '',
     title: track.metadata?.title || track.name
   }).then(() => {
     invalidateHomeCache()  // Les stats ont changé, invalide le cache
   }).catch(err => console.error('Erreur enregistrement historique:', err))
+}
+
+// === GAPLESS PRELOAD ===
+
+function getNextTrackPath() {
+  // Queue priority
+  if (queue.length > 0) return queue[0].path
+
+  // Repeat one = same track
+  if (repeatMode === 'one' && currentTrackIndex >= 0) return tracks[currentTrackIndex]?.path
+
+  const currentTrack = tracks[currentTrackIndex]
+  if (!currentTrack) return null
+
+  const currentFolder = currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/'))
+  const albumTracks = tracks.filter(t => {
+    const folder = t.path.substring(0, t.path.lastIndexOf('/'))
+    return folder === currentFolder && t.metadata?.album === currentTrack.metadata?.album
+  }).sort((a, b) => {
+    const discA = a.metadata?.disc || 1
+    const discB = b.metadata?.disc || 1
+    if (discA !== discB) return discA - discB
+    return (a.metadata?.track || 0) - (b.metadata?.track || 0)
+  })
+
+  const idx = albumTracks.findIndex(t => t.path === currentTrack.path)
+  if (idx >= 0 && idx < albumTracks.length - 1) {
+    return albumTracks[idx + 1].path
+  }
+
+  // End of album — repeat all wraps, otherwise null
+  if (repeatMode === 'all' && albumTracks.length > 0) {
+    return albumTracks[0].path
+  }
+  return null
+}
+
+function triggerGaplessPreload() {
+  const gaplessEnabled = localStorage.getItem('settings_gapless') !== 'false'
+  if (!gaplessEnabled) return
+
+  const nextPath = getNextTrackPath()
+  if (!nextPath) return
+
+  console.log('[Gapless] Preloading:', nextPath)
+  invoke('audio_preload_next', { path: nextPath }).catch(e => {
+    console.log('[Gapless] Preload failed (non-critical):', e)
+  })
 }
 
 // === CONTRÔLES DU LECTEUR ===
@@ -5231,6 +5776,13 @@ async function initRustAudioListeners() {
     if (!interpolationAnimationId) {
       startPositionInterpolation()
     }
+
+    // Gapless: preload next track when < 10s remaining
+    const remaining = duration - position
+    if (remaining > 0 && remaining < 10 && !gaplessPreloadTriggered && audioIsPlaying) {
+      gaplessPreloadTriggered = true
+      triggerGaplessPreload()
+    }
   })
 
   // Seeking en cours (émis par Rust quand un seek démarre)
@@ -5313,6 +5865,111 @@ async function initRustAudioListeners() {
   await listen('playback_audio_specs', (event) => {
     const specs = event.payload
     updateAudioSpecs(specs)
+  })
+
+  // === GAPLESS TRANSITION ===
+  await listen('playback_gapless_transition', () => {
+    console.log('[Gapless] Seamless transition occurred')
+    gaplessPreloadTriggered = false
+
+    // Advance to the next track in the UI (without calling playTrack)
+    if (queue.length > 0) {
+      const nextTrack = queue.shift()
+      const globalIndex = tracks.findIndex(t => t.path === nextTrack.path)
+      if (globalIndex !== -1) {
+        currentTrackIndex = globalIndex
+        updateQueueDisplay()
+        updateQueueIndicators()
+      }
+    } else if (repeatMode === 'one') {
+      // Stay on same track, just reset position display
+    } else {
+      // Advance to next track in album order
+      const currentTrack = tracks[currentTrackIndex]
+      if (currentTrack) {
+        const currentFolder = currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/'))
+        const albumTracks = tracks.filter(t => {
+          const folder = t.path.substring(0, t.path.lastIndexOf('/'))
+          return folder === currentFolder && t.metadata?.album === currentTrack.metadata?.album
+        }).sort((a, b) => {
+          const discA = a.metadata?.disc || 1
+          const discB = b.metadata?.disc || 1
+          if (discA !== discB) return discA - discB
+          return (a.metadata?.track || 0) - (b.metadata?.track || 0)
+        })
+
+        const idx = albumTracks.findIndex(t => t.path === currentTrack.path)
+        if (idx >= 0 && idx < albumTracks.length - 1) {
+          const nextTrack = albumTracks[idx + 1]
+          const globalIndex = tracks.findIndex(t => t.path === nextTrack.path)
+          if (globalIndex !== -1) currentTrackIndex = globalIndex
+        } else if (repeatMode === 'all' && albumTracks.length > 0) {
+          const globalIndex = tracks.findIndex(t => t.path === albumTracks[0].path)
+          if (globalIndex !== -1) currentTrackIndex = globalIndex
+        }
+      }
+    }
+
+    // Update the UI with the new track info
+    const track = tracks[currentTrackIndex]
+    if (track) {
+      const trackNameEl = document.getElementById('track-name')
+      const trackFolderEl = document.getElementById('track-folder')
+      if (trackNameEl) trackNameEl.textContent = track.metadata?.title || track.name
+      if (trackFolderEl) trackFolderEl.textContent = track.metadata?.artist || track.folder
+
+      // Update duration
+      audioDurationFromRust = track.metadata?.duration || 0
+      durationEl.textContent = formatTime(audioDurationFromRust)
+
+      // Reset position
+      audioPositionFromRust = 0
+      lastRustPosition = 0
+      lastRustTimestamp = performance.now()
+      lastDisplayedPosition = 0
+
+      // Update cover
+      updateCoverArt(track)
+      updateNowPlayingHighlight()
+      updateHomeNowPlayingSection()
+
+      // Record play
+      invoke('record_play', {
+        path: track.path,
+        artist: track.metadata?.artist || 'Unknown Artist',
+        album: track.metadata?.album || '',
+        title: track.metadata?.title || track.name
+      }).then(() => invalidateHomeCache()).catch(() => {})
+    }
+  })
+
+  // === ERROR HANDLING ===
+  // Erreurs de lecture structurées depuis Rust (debounce 2s par code d'erreur)
+  const errorLastShown = {}
+  const ERROR_DEBOUNCE_MS = 2000
+  const AUTO_SKIP_ERRORS = new Set(['file_probe_failed', 'decode_failed', 'file_not_found'])
+
+  await listen('playback_error', (event) => {
+    const { code, message, details } = event.payload
+    console.error(`[PlaybackError:${code}] ${message} — ${details}`)
+
+    // Debounce : n'affiche pas la même erreur 2 fois en 2s
+    const now = Date.now()
+    if (errorLastShown[code] && now - errorLastShown[code] < ERROR_DEBOUNCE_MS) {
+      return
+    }
+    errorLastShown[code] = now
+
+    // Affiche le toast d'erreur (5s)
+    showToast(message, 5000)
+
+    // Auto-skip sur les erreurs de fichier (passe au morceau suivant)
+    if (AUTO_SKIP_ERRORS.has(code) && audioIsPlaying) {
+      setTimeout(() => {
+        console.log(`[PlaybackError] Auto-skipping due to ${code}`)
+        playNextTrack()
+      }, 300)
+    }
   })
 
   // Démarre l'interpolation au chargement
@@ -5442,16 +6099,16 @@ shuffleBtn.addEventListener('click', () => {
     shuffleMode = 'album'
     shuffleBtn.classList.add('active')
     shuffleBtn.textContent = '⤮ᴬ'
-    shuffleBtn.title = 'Aléatoire (Album)'
+    shuffleBtn.title = 'Shuffle (Album)'
   } else if (shuffleMode === 'album') {
     shuffleMode = 'library'
     shuffleBtn.textContent = '⤮∞'
-    shuffleBtn.title = 'Aléatoire (Bibliothèque)'
+    shuffleBtn.title = 'Shuffle (Library)'
   } else {
     shuffleMode = 'off'
     shuffleBtn.classList.remove('active')
     shuffleBtn.textContent = '⤮'
-    shuffleBtn.title = 'Aléatoire'
+    shuffleBtn.title = 'Shuffle'
   }
 })
 
@@ -5462,15 +6119,15 @@ function updateRepeatButtonUI() {
   if (repeatMode === 'all') {
     repeatBtn.classList.add('active')
     repeatBtn.textContent = '⟳'
-    repeatBtn.title = 'Répéter tout'
+    repeatBtn.title = 'Repeat all'
   } else if (repeatMode === 'one') {
     repeatBtn.classList.add('active')
     repeatBtn.textContent = '⟳₁'
-    repeatBtn.title = 'Répéter un'
+    repeatBtn.title = 'Repeat one'
   } else {
     repeatBtn.classList.remove('active')
     repeatBtn.textContent = '⟳'
-    repeatBtn.title = 'Répéter'
+    repeatBtn.title = 'Repeat'
   }
 }
 
@@ -5613,7 +6270,7 @@ async function loadAudioDevices() {
             ${sampleRate}${supportedRates ? ` • Supporte: ${supportedRates}` : ''}
           </div>
         </div>
-        ${device.is_default ? '<span class="audio-output-item-default">Défaut</span>' : ''}
+        ${device.is_default ? '<span class="audio-output-item-default">Default</span>' : ''}
       `
 
       item.addEventListener('click', () => selectAudioDevice(device.id, device.name))
@@ -5622,7 +6279,7 @@ async function loadAudioDevices() {
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error loading devices:', e)
     console.error('[AUDIO-OUTPUT] Error details:', JSON.stringify(e, null, 2))
-    audioOutputList.innerHTML = `<div style="padding: 16px; color: #ff6b6b;">Erreur: ${e?.message || e || 'Audio engine non initialisé'}</div>`
+    audioOutputList.innerHTML = `<div style="padding: 16px; color: #ff6b6b;">Error: ${e?.message || e || 'Audio engine not initialized'}</div>`
   }
 }
 
@@ -5663,7 +6320,7 @@ async function selectAudioDevice(deviceId, deviceName) {
     if (currentTrackIndex >= 0 && tracks[currentTrackIndex]) {
       const currentTrack = tracks[currentTrackIndex]
       console.log('[AUDIO-OUTPUT] Restarting playback on new device...', { wasPlaying, audioIsPlaying, isPausedFromRust })
-      showToast(`Sortie: ${deviceName}`)
+      showToast(`Output: ${deviceName}`)
 
       // Sauvegarde la position actuelle (utilise le slider comme référence fiable)
       const progressSlider = document.getElementById('progress')
@@ -5709,14 +6366,14 @@ async function selectAudioDevice(deviceId, deviceName) {
         console.log('[AUDIO-OUTPUT] Playback restarted on new device')
       } catch (playErr) {
         console.error('[AUDIO-OUTPUT] Error restarting playback:', playErr)
-        showToast('Erreur lors du changement de sortie')
+        showToast('Error changing output')
       }
     } else {
-      showToast(`Sortie audio: ${deviceName}`)
+      showToast(`Audio output: ${deviceName}`)
     }
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error changing device:', e)
-    showToast('Erreur lors du changement de sortie audio')
+    showToast('Error changing audio output')
   }
 }
 
@@ -5737,7 +6394,7 @@ async function loadExclusiveMode() {
 function updateHogModeStatus(isActive) {
   const statusEl = document.getElementById('hog-mode-status')
   if (statusEl) {
-    statusEl.textContent = isActive ? 'Actif' : 'Désactivé'
+    statusEl.textContent = isActive ? 'Active' : 'Disabled'
     statusEl.classList.toggle('active', isActive)
   }
 }
@@ -5783,7 +6440,7 @@ exclusiveModeCheckbox.addEventListener('change', async () => {
     if (newState) {
       // Le Hog Mode nécessite de relancer la lecture pour prendre effet
       if (audioIsPlaying && currentTrackIndex >= 0) {
-        showToast('Mode exclusif activé - Relance de la lecture...')
+        showToast('Exclusive mode enabled - Restarting playback...')
         // Relance le track actuel pour que le Hog Mode prenne effet
         const currentTrack = tracks[currentTrackIndex]
         if (currentTrack) {
@@ -5796,19 +6453,433 @@ exclusiveModeCheckbox.addEventListener('change', async () => {
           }
         }
       } else {
-        showToast('Mode exclusif activé (bit-perfect)')
+        showToast('Exclusive mode enabled (bit-perfect)')
       }
     } else {
-      showToast('Mode exclusif désactivé')
+      showToast('Exclusive mode disabled')
     }
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error changing exclusive mode:', e)
     // Revert le checkbox et le statut
     exclusiveModeCheckbox.checked = !newState
     updateHogModeUI(!newState)
-    showToast('Erreur lors du changement de mode')
+    showToast('Error changing mode')
   }
 })
+
+// === ÉGALISEUR 8 BANDES ===
+
+const EQ_FREQS = [32, 64, 250, 1000, 2000, 4000, 8000, 16000]
+const EQ_LABELS_JS = ['32', '64', '250', '1k', '2k', '4k', '8k', '16k']
+const EQ_MIN_DB = -12
+const EQ_MAX_DB = 12
+const EQ_SVG_WIDTH = 280
+const EQ_SVG_HEIGHT = 140
+const EQ_MARGIN_X = 20
+const EQ_GRAPH_WIDTH = EQ_SVG_WIDTH - 2 * EQ_MARGIN_X
+const EQ_MARGIN_TOP = 10
+const EQ_MARGIN_BOTTOM = 10
+const EQ_GRAPH_HEIGHT = EQ_SVG_HEIGHT - EQ_MARGIN_TOP - EQ_MARGIN_BOTTOM
+
+let eqGains = new Float32Array(8) // tous à 0 dB
+let eqEnabled = false
+let eqDraggingIndex = -1
+let eqInitialized = false
+let isEqPanelOpen = false
+
+const EQ_PRESETS = {
+  'Flat':       [0, 0, 0, 0, 0, 0, 0, 0],
+  'Bass Boost': [6, 5, 3, 0, 0, 0, 0, 0],
+  'Treble Boost': [0, 0, 0, 0, 1, 3, 5, 6],
+  'Loudness':   [4, 3, 0, -1, -1, 0, 3, 4],
+  'Vocal':      [-2, -1, 0, 3, 4, 2, 0, -1],
+  'Rock':       [4, 3, 1, 0, -1, 1, 3, 4],
+  'Jazz':       [3, 2, 0, 1, -1, -1, 1, 3],
+  'Classical':  [0, 0, 0, 0, 0, -1, -2, -3],
+  'Electronic': [5, 4, 1, 0, 0, 1, 3, 5],
+  'Hip-Hop':    [5, 4, 2, 0, -1, 1, 0, 2],
+  'Late Night': [3, 2, 0, -2, -2, 0, 1, 2],
+}
+
+// Conversion dB → Y dans le SVG
+function eqDbToY(db) {
+  // +12 dB → top (EQ_MARGIN_TOP), -12 dB → bottom (EQ_SVG_HEIGHT - EQ_MARGIN_BOTTOM), 0 → center
+  const center = EQ_MARGIN_TOP + EQ_GRAPH_HEIGHT / 2
+  return center - (db / EQ_MAX_DB) * (EQ_GRAPH_HEIGHT / 2)
+}
+
+function eqYToDb(y) {
+  const center = EQ_MARGIN_TOP + EQ_GRAPH_HEIGHT / 2
+  return -((y - center) / (EQ_GRAPH_HEIGHT / 2)) * EQ_MAX_DB
+}
+
+// Position X pour chaque bande (espacement logarithmique)
+function eqFreqToX(index) {
+  return EQ_MARGIN_X + (index / 7) * EQ_GRAPH_WIDTH
+}
+
+// Génère une courbe spline passant par les 8 points
+function eqBuildCurvePath(gains, closePath) {
+  const points = gains.map((g, i) => ({ x: eqFreqToX(i), y: eqDbToY(g) }))
+  // Catmull-Rom → cubic Bézier smooth spline
+  let d = `M ${points[0].x},${points[0].y}`
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(i - 1, 0)]
+    const p1 = points[i]
+    const p2 = points[i + 1]
+    const p3 = points[Math.min(i + 2, points.length - 1)]
+    const cp1x = p1.x + (p2.x - p0.x) / 6
+    const cp1y = p1.y + (p2.y - p0.y) / 6
+    const cp2x = p2.x - (p3.x - p1.x) / 6
+    const cp2y = p2.y - (p3.y - p1.y) / 6
+    d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y}`
+  }
+  if (closePath) {
+    // Ferme le chemin pour le fill (descend au bas puis revient au début)
+    const bottom = EQ_SVG_HEIGHT - EQ_MARGIN_BOTTOM
+    d += ` L ${points[points.length - 1].x},${bottom} L ${points[0].x},${bottom} Z`
+  }
+  return d
+}
+
+// Initialise le SVG de la courbe EQ
+function eqInitSVG() {
+  const svg = document.getElementById('eq-curve-svg')
+  if (!svg) return
+
+  // Namespace SVG
+  const ns = 'http://www.w3.org/2000/svg'
+
+  // Clear
+  svg.innerHTML = ''
+
+  // Grille horizontale (-12, -6, 0, +6, +12 dB)
+  const dbLines = [-12, -6, 0, 6, 12]
+  for (const db of dbLines) {
+    const y = eqDbToY(db)
+    const line = document.createElementNS(ns, 'line')
+    line.setAttribute('x1', EQ_MARGIN_X)
+    line.setAttribute('y1', y)
+    line.setAttribute('x2', EQ_SVG_WIDTH - EQ_MARGIN_X)
+    line.setAttribute('y2', y)
+    line.setAttribute('class', db === 0 ? 'eq-zero-line' : 'eq-grid-line')
+    svg.appendChild(line)
+
+    // Label dB (seulement -12, 0, +12)
+    if (db === -12 || db === 0 || db === 12) {
+      const label = document.createElementNS(ns, 'text')
+      label.setAttribute('x', EQ_MARGIN_X - 3)
+      label.setAttribute('y', y + 3)
+      label.setAttribute('text-anchor', 'end')
+      label.setAttribute('class', 'eq-db-label')
+      label.textContent = db > 0 ? `+${db}` : `${db}`
+      svg.appendChild(label)
+    }
+  }
+
+  // Grille verticale (8 fréquences)
+  for (let i = 0; i < 8; i++) {
+    const x = eqFreqToX(i)
+    const line = document.createElementNS(ns, 'line')
+    line.setAttribute('x1', x)
+    line.setAttribute('y1', EQ_MARGIN_TOP)
+    line.setAttribute('x2', x)
+    line.setAttribute('y2', EQ_SVG_HEIGHT - EQ_MARGIN_BOTTOM)
+    line.setAttribute('class', 'eq-grid-line')
+    svg.appendChild(line)
+  }
+
+  // Fill sous la courbe
+  const fillPath = document.createElementNS(ns, 'path')
+  fillPath.setAttribute('id', 'eq-curve-fill')
+  fillPath.setAttribute('class', 'eq-curve-fill')
+  fillPath.setAttribute('d', eqBuildCurvePath(eqGains, true))
+  svg.appendChild(fillPath)
+
+  // Courbe principale
+  const curvePath = document.createElementNS(ns, 'path')
+  curvePath.setAttribute('id', 'eq-curve-path')
+  curvePath.setAttribute('class', 'eq-curve-path')
+  curvePath.setAttribute('d', eqBuildCurvePath(eqGains, false))
+  svg.appendChild(curvePath)
+
+  // 8 points draggables
+  for (let i = 0; i < 8; i++) {
+    const circle = document.createElementNS(ns, 'circle')
+    circle.setAttribute('cx', eqFreqToX(i))
+    circle.setAttribute('cy', eqDbToY(eqGains[i]))
+    circle.setAttribute('r', 5)
+    circle.setAttribute('class', 'eq-point')
+    circle.setAttribute('data-band', i)
+    circle.id = `eq-point-${i}`
+    svg.appendChild(circle)
+  }
+
+  // Event handlers pour drag
+  svg.addEventListener('mousedown', eqOnMouseDown)
+  svg.addEventListener('mousemove', eqOnMouseMove)
+  svg.addEventListener('mouseup', eqOnMouseUp)
+  svg.addEventListener('mouseleave', eqOnMouseUp)
+}
+
+function eqOnMouseDown(e) {
+  const point = e.target.closest('.eq-point')
+  if (!point) return
+  eqDraggingIndex = parseInt(point.dataset.band)
+  point.classList.add('dragging')
+  e.preventDefault()
+}
+
+function eqOnMouseMove(e) {
+  if (eqDraggingIndex < 0) return
+  const svg = document.getElementById('eq-curve-svg')
+  const rect = svg.getBoundingClientRect()
+  const scaleY = EQ_SVG_HEIGHT / rect.height
+  const y = (e.clientY - rect.top) * scaleY
+  const db = Math.round(eqYToDb(y) * 2) / 2 // Snap à 0.5 dB
+  const clampedDb = Math.max(EQ_MIN_DB, Math.min(EQ_MAX_DB, db))
+  eqGains[eqDraggingIndex] = clampedDb
+  eqUpdateCurve()
+  eqUpdatePresetLabel()
+}
+
+function eqOnMouseUp() {
+  if (eqDraggingIndex >= 0) {
+    const point = document.getElementById(`eq-point-${eqDraggingIndex}`)
+    if (point) point.classList.remove('dragging')
+    eqDraggingIndex = -1
+    // Envoie les gains au backend
+    eqSendGains()
+  }
+}
+
+function eqUpdateCurve() {
+  const curvePath = document.getElementById('eq-curve-path')
+  const fillPath = document.getElementById('eq-curve-fill')
+  if (curvePath) curvePath.setAttribute('d', eqBuildCurvePath(eqGains, false))
+  if (fillPath) fillPath.setAttribute('d', eqBuildCurvePath(eqGains, true))
+  // Met à jour les positions des points
+  for (let i = 0; i < 8; i++) {
+    const circle = document.getElementById(`eq-point-${i}`)
+    if (circle) {
+      circle.setAttribute('cy', eqDbToY(eqGains[i]))
+    }
+  }
+}
+
+async function eqSendGains() {
+  try {
+    await invoke('set_eq_bands', { gains: Array.from(eqGains) })
+  } catch (e) {
+    console.error('[EQ] Error setting bands:', e)
+  }
+}
+
+async function eqSetEnabled(enabled) {
+  eqEnabled = enabled
+  const checkbox = document.getElementById('eq-enabled-checkbox')
+  if (checkbox) checkbox.checked = enabled
+  eqUpdateStatusUI()
+  eqUpdatePanelToggleLabel()
+  try {
+    await invoke('set_eq_enabled', { enabled })
+  } catch (e) {
+    console.error('[EQ] Error toggling EQ:', e)
+  }
+}
+
+// Met à jour le texte de statut sous le label "Égaliseur"
+function eqUpdateStatusUI() {
+  const statusEl = document.getElementById('eq-mode-status')
+  if (!statusEl) return
+  if (eqEnabled) {
+    const presetName = eqFindActivePreset()
+    statusEl.textContent = presetName || 'Custom'
+    statusEl.classList.add('active')
+  } else {
+    statusEl.textContent = 'Disabled'
+    statusEl.classList.remove('active')
+  }
+}
+
+// Trouve quel preset correspond aux gains actuels (ou null si custom)
+function eqFindActivePreset() {
+  for (const [name, preset] of Object.entries(EQ_PRESETS)) {
+    if (name === 'Flat' && preset.every((g, i) => Math.abs(g - eqGains[i]) < 0.1)) return 'Flat'
+    if (preset.every((g, i) => Math.abs(g - eqGains[i]) < 0.1)) return name
+  }
+  return null
+}
+
+// Met à jour le label du bouton dropdown preset
+function eqUpdatePresetLabel() {
+  const labelEl = document.getElementById('eq-preset-label')
+  if (!labelEl) return
+  const presetName = eqFindActivePreset()
+  labelEl.textContent = presetName || 'Custom'
+  eqUpdateStatusUI()
+  eqUpdatePanelToggleLabel()
+}
+
+function eqApplyPreset(name) {
+  const preset = EQ_PRESETS[name]
+  if (!preset) return
+  for (let i = 0; i < 8; i++) {
+    eqGains[i] = preset[i]
+  }
+  eqUpdateCurve()
+  eqUpdatePresetLabel()
+  eqSendGains()
+  // Ferme le dropdown
+  const dropdown = document.getElementById('eq-preset-dropdown')
+  if (dropdown) dropdown.classList.add('hidden')
+}
+
+function eqBuildPresetDropdown() {
+  const container = document.getElementById('eq-preset-dropdown')
+  if (!container) return
+  container.innerHTML = ''
+  for (const name of Object.keys(EQ_PRESETS)) {
+    const item = document.createElement('button')
+    item.className = 'eq-preset-dropdown-item'
+    item.dataset.preset = name
+    item.textContent = name
+    item.addEventListener('click', () => eqApplyPreset(name))
+    container.appendChild(item)
+  }
+  eqUpdatePresetLabel()
+}
+
+// === EQ SIDE PANEL OPEN/CLOSE ===
+
+function openEqPanel() {
+  const panel = document.getElementById('eq-panel')
+  if (!panel) return
+
+  // Ferme le menu de sortie audio
+  if (audioOutputMenu && !audioOutputMenu.classList.contains('hidden')) {
+    audioOutputMenu.classList.add('hidden')
+    audioOutputBtn.classList.remove('active')
+  }
+
+  // Ferme les autres panels
+  if (isQueuePanelOpen) toggleQueuePanel()
+  if (isTrackInfoPanelOpen) closeTrackInfoPanel()
+  if (isSettingsPanelOpen) closeSettings()
+
+  isEqPanelOpen = true
+  panel.classList.add('open')
+}
+
+function closeEqPanel() {
+  const panel = document.getElementById('eq-panel')
+  if (!panel) return
+  isEqPanelOpen = false
+  panel.classList.remove('open')
+  // Ferme aussi le dropdown preset
+  const dropdown = document.getElementById('eq-preset-dropdown')
+  if (dropdown) dropdown.classList.add('hidden')
+}
+
+function toggleEqPanel() {
+  if (isEqPanelOpen) {
+    closeEqPanel()
+  } else {
+    openEqPanel()
+  }
+}
+
+// Initialisation de l'EQ au démarrage
+async function eqInit() {
+  if (eqInitialized) return
+  eqInitialized = true
+
+  // Charge l'état depuis le backend
+  try {
+    const state = await invoke('get_eq_state')
+    eqEnabled = state.enabled
+    for (let i = 0; i < Math.min(state.gains.length, 8); i++) {
+      eqGains[i] = state.gains[i]
+    }
+  } catch (e) {
+    console.log('[EQ] Could not load EQ state:', e)
+  }
+
+  // Met à jour le checkbox + status
+  const checkbox = document.getElementById('eq-enabled-checkbox')
+  if (checkbox) checkbox.checked = eqEnabled
+  eqUpdateStatusUI()
+  eqUpdatePanelToggleLabel()
+
+  // Init SVG + preset dropdown
+  eqInitSVG()
+  eqBuildPresetDropdown()
+
+  // Bouton info (icône EQ dans le footer sortie audio) → ouvre le side panel
+  const eqInfoBtn = document.getElementById('eq-mode-info-btn')
+  if (eqInfoBtn) {
+    eqInfoBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      toggleEqPanel()
+    })
+  }
+
+  // Toggle switch checkbox dans le side panel
+  if (checkbox) {
+    checkbox.addEventListener('change', () => {
+      eqSetEnabled(checkbox.checked)
+      eqUpdatePanelToggleLabel()
+    })
+  }
+
+  // Reset button
+  const flatBtn = document.getElementById('eq-flat-btn')
+  if (flatBtn) {
+    flatBtn.addEventListener('click', () => eqApplyPreset('Flat'))
+  }
+
+  // Preset dropdown toggle
+  const presetDropdownBtn = document.getElementById('eq-preset-dropdown-btn')
+  const presetDropdown = document.getElementById('eq-preset-dropdown')
+  if (presetDropdownBtn && presetDropdown) {
+    presetDropdownBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      presetDropdown.classList.toggle('hidden')
+    })
+  }
+
+  // Close button du panel
+  const closeBtn = document.getElementById('close-eq-panel')
+  if (closeBtn) {
+    closeBtn.addEventListener('click', closeEqPanel)
+  }
+
+  // Fermer le dropdown preset au clic ailleurs (dans le panel)
+  document.addEventListener('click', (e) => {
+    if (presetDropdown && !presetDropdown.classList.contains('hidden')) {
+      if (!e.target.closest('.eq-preset-dropdown-container')) {
+        presetDropdown.classList.add('hidden')
+      }
+    }
+  })
+}
+
+// Met à jour le label dans le toggle row du side panel
+function eqUpdatePanelToggleLabel() {
+  const label = document.getElementById('eq-panel-enabled-label')
+  if (!label) return
+  if (eqEnabled) {
+    const presetName = eqFindActivePreset()
+    label.textContent = presetName || 'Custom'
+    label.classList.add('active')
+  } else {
+    label.textContent = 'Disabled'
+    label.classList.remove('active')
+  }
+}
+
+// Lancer l'init EQ au chargement de l'app
+setTimeout(eqInit, 500)
 
 // === UTILITAIRES ===
 function formatTime(seconds) {
@@ -5834,7 +6905,7 @@ function addToQueue(track) {
   queue.push(track)
   updateQueueDisplay()
   updateQueueIndicators()
-  showQueueNotification(`"${track.metadata?.title || track.name}" ajouté à la file`)
+  showQueueNotification(`"${track.metadata?.title || track.name}" added to queue`)
 }
 
 // Jouer ensuite (ajoute en haut de la queue)
@@ -5842,7 +6913,7 @@ function playNext(track) {
   queue.unshift(track)
   updateQueueDisplay()
   updateQueueIndicators()
-  showQueueNotification(`"${track.metadata?.title || track.name}" sera joué ensuite`)
+  showQueueNotification(`"${track.metadata?.title || track.name}" will play next`)
 }
 
 // Retirer un morceau de la queue
@@ -5878,7 +6949,7 @@ function updateQueueIndicators() {
       if (btn && trackPath) {
         const isInQueue = queuePaths.has(trackPath)
         btn.classList.toggle('in-queue', isInQueue)
-        btn.title = isInQueue ? 'Retirer de la file' : 'Ajouter à la file'
+        btn.title = isInQueue ? 'Remove from queue' : 'Add to queue'
       }
     })
 
@@ -5889,7 +6960,7 @@ function updateQueueIndicators() {
       if (btn && trackPath) {
         const isInQueue = queuePaths.has(trackPath)
         btn.classList.toggle('in-queue', isInQueue)
-        btn.title = isInQueue ? 'Retirer de la file' : 'Ajouter à la file'
+        btn.title = isInQueue ? 'Remove from queue' : 'Add to queue'
       }
     })
   }
@@ -5908,6 +6979,7 @@ function toggleQueuePanel() {
     // Ferme les autres panels avant d'ouvrir
     if (isTrackInfoPanelOpen) closeTrackInfoPanel()
     if (isSettingsPanelOpen) closeSettings()
+    if (isEqPanelOpen) closeEqPanel()
   }
   isQueuePanelOpen = !isQueuePanelOpen
   const panel = document.getElementById('queue-panel')
@@ -5960,7 +7032,7 @@ function updateQueueDisplay() {
       </div>
       <div class="queue-item-info">
         <span class="queue-item-title">${currentTrack.metadata?.title || currentTrack.name}</span>
-        <span class="queue-item-artist">${currentTrack.metadata?.artist || 'Artiste inconnu'}</span>
+        <span class="queue-item-artist">${currentTrack.metadata?.artist || 'Unknown Artist'}</span>
       </div>
     `
     // Charge la pochette
@@ -5977,11 +7049,11 @@ function updateQueueDisplay() {
   // Met à jour la liste des morceaux en attente (génère seulement le HTML)
   queueList.innerHTML = queue.map((track, index) => `
     <div class="queue-item" data-index="${index}" data-track-path="${track.path}">
-      <span class="queue-drag-handle" title="Glisser pour réorganiser">⠿</span>
+      <span class="queue-drag-handle" title="Drag to reorder">⠿</span>
       <span class="queue-item-index">${index + 1}</span>
       <div class="queue-item-info">
         <span class="queue-item-title">${track.metadata?.title || track.name}</span>
-        <span class="queue-item-artist">${track.metadata?.artist || 'Artiste inconnu'}</span>
+        <span class="queue-item-artist">${track.metadata?.artist || 'Unknown Artist'}</span>
       </div>
       <button class="queue-item-remove" title="Retirer">✕</button>
     </div>
@@ -6190,7 +7262,7 @@ function showAlbumContextMenu(e, albumKey) {
   menu.innerHTML = `
     <button class="context-menu-item" data-action="play-album">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      <span>Lecture de l'album</span>
+      <span>Play album</span>
     </button>
     <button class="context-menu-item" data-action="add-album-queue">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -6220,7 +7292,7 @@ function showAlbumContextMenu(e, albumKey) {
 
   menu.querySelector('[data-action="add-album-queue"]').addEventListener('click', () => {
     album.tracks.forEach(track => addToQueue(track))
-    showQueueNotification(`${album.tracks.length} titres ajoutés à la file`)
+    showQueueNotification(`${album.tracks.length} tracks added to queue`)
     menu.remove()
   })
 
@@ -6238,10 +7310,10 @@ function showAlbumContextMenu(e, albumKey) {
         await addTrackToPlaylist(newPlaylist.id, track)
       }
 
-      showToast(`Playlist "${playlistName}" créée avec ${album.tracks.length} titres`)
+      showToast(`Playlist "${playlistName}" created with ${album.tracks.length} tracks`)
     } catch (e) {
       console.error('Erreur création playlist:', e)
-      showToast('Erreur lors de la création de la playlist')
+      showToast('Error creating playlist')
     }
 
     menu.remove()
@@ -6330,9 +7402,9 @@ function updateContextMenuLabels(menu, count) {
   const removeBtn = menu.querySelector('[data-action="remove-from-library"] span')
 
   if (playBtn) playBtn.textContent = isMulti ? `Lire ${count} titres` : 'Lire'
-  if (queueBtn) queueBtn.textContent = isMulti ? `Ajouter ${count} à la file` : 'Ajouter à la file d\'attente'
-  if (playlistBtn) playlistBtn.textContent = isMulti ? `Ajouter ${count} à une playlist` : 'Ajouter à une playlist'
-  if (removeBtn) removeBtn.textContent = isMulti ? `Supprimer ${count} titres` : 'Supprimer de la bibliothèque'
+  if (queueBtn) queueBtn.textContent = isMulti ? `Add ${count} to queue` : 'Add to queue'
+  if (playlistBtn) playlistBtn.textContent = isMulti ? `Add ${count} to playlist` : 'Add to playlist'
+  if (removeBtn) removeBtn.textContent = isMulti ? `Remove ${count} tracks` : 'Remove from library'
 }
 
 // Cache le menu contextuel
@@ -6371,7 +7443,7 @@ function handleContextMenuAction(action) {
     case 'add-to-queue':
       contextMenuTracks.forEach(track => addToQueue(track))
       if (isMulti) {
-        showQueueNotification(`${contextMenuTracks.length} titres ajoutés à la file`)
+        showQueueNotification(`${contextMenuTracks.length} tracks added to queue`)
       }
       break
 
@@ -6462,6 +7534,7 @@ async function showTrackInfoPanel(track) {
   // Ferme les autres panels avant d'ouvrir
   if (isQueuePanelOpen) toggleQueuePanel()
   if (isSettingsPanelOpen) closeSettings()
+  if (isEqPanelOpen) closeEqPanel()
 
   trackInfoCurrentTrack = track
   isTrackInfoPanelOpen = true
@@ -6470,8 +7543,8 @@ async function showTrackInfoPanel(track) {
   // Metadata
   const meta = track.metadata || {}
   const title = meta.title || track.name || 'Titre inconnu'
-  const artist = meta.artist || 'Artiste inconnu'
-  const album = meta.album || 'Album inconnu'
+  const artist = meta.artist || 'Unknown Artist'
+  const album = meta.album || 'Unknown Album'
   const year = meta.year || null
   const trackNum = meta.track || null
   const disc = meta.disc || null
@@ -6521,7 +7594,7 @@ async function showTrackInfoPanel(track) {
         <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
         <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
       </svg>
-      <span>${duplicates.length} doublon${duplicates.length > 1 ? 's' : ''} détecté${duplicates.length > 1 ? 's' : ''} dans la bibliothèque</span>
+      <span>${duplicates.length} duplicate${duplicates.length > 1 ? 's' : ''} found in library</span>
     </div>
     ` : ''}
 
@@ -6548,11 +7621,11 @@ async function showTrackInfoPanel(track) {
     <div class="track-info-specs">
       <div class="track-info-specs-grid">
         <div class="track-info-spec">
-          <span class="track-info-spec-label">Qualité</span>
+          <span class="track-info-spec-label">Quality</span>
           <span class="track-info-spec-value">${quality.label}</span>
         </div>
         <div class="track-info-spec">
-          <span class="track-info-spec-label">Durée</span>
+          <span class="track-info-spec-label">Duration</span>
           <span class="track-info-spec-value">${duration}</span>
         </div>
         ${fileExt ? `
@@ -6563,13 +7636,13 @@ async function showTrackInfoPanel(track) {
         ` : ''}
         ${sampleRate ? `
         <div class="track-info-spec">
-          <span class="track-info-spec-label">Fréquence</span>
+          <span class="track-info-spec-label">Sample Rate</span>
           <span class="track-info-spec-value">${formatSampleRate(sampleRate)}</span>
         </div>
         ` : ''}
         ${bitrate ? `
         <div class="track-info-spec">
-          <span class="track-info-spec-label">Débit</span>
+          <span class="track-info-spec-label">Bitrate</span>
           <span class="track-info-spec-value">${Math.round(bitrate)} kbps</span>
         </div>
         ` : ''}
@@ -6587,7 +7660,7 @@ async function showTrackInfoPanel(track) {
       <div class="track-info-metadata-grid">
         ${year ? `
         <div class="track-info-metadata-item">
-          <span class="track-info-metadata-label">Année</span>
+          <span class="track-info-metadata-label">Year</span>
           <span class="track-info-metadata-value">${year}</span>
         </div>
         ` : ''}
@@ -6613,7 +7686,7 @@ async function showTrackInfoPanel(track) {
     </div>
 
     <div class="track-info-actions">
-      <button class="track-info-refresh-btn" id="track-info-refresh-btn" title="Rafraîchir les métadonnées">
+      <button class="track-info-refresh-btn" id="track-info-refresh-btn" title="Refresh metadata">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
           <path d="M21 3v5h-5"/>
@@ -6669,12 +7742,12 @@ async function showTrackInfoPanel(track) {
         coverCache.delete(track.path)
         // Recharge le panel avec les nouvelles données
         showTrackInfoPanel(track)
-        showToast('Métadonnées mises à jour')
+        showToast('Metadata updated')
       } catch (e) {
         console.error('Erreur refresh metadata:', e)
-        showToast('Erreur lors de la mise à jour')
+        showToast('Error updating')
         refreshBtn.disabled = false
-        refreshBtn.textContent = 'Rafraîchir les métadonnées'
+        refreshBtn.textContent = 'Refresh metadata'
       }
     })
   }
@@ -6782,7 +7855,7 @@ function removeTrackFromLibrary(track) {
   updateQueueDisplay()
   updateQueueIndicators()
 
-  showQueueNotification(`"${track.metadata?.title || track.name}" supprimé de la bibliothèque`)
+  showQueueNotification(`"${track.metadata?.title || track.name}" removed from library`)
 }
 
 // Initialise les event listeners du menu contextuel
@@ -7210,14 +8283,14 @@ function displayPlaylistView(playlist) {
         </button>
         <div class="sort-menu hidden">
           <button class="sort-option ${playlistSortMode === 'manual' ? 'active' : ''}" data-sort="manual">Manuel</button>
-          <button class="sort-option ${playlistSortMode === 'recent' ? 'active' : ''}" data-sort="recent">Derniers ajoutés</button>
+          <button class="sort-option ${playlistSortMode === 'recent' ? 'active' : ''}" data-sort="recent">Recently Added</button>
           <button class="sort-option ${playlistSortMode === 'az' ? 'active' : ''}" data-sort="az">A-Z</button>
           <button class="sort-option ${playlistSortMode === 'za' ? 'active' : ''}" data-sort="za">Z-A</button>
         </div>
       </div>
       <button class="btn-primary-small play-playlist-btn" ${trackCount === 0 ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-        Lecture
+        Play
       </button>
     </div>
   `
@@ -7236,7 +8309,7 @@ function displayPlaylistView(playlist) {
     tracksContainer.innerHTML = playlistTracks.map((track, index) => {
       if (!track) return ''
       const title = track.metadata?.title || track.name
-      const artist = track.metadata?.artist || 'Artiste inconnu'
+      const artist = track.metadata?.artist || 'Unknown Artist'
       const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
       return `
         <div class="playlist-track-item" data-index="${index}" data-track-path="${track.path}">
@@ -7383,15 +8456,15 @@ function showPlaylistModal(mode = 'create', playlist = null) {
   const confirmBtn = document.getElementById('playlist-modal-confirm')
 
   if (mode === 'create') {
-    title.textContent = 'Nouvelle playlist'
+    title.textContent = 'New playlist'
     input.value = ''
-    input.placeholder = 'Nom de la playlist'
-    confirmBtn.textContent = 'Créer'
+    input.placeholder = 'Playlist name'
+    confirmBtn.textContent = 'Create'
   } else {
-    title.textContent = 'Renommer la playlist'
+    title.textContent = 'Rename playlist'
     input.value = playlist?.name || ''
-    input.placeholder = 'Nouveau nom'
-    confirmBtn.textContent = 'Renommer'
+    input.placeholder = 'New name'
+    confirmBtn.textContent = 'Rename'
   }
 
   modal.classList.remove('hidden')
@@ -7416,7 +8489,7 @@ async function confirmPlaylistModal() {
     const newPlaylist = await invoke('create_playlist', { name })
     playlists.push(newPlaylist)
     updatePlaylistsSidebar()
-    showQueueNotification(`Playlist "${name}" créée`)
+    showQueueNotification(`Playlist "${name}" created`)
 
     // Si on ajoutait plusieurs tracks, les ajouter maintenant
     if (tracksToAddToPlaylist && tracksToAddToPlaylist.length > 0) {
@@ -7427,7 +8500,7 @@ async function confirmPlaylistModal() {
         })
       }
       await loadPlaylists()
-      showQueueNotification(`${tracksToAddToPlaylist.length} titres ajoutés à "${name}"`)
+      showQueueNotification(`${tracksToAddToPlaylist.length} tracks added to "${name}"`)
       tracksToAddToPlaylist = null
       trackToAddToPlaylist = null
     }
@@ -7438,13 +8511,13 @@ async function confirmPlaylistModal() {
         trackPath: trackToAddToPlaylist.path
       })
       await loadPlaylists()
-      showQueueNotification(`Ajouté à "${name}"`)
+      showQueueNotification(`Added to "${name}"`)
       trackToAddToPlaylist = null
     }
   } else if (playlistModalMode === 'rename' && playlistToRename) {
     await invoke('rename_playlist', { id: playlistToRename.id, newName: name })
     await loadPlaylists()
-    showQueueNotification(`Playlist renommée en "${name}"`)
+    showQueueNotification(`Playlist renamed to "${name}"`)
   }
 
   hidePlaylistModal()
@@ -7460,7 +8533,7 @@ async function addTrackToPlaylist(playlistId, track) {
   if (result) {
     await loadPlaylists()
     const playlist = playlists.find(p => p.id === playlistId)
-    showQueueNotification(`Ajouté à "${playlist?.name}"`)
+    showQueueNotification(`Added to "${playlist?.name}"`)
     // Ne pas naviguer vers la playlist, rester sur la vue actuelle
   }
 }
@@ -7487,14 +8560,14 @@ async function deletePlaylist(playlistId) {
 
   // Empêcher la suppression des playlists système (favoris, etc.)
   if (playlist?.isSystem) {
-    showQueueNotification("Cette playlist ne peut pas être supprimée")
+    showQueueNotification("This playlist cannot be deleted")
     return
   }
 
   // Demander confirmation avant suppression
   const confirmed = await showConfirmModal(
     'Supprimer la playlist ?',
-    `Attention, la playlist "${playlist?.name}" sera définitivement supprimée.`,
+    `The playlist "${playlist?.name}" will be permanently deleted.`,
     'Supprimer'
   )
 
@@ -7504,7 +8577,7 @@ async function deletePlaylist(playlistId) {
 
   if (result) {
     await loadPlaylists()
-    showQueueNotification(`Playlist supprimée`)
+    showQueueNotification(`Playlist deleted`)
 
     // Retourne à la vue albums si on était sur cette playlist
     if (selectedPlaylistId === playlistId) {
@@ -7532,21 +8605,21 @@ function showPlaylistContextMenu(e, playlist) {
   menu.innerHTML = `
     <button class="context-menu-item" data-action="play-playlist">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      <span>Lecture</span>
+      <span>Play</span>
     </button>
     <div class="context-menu-separator"></div>
     <button class="context-menu-item" data-action="rename-playlist">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
       </svg>
-      <span>Renommer</span>
+      <span>Rename</span>
     </button>
     ${!isSystemPlaylist ? `
       <button class="context-menu-item context-menu-item-danger" data-action="delete-playlist">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
         </svg>
-        <span>Supprimer</span>
+        <span>Delete</span>
       </button>
     ` : ''}
   `
@@ -7733,7 +8806,7 @@ function showAddToPlaylistMenuMulti(tracksToAdd) {
         await addTrackToPlaylist(playlistId, track)
       }
       const playlist = playlists.find(p => p.id === playlistId)
-      showQueueNotification(`${tracksToAdd.length} titres ajoutés à "${playlist?.name}"`)
+      showQueueNotification(`${tracksToAdd.length} tracks added to "${playlist?.name}"`)
       menu.remove()
       // Clear la sélection
       virtualScrollState.selectedTrackPaths.clear()
@@ -7820,10 +8893,10 @@ async function removeTracksFromLibrary(tracksToRemove) {
 
   // Demande toujours confirmation avec modale
   const count = tracksToRemove.length
-  const title = count === 1 ? 'Supprimer ce titre ?' : `Supprimer ${count} titres ?`
+  const title = count === 1 ? 'Remove this track?' : `Remove ${count} tracks?`
   const message = count === 1
-    ? `Le titre "${tracksToRemove[0].metadata?.title || tracksToRemove[0].name}" sera supprimé de votre bibliothèque.`
-    : `${count} titres seront supprimés de votre bibliothèque.`
+    ? `"${tracksToRemove[0].metadata?.title || tracksToRemove[0].name}" will be removed from your library.`
+    : `${count} tracks will be removed from your library.`
 
   const confirmed = await showConfirmModal(title, message, 'Supprimer')
   if (!confirmed) return
@@ -7837,7 +8910,7 @@ async function removeTracksFromLibrary(tracksToRemove) {
   virtualScrollState.selectedTrackPaths.clear()
   updateTrackSelectionDisplay()
 
-  showQueueNotification(`${count} titre${count > 1 ? 's' : ''} supprimé${count > 1 ? 's' : ''}`)
+  showQueueNotification(`${count} track${count > 1 ? 's' : ''} removed`)
 }
 
 // === SOUS-MENU PLAYLISTS (dans le menu contextuel principal) ===
@@ -7870,7 +8943,7 @@ function showPlaylistSubmenu() {
             await addTrackToPlaylist(playlist.id, track)
           }
           if (contextMenuTracks.length > 1) {
-            showQueueNotification(`${contextMenuTracks.length} titres ajoutés à "${playlist.name}"`)
+            showQueueNotification(`${contextMenuTracks.length} tracks added to "${playlist.name}"`)
           }
         }
         hideContextMenu()
@@ -8162,7 +9235,7 @@ function toggleMute() {
       updateVolumeIcon(0)
     }
     invoke('audio_set_volume', { volume: 0 }).catch(console.error)
-    showToast('Volume: Muet')
+    showToast('Volume: Muted')
   } else {
     // Unmute
     const restorePercent = lastVolume || 100
@@ -8178,106 +9251,137 @@ function toggleMute() {
 // Initialise les raccourcis au chargement
 document.addEventListener('DOMContentLoaded', initGlobalShortcuts)
 
-// === RACCOURCIS CLAVIER LOCAUX (quand l'app est au focus) ===
-// Ces raccourcis marchent quand la fenêtre est active
+// === RACCOURCIS CLAVIER LOCAUX CONFIGURABLES ===
+
+// Raccourcis par défaut : { action: { key, meta, ctrl, shift, alt } }
+// key = e.code pour les touches spéciales, e.key.toLowerCase() pour les lettres
+const DEFAULT_SHORTCUTS = {
+  play_pause:     { code: 'Space', shift: false, meta: false, ctrl: false, alt: false, label: 'Play / Pause' },
+  next_track:     { code: 'ArrowRight', shift: false, meta: true, ctrl: false, alt: false, label: 'Next track' },
+  prev_track:     { code: 'ArrowLeft', shift: false, meta: true, ctrl: false, alt: false, label: 'Previous track' },
+  seek_forward:   { code: 'ArrowRight', shift: true, meta: false, ctrl: false, alt: false, label: 'Seek forward 10s' },
+  seek_backward:  { code: 'ArrowLeft', shift: true, meta: false, ctrl: false, alt: false, label: 'Seek backward 10s' },
+  volume_up:      { code: 'ArrowUp', shift: true, meta: false, ctrl: false, alt: false, label: 'Volume up' },
+  volume_down:    { code: 'ArrowDown', shift: true, meta: false, ctrl: false, alt: false, label: 'Volume down' },
+  close_panel:    { code: 'Escape', shift: false, meta: false, ctrl: false, alt: false, label: 'Close panel' },
+  settings:       { key: ',', shift: false, meta: true, ctrl: false, alt: false, label: 'Settings' },
+  mute:           { key: 'm', shift: false, meta: false, ctrl: false, alt: false, label: 'Mute' },
+  repeat:         { key: 'r', shift: false, meta: false, ctrl: false, alt: false, label: 'Repeat mode' },
+  shuffle:        { key: 's', shift: false, meta: false, ctrl: false, alt: false, label: 'Shuffle' },
+  favorite:       { key: 'l', shift: false, meta: false, ctrl: false, alt: false, label: 'Add to favorites' },
+}
+
+// Map action → callback
+const SHORTCUT_ACTIONS = {
+  play_pause:     () => togglePlay(),
+  next_track:     () => playNextTrack(),
+  prev_track:     () => playPreviousTrack(),
+  seek_forward:   () => seekRelative(10),
+  seek_backward:  () => seekRelative(-10),
+  volume_up:      () => adjustVolume(0.05),
+  volume_down:    () => adjustVolume(-0.05),
+  close_panel:    () => closeAllPanels(),
+  settings:       () => toggleSettings(),
+  mute:           () => toggleMute(),
+  repeat:         () => cycleRepeatMode(),
+  shuffle:        () => toggleShuffleMode(),
+  favorite:       () => toggleFavoriteFromKeyboard(),
+}
+
+// Raccourcis actifs (merge defaults + localStorage overrides)
+let activeShortcuts = {}
+
+function loadShortcuts() {
+  // Clone les défauts
+  activeShortcuts = {}
+  for (const [action, binding] of Object.entries(DEFAULT_SHORTCUTS)) {
+    activeShortcuts[action] = { ...binding }
+  }
+  // Merge les overrides depuis localStorage
+  try {
+    const saved = localStorage.getItem('keyboard_shortcuts')
+    if (saved) {
+      const overrides = JSON.parse(saved)
+      for (const [action, binding] of Object.entries(overrides)) {
+        if (activeShortcuts[action]) {
+          activeShortcuts[action] = { ...activeShortcuts[action], ...binding }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[SHORTCUTS] Error loading saved shortcuts:', e)
+  }
+}
+
+function saveShortcuts() {
+  // Sauvegarde seulement les différences par rapport aux défauts
+  const overrides = {}
+  for (const [action, binding] of Object.entries(activeShortcuts)) {
+    const def = DEFAULT_SHORTCUTS[action]
+    if (!def) continue
+    const changed = (binding.code !== def.code) || (binding.key !== def.key) ||
+      (binding.shift !== def.shift) || (binding.meta !== def.meta) ||
+      (binding.ctrl !== def.ctrl) || (binding.alt !== def.alt)
+    if (changed) {
+      overrides[action] = { code: binding.code, key: binding.key, shift: binding.shift, meta: binding.meta, ctrl: binding.ctrl, alt: binding.alt }
+    }
+  }
+  if (Object.keys(overrides).length > 0) {
+    localStorage.setItem('keyboard_shortcuts', JSON.stringify(overrides))
+  } else {
+    localStorage.removeItem('keyboard_shortcuts')
+  }
+}
+
+// Vérifie si un événement keydown correspond à un binding
+function matchesShortcut(event, binding) {
+  // Vérifie les modifiers
+  const metaMatch = binding.meta ? (event.metaKey || event.ctrlKey) : !(event.metaKey || event.ctrlKey)
+  const shiftMatch = binding.shift ? event.shiftKey : !event.shiftKey
+  const altMatch = binding.alt ? event.altKey : !event.altKey
+
+  if (!metaMatch || !shiftMatch || !altMatch) return false
+
+  // Vérifie la touche : par code OU par key
+  if (binding.code) return event.code === binding.code
+  if (binding.key) return event.key.toLowerCase() === binding.key
+  return false
+}
+
+// Formate un raccourci pour l'affichage (⌘ ⇧ ⌥ + touche)
+function formatShortcutDisplay(binding) {
+  const parts = []
+  if (binding.meta) parts.push('⌘')
+  if (binding.ctrl) parts.push('⌃')
+  if (binding.alt) parts.push('⌥')
+  if (binding.shift) parts.push('⇧')
+
+  // Touche principale
+  const keyName = binding.code || binding.key || '?'
+  const displayNames = {
+    'Space': '␣', 'ArrowRight': '→', 'ArrowLeft': '←',
+    'ArrowUp': '↑', 'ArrowDown': '↓', 'Escape': 'Esc',
+    ',': ',',
+  }
+  parts.push(displayNames[keyName] || keyName.toUpperCase())
+  return parts.join(' ')
+}
 
 function initLocalKeyboardShortcuts() {
+  loadShortcuts()
+
   document.addEventListener('keydown', (e) => {
-    // Ignore si on est dans un champ de texte
+    // Ignore si on est dans un champ de texte (sauf si c'est un shortcut capture)
     if (e.target.matches('input, textarea, [contenteditable]')) return
 
-    // Utilise e.key pour les lettres (compatible AZERTY/QWERTY)
-    const key = e.key.toLowerCase()
-
-    switch (e.code) {
-      case 'Space':
-        // Space = Play/Pause (seulement si pas dans un input)
+    // Teste chaque raccourci actif
+    for (const [action, binding] of Object.entries(activeShortcuts)) {
+      if (matchesShortcut(e, binding)) {
         e.preventDefault()
-        togglePlay()
-        break
-
-      case 'ArrowRight':
-        if (e.metaKey || e.ctrlKey) {
-          // Cmd/Ctrl + Right = Next track
-          e.preventDefault()
-          playNextTrack()
-        } else if (e.shiftKey) {
-          // Shift + Right = Seek forward 10s
-          e.preventDefault()
-          seekRelative(10)
-        }
-        break
-
-      case 'ArrowLeft':
-        if (e.metaKey || e.ctrlKey) {
-          // Cmd/Ctrl + Left = Previous track
-          e.preventDefault()
-          playPreviousTrack()
-        } else if (e.shiftKey) {
-          // Shift + Left = Seek backward 10s
-          e.preventDefault()
-          seekRelative(-10)
-        }
-        break
-
-      case 'ArrowUp':
-        if (e.shiftKey) {
-          // Shift + Up = Volume up
-          e.preventDefault()
-          adjustVolume(0.05)
-        }
-        break
-
-      case 'ArrowDown':
-        if (e.shiftKey) {
-          // Shift + Down = Volume down
-          e.preventDefault()
-          adjustVolume(-0.05)
-        }
-        break
-
-      case 'Escape':
-        // Escape = Close any open panel/modal
-        e.preventDefault()
-        closeAllPanels()
-        break
-    }
-
-    // Cmd+, = Settings (standard macOS)
-    if ((e.metaKey || e.ctrlKey) && e.key === ',') {
-      e.preventDefault()
-      toggleSettings()
-      return
-    }
-
-    // Gère les lettres par leur caractère (compatible AZERTY/QWERTY)
-    // Ignore si un modifier est appuyé (sauf Shift pour les majuscules)
-    if (e.metaKey || e.ctrlKey || e.altKey) return
-
-    switch (key) {
-      case 'm':
-        // M = Toggle mute
-        e.preventDefault()
-        toggleMute()
-        break
-
-      case 'r':
-        // R = Cycle repeat mode
-        e.preventDefault()
-        cycleRepeatMode()
-        break
-
-      case 's':
-        // S = Toggle shuffle
-        e.preventDefault()
-        toggleShuffleMode()
-        break
-
-      case 'l':
-        // L = Toggle like/favorite current track
-        e.preventDefault()
-        toggleFavoriteFromKeyboard()
-        break
+        const callback = SHORTCUT_ACTIONS[action]
+        if (callback) callback()
+        return
+      }
     }
   })
 }
@@ -8285,7 +9389,7 @@ function initLocalKeyboardShortcuts() {
 // Toggle favori depuis le raccourci clavier (sans élément bouton)
 async function toggleFavoriteFromKeyboard() {
   if (currentTrackIndex < 0 || !tracks[currentTrackIndex]) {
-    showToast('Aucun morceau en cours')
+    showToast('No track playing')
     return
   }
 
@@ -8298,12 +9402,12 @@ async function toggleFavoriteFromKeyboard() {
     // Met à jour le Set local
     if (isNowFavorite) {
       favoriteTracks.add(trackPath)
-      showToast(`"${trackTitle}" ajouté aux favoris ❤️`)
+      showToast(`"${trackTitle}" added to favorites ❤️`)
       // Affiche l'animation du cœur sur la pochette du player
       showHeartAnimation()
     } else {
       favoriteTracks.delete(trackPath)
-      showToast(`"${trackTitle}" retiré des favoris`)
+      showToast(`"${trackTitle}" removed from favorites`)
     }
 
     // Met à jour l'icône dans le player si visible
@@ -8313,7 +9417,7 @@ async function toggleFavoriteFromKeyboard() {
     await loadPlaylists()
   } catch (err) {
     console.error('Erreur toggle favorite:', err)
-    showToast('Erreur lors du changement de favori')
+    showToast('Error toggling favorite')
   }
 }
 
@@ -8388,6 +9492,7 @@ function closeAllPanels() {
   if (isQueuePanelOpen) toggleQueuePanel()
   if (isTrackInfoPanelOpen) closeTrackInfoPanel()
   if (isSettingsPanelOpen) closeSettings()
+  if (isEqPanelOpen) closeEqPanel()
 }
 
 // Seek relatif en secondes
@@ -8422,7 +9527,7 @@ function cycleRepeatMode() {
   }
 
   // Feedback
-  const labels = { off: 'Répétition désactivée', all: 'Répéter tout', one: 'Répéter un' }
+  const labels = { off: 'Repeat off', all: 'Repeat all', one: 'Repeat one' }
   showToast(labels[repeatMode])
 }
 
@@ -8437,24 +9542,24 @@ function toggleShuffleMode() {
     if (shuffleBtn) {
       shuffleBtn.classList.add('active')
       shuffleBtn.textContent = '⤮ᴬ'
-      shuffleBtn.title = 'Aléatoire (Album)'
+      shuffleBtn.title = 'Shuffle (Album)'
     }
-    showToast('Lecture aléatoire (Album)')
+    showToast('Shuffle (Album)')
   } else if (shuffleMode === 'album') {
     shuffleMode = 'library'
     if (shuffleBtn) {
       shuffleBtn.textContent = '⤮∞'
-      shuffleBtn.title = 'Aléatoire (Bibliothèque)'
+      shuffleBtn.title = 'Shuffle (Library)'
     }
-    showToast('Lecture aléatoire (Bibliothèque)')
+    showToast('Shuffle (Library)')
   } else {
     shuffleMode = 'off'
     if (shuffleBtn) {
       shuffleBtn.classList.remove('active')
       shuffleBtn.textContent = '⤮'
-      shuffleBtn.title = 'Aléatoire'
+      shuffleBtn.title = 'Shuffle'
     }
-    showToast('Lecture aléatoire désactivée')
+    showToast('Shuffle disabled')
   }
 }
 
@@ -8526,6 +9631,7 @@ function openSettings() {
   // Ferme les autres panels
   if (isQueuePanelOpen) toggleQueuePanel()
   if (isTrackInfoPanelOpen) closeTrackInfoPanel()
+  if (isEqPanelOpen) closeEqPanel()
 
   isSettingsPanelOpen = true
   panel.classList.add('open')
@@ -8534,6 +9640,7 @@ function openSettings() {
   populateSettingsAudioDevices()
   populateSettingsLibraryPaths()
   populateSettingsValues()
+  populateShortcutsList()
 }
 
 function closeSettings() {
@@ -8585,7 +9692,7 @@ async function populateSettingsLibraryPaths() {
     container.innerHTML = ''
 
     if (paths.length === 0) {
-      container.innerHTML = '<div style="font-size: 11px; color: #555; padding: 8px 0;">Aucun dossier configuré</div>'
+      container.innerHTML = '<div style="font-size: 11px; color: #555; padding: 8px 0;">No folders configured</div>'
       return
     }
 
@@ -8607,10 +9714,23 @@ async function populateSettingsLibraryPaths() {
     container.querySelectorAll('.settings-path-remove').forEach(btn => {
       btn.addEventListener('click', async () => {
         const pathToRemove = btn.dataset.path
-        // Note: pas de commande Tauri remove_library_path, on retire visuellement
-        // et on pourrait sauvegarder la config manuellement
-        btn.closest('.settings-path-item').remove()
-        showToast(`Dossier retiré : ${pathToRemove.split('/').pop()}`)
+        try {
+          await invoke('remove_library_path', { path: pathToRemove })
+          btn.closest('.settings-path-item').remove()
+          showToast(`Folder removed: ${pathToRemove.split('/').pop()}`)
+          // Recharger la bibliothèque pour refléter la suppression
+          const [updatedTracks, stats] = await invoke('load_tracks_from_cache')
+          tracks.length = 0
+          for (const t of updatedTracks) tracks.push(t)
+          filteredTracks = [...tracks]
+          groupTracksIntoAlbumsAndArtists()
+          buildTrackLookup()
+          displayCurrentView()
+          updateIndexationStats(stats)
+        } catch (e) {
+          console.error('[SETTINGS] Error removing library path:', e)
+          showToast('Error removing folder')
+        }
       })
     })
   } catch (e) {
@@ -8619,6 +9739,98 @@ async function populateSettingsLibraryPaths() {
 }
 
 // Peuple les valeurs actuelles des settings
+// === SETTINGS : RACCOURCIS CLAVIER ===
+
+let shortcutCaptureAction = null // action en cours de capture
+
+function populateShortcutsList() {
+  const container = document.getElementById('settings-shortcuts-list')
+  if (!container) return
+
+  container.innerHTML = ''
+  for (const [action, binding] of Object.entries(activeShortcuts)) {
+    const row = document.createElement('div')
+    row.className = 'settings-shortcut-row'
+
+    const label = document.createElement('span')
+    label.className = 'settings-shortcut-label'
+    label.textContent = binding.label
+
+    const keyBtn = document.createElement('button')
+    keyBtn.className = 'settings-shortcut-key'
+    keyBtn.textContent = formatShortcutDisplay(binding)
+    keyBtn.title = 'Cliquer pour modifier'
+    keyBtn.dataset.action = action
+    keyBtn.addEventListener('click', () => startShortcutCapture(action, keyBtn))
+
+    row.appendChild(label)
+    row.appendChild(keyBtn)
+    container.appendChild(row)
+  }
+}
+
+function startShortcutCapture(action, buttonEl) {
+  // Annule une capture en cours
+  if (shortcutCaptureAction) {
+    const prevBtn = document.querySelector('.settings-shortcut-key.capturing')
+    if (prevBtn) {
+      prevBtn.classList.remove('capturing')
+      prevBtn.textContent = formatShortcutDisplay(activeShortcuts[shortcutCaptureAction])
+    }
+  }
+
+  shortcutCaptureAction = action
+  buttonEl.classList.add('capturing')
+  buttonEl.textContent = 'Appuyez...'
+
+  // Capture le prochain keydown
+  const captureHandler = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    // Ignore les modifier seuls
+    if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return
+
+    // Construit le nouveau binding
+    const isLetter = e.key.length === 1 && /[a-z,]/i.test(e.key)
+    const newBinding = {
+      ...activeShortcuts[action],
+      shift: e.shiftKey,
+      meta: e.metaKey,
+      ctrl: e.ctrlKey,
+      alt: e.altKey,
+    }
+    if (isLetter) {
+      newBinding.key = e.key.toLowerCase()
+      delete newBinding.code
+    } else {
+      newBinding.code = e.code
+      delete newBinding.key
+    }
+
+    // Applique
+    activeShortcuts[action] = newBinding
+    saveShortcuts()
+
+    // Met à jour l'UI
+    buttonEl.classList.remove('capturing')
+    buttonEl.textContent = formatShortcutDisplay(newBinding)
+    shortcutCaptureAction = null
+
+    // Retire le handler
+    document.removeEventListener('keydown', captureHandler, true)
+  }
+
+  document.addEventListener('keydown', captureHandler, true)
+}
+
+function resetShortcuts() {
+  localStorage.removeItem('keyboard_shortcuts')
+  loadShortcuts()
+  populateShortcutsList()
+  showToast('Shortcuts reset')
+}
+
 async function populateSettingsValues() {
   // Hog Mode
   const hogToggle = document.getElementById('settings-exclusive-mode')
@@ -8670,12 +9882,12 @@ function initSettingsPanel() {
       try {
         await invoke('set_audio_device', { deviceId })
         const selectedName = audioSelect.options[audioSelect.selectedIndex].text
-        showToast(`Sortie audio : ${selectedName}`)
+        showToast(`Audio output: ${selectedName}`)
         // Met à jour aussi le menu player
         loadAudioDevices()
       } catch (e) {
         console.error('[SETTINGS] Error changing audio device:', e)
-        showToast('Erreur lors du changement de sortie audio')
+        showToast('Error changing audio output')
       }
     })
   }
@@ -8688,7 +9900,7 @@ function initSettingsPanel() {
       try {
         await invoke('set_exclusive_mode', { enabled })
         updateHogModeUI(enabled)
-        showToast(enabled ? 'Mode exclusif activé (bit-perfect)' : 'Mode exclusif désactivé')
+        showToast(enabled ? 'Exclusive mode enabled (bit-perfect)' : 'Exclusive mode disabled')
 
         // Relance la lecture si nécessaire
         if (enabled && audioIsPlaying && currentTrackIndex >= 0) {
@@ -8700,7 +9912,7 @@ function initSettingsPanel() {
       } catch (e) {
         console.error('[SETTINGS] Error toggling exclusive mode:', e)
         hogToggle.checked = !enabled
-        showToast('Erreur lors du changement de mode')
+        showToast('Error changing mode')
       }
     })
   }
@@ -8724,7 +9936,7 @@ function initSettingsPanel() {
         const selected = await invoke('select_folder')
         if (selected) {
           await invoke('add_library_path', { path: selected })
-          showToast(`Dossier ajouté : ${selected.split('/').pop()}`)
+          showToast(`Folder added: ${selected.split('/').pop()}`)
           populateSettingsLibraryPaths()
           // Déclenche un scan
           invoke('scan_folder_with_metadata', { path: selected })
@@ -8740,8 +9952,128 @@ function initSettingsPanel() {
   if (autoResume) {
     autoResume.addEventListener('change', () => {
       localStorage.setItem('settings_auto_resume', autoResume.checked)
-      showToast(autoResume.checked ? 'Reprise automatique activée' : 'Reprise automatique désactivée')
+      showToast(autoResume.checked ? 'Auto-resume enabled' : 'Auto-resume disabled')
     })
+  }
+
+  // Réinitialiser les raccourcis
+  const resetShortcutsBtn = document.getElementById('settings-reset-shortcuts')
+  if (resetShortcutsBtn) {
+    resetShortcutsBtn.addEventListener('click', resetShortcuts)
+  }
+
+  // Gapless playback
+  const gaplessToggle = document.getElementById('settings-gapless')
+  if (gaplessToggle) {
+    const gaplessSaved = localStorage.getItem('settings_gapless')
+    gaplessToggle.checked = gaplessSaved !== 'false'
+    gaplessToggle.addEventListener('change', () => {
+      const enabled = gaplessToggle.checked
+      localStorage.setItem('settings_gapless', enabled)
+      invoke('set_gapless_enabled', { enabled }).catch(console.error)
+      showToast(enabled ? 'Gapless playback enabled' : 'Gapless playback disabled')
+    })
+  }
+}
+
+// === AUTO-UPDATE ===
+let pendingUpdate = null
+
+async function checkForUpdates(showNoUpdateToast = false) {
+  const statusEl = document.getElementById('settings-update-status')
+  const availableRow = document.getElementById('settings-update-available')
+
+  try {
+    const { check } = window.__TAURI__.updater
+    if (!check) {
+      if (showNoUpdateToast) showToast('Check not available')
+      return
+    }
+
+    if (statusEl) statusEl.textContent = 'Checking...'
+
+    const update = await check()
+    if (update?.available) {
+      pendingUpdate = update
+      const versionEl = document.getElementById('settings-update-version')
+      if (versionEl) versionEl.textContent = `Update available: v${update.version}`
+      if (availableRow) availableRow.style.display = 'flex'
+      if (statusEl) statusEl.textContent = `Version actuelle : ${await getAppVersion()}`
+      showToast(`Update v${update.version} available`)
+    } else {
+      pendingUpdate = null
+      if (availableRow) availableRow.style.display = 'none'
+      if (statusEl) statusEl.textContent = `Up to date — v${await getAppVersion()}`
+      if (showNoUpdateToast) showToast('No update available')
+    }
+  } catch (e) {
+    console.log('[UPDATE] Check failed (expected if no server):', e)
+    if (statusEl) statusEl.textContent = `Version actuelle : ${await getAppVersion()}`
+    if (showNoUpdateToast) showToast('Unable to check for updates')
+  }
+}
+
+async function installUpdate() {
+  if (!pendingUpdate) return
+  try {
+    showToast('Installing update...')
+    await pendingUpdate.downloadAndInstall()
+    showToast('Update installed — restarting...')
+    const { relaunch } = window.__TAURI__.process
+    if (relaunch) await relaunch()
+  } catch (e) {
+    console.error('[UPDATE] Install failed:', e)
+    showToast('Error during installation')
+  }
+}
+
+async function getAppVersion() {
+  try {
+    const { getVersion } = window.__TAURI__.app
+    return await getVersion()
+  } catch {
+    return '0.1.0'
+  }
+}
+
+async function updateVersionDisplay() {
+  const version = await getAppVersion()
+  const el = document.getElementById('settings-version-label')
+  if (el) el.textContent = `Noir v${version}`
+  const statusEl = document.getElementById('settings-update-status')
+  if (statusEl) statusEl.textContent = `Version actuelle : ${version}`
+}
+
+function initAutoUpdate() {
+  // Auto-update toggle
+  const autoUpdateToggle = document.getElementById('settings-auto-update')
+  if (autoUpdateToggle) {
+    const saved = localStorage.getItem('settings_auto_update')
+    autoUpdateToggle.checked = saved !== 'false' // default: true
+    autoUpdateToggle.addEventListener('change', () => {
+      localStorage.setItem('settings_auto_update', autoUpdateToggle.checked)
+    })
+  }
+
+  // Check button
+  const checkBtn = document.getElementById('settings-check-update')
+  if (checkBtn) {
+    checkBtn.addEventListener('click', () => checkForUpdates(true))
+  }
+
+  // Install button
+  const installBtn = document.getElementById('settings-install-update')
+  if (installBtn) {
+    installBtn.addEventListener('click', installUpdate)
+  }
+
+  // Version display
+  updateVersionDisplay()
+
+  // Startup check (silent, after 5s)
+  const autoEnabled = localStorage.getItem('settings_auto_update') !== 'false'
+  if (autoEnabled) {
+    setTimeout(() => checkForUpdates(false), 5000)
   }
 }
 
@@ -8790,7 +10122,7 @@ async function handleAutoResume() {
         const track = tracks[trackIndex]
         const meta = track.metadata || {}
         document.getElementById('track-name').textContent = meta.title || track.name || 'Titre inconnu'
-        document.getElementById('track-folder').textContent = meta.artist || 'Artiste inconnu'
+        document.getElementById('track-folder').textContent = meta.artist || 'Unknown Artist'
         // Affiche le player bar
         const player = document.getElementById('player')
         if (player) player.classList.remove('hidden')
@@ -8804,6 +10136,7 @@ async function handleAutoResume() {
 document.addEventListener('DOMContentLoaded', () => {
   initSettingsPanel()
   applyDefaultVolume()
+  initAutoUpdate()
   // Auto-resume après un délai pour laisser la bibliothèque se charger
   setTimeout(handleAutoResume, 3000)
 })

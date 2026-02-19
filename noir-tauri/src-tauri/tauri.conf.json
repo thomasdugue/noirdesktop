@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: noir: asset: https://tauri.localhost; img-src 'self' data: blob: noir: asset: https://tauri.localhost https://*.deezer.com https://*.scdn.co https://*.wikimedia.org",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]
@@ -40,5 +40,12 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/tdugue/noir-desktop/releases/latest/download/latest.json"
+      ],
+      "pubkey": "PLACEHOLDER_PUBKEY_GENERATE_WITH_tauri_signer_generate"
+    }
+  }
 }

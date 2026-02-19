@@ -20,6 +20,7 @@ mod audio;
 mod audio_decoder;
 mod audio_engine;
 mod resampler;
+mod eq;
 use audio_engine::AudioEngine;
 
 // Structure pour un fichier audio
@@ -50,6 +51,8 @@ struct Metadata {
     year: Option<u32>,
     #[serde(default)]
     genre: Option<String>,
+    #[serde(default)]
+    genre_enriched: bool,
     duration: f64,
     #[serde(rename = "bitDepth")]
     bit_depth: Option<u8>,
@@ -118,6 +121,8 @@ struct ListeningEntry {
 struct ListeningHistory {
     entries: Vec<ListeningEntry>,           // Historique ordonné par timestamp décroissant
     last_played: Option<ListeningEntry>,    // Dernière track jouée
+    #[serde(default)]
+    played_paths: std::collections::HashSet<String>,  // Tous les paths jamais écoutés (non tronqué)
 }
 
 // === DATE D'AJOUT DES TRACKS ===
@@ -204,6 +209,25 @@ struct MusicBrainzUrl {
     resource: Option<String>,
 }
 
+// Structures pour la recherche de genres via MusicBrainz release-groups
+#[derive(Deserialize)]
+struct MusicBrainzReleaseGroupSearch {
+    #[serde(rename = "release-groups")]
+    release_groups: Option<Vec<MusicBrainzReleaseGroup>>,
+}
+
+#[derive(Deserialize)]
+struct MusicBrainzReleaseGroup {
+    score: Option<u32>,
+    tags: Option<Vec<MusicBrainzTag>>,
+}
+
+#[derive(Deserialize)]
+struct MusicBrainzTag {
+    name: String,
+    count: i32,
+}
+
 // === CACHE GLOBAL EN MÉMOIRE ===
 static METADATA_CACHE: Lazy<Mutex<MetadataCache>> = Lazy::new(|| {
     Mutex::new(load_metadata_cache_from_file())
@@ -239,6 +263,11 @@ static TRACKS_CACHE: Lazy<Mutex<TracksCache>> = Lazy::new(|| {
 // === AUDIO ENGINE GLOBAL ===
 // Note: sera initialisé avec AppHandle dans run()
 static AUDIO_ENGINE: Lazy<Mutex<Option<AudioEngine>>> = Lazy::new(|| {
+    Mutex::new(None)
+});
+
+// AppHandle global pour émettre des erreurs depuis les commandes Tauri
+static APP_HANDLE: Lazy<Mutex<Option<tauri::AppHandle>>> = Lazy::new(|| {
     Mutex::new(None)
 });
 
@@ -373,7 +402,18 @@ fn load_listening_history() -> ListeningHistory {
     let path = get_listening_history_path();
     if path.exists() {
         let content = fs::read_to_string(&path).unwrap_or_default();
-        serde_json::from_str(&content).unwrap_or_default()
+        let mut history: ListeningHistory = serde_json::from_str(&content).unwrap_or_default();
+
+        // Backfill: si played_paths est vide mais entries existe, peupler depuis entries
+        if history.played_paths.is_empty() && !history.entries.is_empty() {
+            for entry in &history.entries {
+                history.played_paths.insert(entry.path.clone());
+            }
+            save_listening_history(&history);
+            println!("[ListeningHistory] Backfilled {} played paths from entries", history.played_paths.len());
+        }
+
+        history
     } else {
         ListeningHistory::default()
     }
@@ -557,15 +597,15 @@ fn md5_hash(input: &str) -> u64 {
 // Recherche une pochette sur MusicBrainz + Cover Art Archive (async)
 async fn fetch_cover_from_musicbrainz(artist: &str, album: &str) -> Option<Vec<u8>> {
     // Nettoie et encode les paramètres
-    let artist_clean = artist.replace("Artistes Variés", "").trim().to_string();
+    let artist_clean = artist.replace("Various Artists", "").trim().to_string();
     let album_clean = album.trim();
 
-    if album_clean.is_empty() || album_clean == "Album inconnu" {
+    if album_clean.is_empty() || album_clean == "Unknown Album" {
         return None;
     }
 
     // Construit la requête MusicBrainz
-    let query = if artist_clean.is_empty() || artist_clean == "Artiste inconnu" {
+    let query = if artist_clean.is_empty() || artist_clean == "Unknown Artist" {
         format!("release:{}", urlencoding_simple(album_clean))
     } else {
         format!("release:{} AND artist:{}",
@@ -607,7 +647,7 @@ async fn fetch_cover_from_musicbrainz(artist: &str, album: &str) -> Option<Vec<u
 async fn fetch_artist_image_from_deezer(artist_name: &str) -> Option<Vec<u8>> {
     let artist_clean = artist_name.trim();
 
-    if artist_clean.is_empty() || artist_clean == "Artiste inconnu" || artist_clean == "Artistes Variés" {
+    if artist_clean.is_empty() || artist_clean == "Unknown Artist" || artist_clean == "Various Artists" {
         return None;
     }
 
@@ -656,7 +696,7 @@ async fn fetch_artist_image_from_deezer(artist_name: &str) -> Option<Vec<u8>> {
 async fn fetch_artist_image_from_musicbrainz(artist_name: &str) -> Option<Vec<u8>> {
     let artist_clean = artist_name.trim();
 
-    if artist_clean.is_empty() || artist_clean == "Artiste inconnu" || artist_clean == "Artistes Variés" {
+    if artist_clean.is_empty() || artist_clean == "Unknown Artist" || artist_clean == "Various Artists" {
         return None;
     }
 
@@ -750,6 +790,315 @@ async fn fetch_wikimedia_image(wikimedia_url: &str) -> Option<Vec<u8>> {
     }
 
     None
+}
+
+/// Nettoie un nom d'album pour la recherche API (Deezer/MusicBrainz).
+/// Supprime les suffixes d'édition, les infos bitrate, normalise les caractères Unicode.
+fn clean_album_name_for_search(album: &str) -> String {
+    let mut cleaned = album.to_string();
+
+    // 1. Supprime tout contenu entre crochets : [HD Tracks], [24-96], [Remastered 2021], [WEB FLAC], [269257375]
+    while let Some(start) = cleaned.find('[') {
+        if let Some(end) = cleaned[start..].find(']') {
+            cleaned = format!("{}{}", &cleaned[..start], &cleaned[start + end + 1..]);
+        } else {
+            break;
+        }
+    }
+
+    // 2. Supprime les parenthèses contenant des mots-clés d'édition/format
+    let edition_keywords = [
+        "deluxe", "remaster", "bonus", "expanded", "anniversary",
+        "special edition", "collector", "limited", "super deluxe",
+        "hd", "hi-res", "24bit", "24/", "16/", "192", "96", "88",
+        "mqa", "sacd", "dsd", "flac", "web", "lossless",
+    ];
+    loop {
+        if let Some(start) = cleaned.find('(') {
+            if let Some(rel_end) = cleaned[start..].find(')') {
+                let paren_content = cleaned[start + 1..start + rel_end].to_lowercase();
+                let is_edition_suffix = edition_keywords.iter()
+                    .any(|kw| paren_content.contains(kw));
+                if is_edition_suffix {
+                    cleaned = format!("{}{}", &cleaned[..start], &cleaned[start + rel_end + 1..]);
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+
+    // 3. Normalise les tirets Unicode
+    cleaned = cleaned
+        .replace('\u{2013}', "-")  // en-dash
+        .replace('\u{2014}', "-")  // em-dash
+        .replace('\u{2015}', "-")  // horizontal bar
+        .replace('\u{2012}', "-"); // figure dash
+
+    // 4. Normalise les guillemets et apostrophes Unicode
+    cleaned = cleaned
+        .replace('\u{2018}', "'")
+        .replace('\u{2019}', "'")
+        .replace('\u{201C}', "\"")
+        .replace('\u{201D}', "\"");
+
+    // 5. Supprime les trailing bitrate/format suffixes (ex: "24/192", "24B44")
+    cleaned = cleaned.trim().to_string();
+    // Pattern: finit par un format bitrate/résolution sans parenthèses
+    let patterns_to_strip = [
+        " 24/192", " 24/96", " 24/88", " 24/48", " 24/44",
+        " 16/44", " 16/48", " 24B44", " 24B48", " 24B96",
+        " 24BIT-48KHZ", " 24BIT-96KHZ", " 24BIT-192KHZ",
+    ];
+    for pattern in &patterns_to_strip {
+        if cleaned.to_uppercase().ends_with(&pattern.to_uppercase()) {
+            let new_len = cleaned.len() - pattern.len();
+            cleaned.truncate(new_len);
+            cleaned = cleaned.trim().to_string();
+        }
+    }
+
+    cleaned.trim().to_string()
+}
+
+/// Nettoie un nom d'artiste pour la recherche API.
+fn clean_artist_name_for_search(artist: &str) -> String {
+    artist
+        .replace('\u{2013}', "-")
+        .replace('\u{2014}', "-")
+        .replace('\u{2018}', "'")
+        .replace('\u{2019}', "'")
+        .replace('"', "")
+        .trim()
+        .to_string()
+}
+
+/// Recherche le genre d'un album sur Deezer (API gratuite, pas de clé)
+async fn fetch_genre_from_deezer(artist: &str, album: &str) -> Option<String> {
+    let artist_clean = clean_artist_name_for_search(artist);
+    let album_clean = clean_album_name_for_search(&album.replace('"', ""));
+
+    if album_clean.is_empty() || album_clean == "Unknown Album" {
+        return None;
+    }
+
+    let query = if artist_clean.is_empty() || artist_clean == "Unknown Artist" {
+        format!("album:\"{}\"", album_clean)
+    } else {
+        format!("artist:\"{}\" album:\"{}\"", artist_clean, album_clean)
+    };
+
+    let url = format!(
+        "https://api.deezer.com/search/album?q={}&limit=1",
+        urlencoding_simple(&query)
+    );
+
+    let resp = HTTP_CLIENT.get(&url).send().await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+
+    // genre_id peut être 0 (pas de genre) ou -1 (inconnu chez Deezer)
+    let genre_id = json["data"][0]["genre_id"].as_i64().unwrap_or(0);
+    if genre_id <= 0 {
+        return None;
+    }
+
+    DEEZER_GENRE_MAP.get(&(genre_id as u64)).map(|s| s.to_string())
+}
+
+/// Fallback : recherche le genre via MusicBrainz release-group tags
+async fn fetch_genre_from_musicbrainz(artist: &str, album: &str) -> Option<String> {
+    let artist_clean = clean_artist_name_for_search(artist);
+    let album_clean = clean_album_name_for_search(&album.replace('"', ""));
+
+    if album_clean.is_empty() || album_clean == "Unknown Album" {
+        return None;
+    }
+
+    let query = if artist_clean.is_empty() || artist_clean == "Unknown Artist" {
+        format!("releasegroup:{}", urlencoding_simple(&album_clean))
+    } else {
+        format!("releasegroup:{} AND artist:{}",
+            urlencoding_simple(&album_clean),
+            urlencoding_simple(&artist_clean))
+    };
+
+    let url = format!(
+        "https://musicbrainz.org/ws/2/release-group/?query={}&fmt=json&limit=3",
+        query
+    );
+
+    let resp = HTTP_CLIENT.get(&url).send().await.ok()?;
+    let result: MusicBrainzReleaseGroupSearch = resp.json().await.ok()?;
+
+    let groups = result.release_groups?;
+    let best = groups.into_iter()
+        .filter(|g| g.score.unwrap_or(0) > 60)
+        .next()?;
+
+    // Trie les tags par popularité (count décroissant) et retourne le premier genre connu
+    let mut tags = best.tags.unwrap_or_default();
+    tags.sort_by(|a, b| b.count.cmp(&a.count));
+
+    for tag in &tags {
+        let normalized = normalize_genre(&tag.name);
+        if !normalized.is_empty() {
+            // Vérifie que le genre normalisé est dans GENRE_MAP (genre reconnu)
+            let key = normalized.to_lowercase()
+                .replace('-', " ")
+                .replace('_', " ")
+                .replace('&', "and")
+                .replace('/', " ")
+                .replace('.', "")
+                .replace('\'', "")
+                .split_whitespace()
+                .collect::<Vec<&str>>()
+                .join(" ");
+            if GENRE_MAP.contains_key(key.as_str()) {
+                return Some(normalized);
+            }
+        }
+    }
+
+    // Si aucun tag ne correspond à un genre connu, retourne le premier tag populaire
+    if let Some(first_tag) = tags.first() {
+        if first_tag.count > 0 {
+            let normalized = normalize_genre(&first_tag.name);
+            if !normalized.is_empty() {
+                return Some(normalized);
+            }
+        }
+    }
+
+    None
+}
+
+/// Enrichit les genres manquants via l'API Deezer (post-scan, async)
+async fn enrich_genres_from_deezer(app_handle: tauri::AppHandle) {
+    use tauri::Emitter;
+
+    // Collecte les albums à enrichir (genre absent + pas encore enrichi)
+    let albums_to_enrich: Vec<(String, String)> = {
+        let cache = match TRACKS_CACHE.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let mut album_set: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        for track in &cache.tracks {
+            if track.metadata.genre.is_none() && !track.metadata.genre_enriched {
+                album_set.insert((
+                    track.metadata.artist.clone(),
+                    track.metadata.album.clone(),
+                ));
+            }
+        }
+        album_set.into_iter().collect()
+    };
+
+    let total = albums_to_enrich.len();
+    if total == 0 {
+        println!("[Genre Enrichment] No albums to enrich");
+        return;
+    }
+
+    println!("[Genre Enrichment] Starting: {} albums to query on Deezer", total);
+
+    let mut enriched_count = 0usize;
+    let mut genre_results: Vec<(String, String, Option<String>)> = Vec::new();
+
+    for (idx, (artist, album)) in albums_to_enrich.iter().enumerate() {
+        // Rate limit : 50ms entre chaque appel Deezer
+        if idx > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let genre = fetch_genre_from_deezer(artist, album).await;
+
+        // Fallback MusicBrainz si Deezer n'a pas trouvé
+        let genre = if genre.is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let mb_genre = fetch_genre_from_musicbrainz(artist, album).await;
+            if mb_genre.is_some() {
+                println!("[Genre Enrichment] {}/{} {} - {} → {:?} (MusicBrainz fallback)",
+                    idx + 1, total, artist, album, mb_genre);
+            }
+            mb_genre
+        } else {
+            genre
+        };
+
+        if genre.is_some() {
+            enriched_count += 1;
+        }
+
+        println!("[Genre Enrichment] {}/{} {} - {} → {:?}",
+            idx + 1, total, artist, album, genre);
+
+        genre_results.push((artist.clone(), album.clone(), genre));
+
+        // Progress feedback toutes les 10 requêtes
+        if (idx + 1) % 10 == 0 || idx + 1 == total {
+            let _ = app_handle.emit("genre_enrichment_progress", serde_json::json!({
+                "current": idx + 1,
+                "total": total,
+                "enriched": enriched_count
+            }));
+        }
+    }
+
+    // Applique les résultats dans METADATA_CACHE + TRACKS_CACHE
+    {
+        let mut metadata_cache = match METADATA_CACHE.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut tracks_cache = match TRACKS_CACHE.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        for (artist, album, genre_opt) in &genre_results {
+            let normalized_genre = genre_opt.as_ref().map(|g| normalize_genre(g));
+
+            // Met à jour toutes les tracks de cet album
+            for track in tracks_cache.tracks.iter_mut() {
+                if track.metadata.artist == *artist
+                    && track.metadata.album == *album
+                    && track.metadata.genre.is_none()
+                {
+                    if let Some(ref genre) = normalized_genre {
+                        track.metadata.genre = Some(genre.clone());
+                        track.metadata.genre_enriched = true;  // Marqué SEULEMENT si genre trouvé
+                    }
+                    // Si genre non trouvé → genre_enriched reste false → retry au prochain scan
+                }
+            }
+
+            // Met à jour le metadata_cache aussi
+            for (_, meta) in metadata_cache.entries.iter_mut() {
+                if meta.artist == *artist
+                    && meta.album == *album
+                    && meta.genre.is_none()
+                {
+                    if let Some(ref genre) = normalized_genre {
+                        meta.genre = Some(genre.clone());
+                        meta.genre_enriched = true;
+                    }
+                }
+            }
+        }
+
+        // Sauvegarde les caches modifiés
+        save_tracks_cache(&tracks_cache);
+        save_metadata_cache_to_file(&metadata_cache);
+    }
+
+    println!("[Genre Enrichment] Complete: {}/{} albums enriched with genre", enriched_count, total);
+
+    let _ = app_handle.emit("genre_enrichment_complete", serde_json::json!({
+        "enriched_albums": enriched_count,
+        "total_albums": total
+    }));
 }
 
 // Encodage URL simple (évite d'ajouter une dépendance)
@@ -1127,6 +1476,37 @@ static GENRE_MAP: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
     m
 });
 
+/// Mapping Deezer genre_id → nom canonique (26 genres Deezer, on ignore id=0 "Tous")
+static DEEZER_GENRE_MAP: Lazy<HashMap<u64, &'static str>> = Lazy::new(|| {
+    let mut m = HashMap::new();
+    m.insert(132, "Pop");
+    m.insert(116, "Hip-Hop");
+    m.insert(152, "Rock");
+    m.insert(113, "Dance");
+    m.insert(165, "R&B");
+    m.insert(85, "Alternative");
+    m.insert(106, "Electro");
+    m.insert(466, "Folk");
+    m.insert(144, "Reggae");
+    m.insert(129, "Jazz");
+    m.insert(52, "French Pop");
+    m.insert(84, "Country");
+    m.insert(98, "Classical");
+    m.insert(173, "Soundtrack");
+    m.insert(464, "Metal");
+    m.insert(169, "Soul");
+    m.insert(153, "Blues");
+    m.insert(95, "Kids");
+    m.insert(197, "Latin");
+    m.insert(2, "Afro");
+    m.insert(12, "World");
+    m.insert(16, "World");
+    m.insert(75, "World");
+    m.insert(81, "World");
+    m.insert(457, "Spoken Word");
+    m
+});
+
 /// Normalise un genre musical brut en forme canonique
 fn normalize_genre(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -1179,6 +1559,40 @@ fn title_case(s: &str) -> String {
         .join(" ")
 }
 
+/// Sépare les genres multi-valeurs (virgule, point-virgule, slash) et normalise.
+/// Retourne le premier genre valide trouvé.
+fn split_and_normalize_genre(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Détecte les séparateurs multi-valeurs
+    let parts: Vec<&str> = if trimmed.contains(", ") || trimmed.contains("; ") {
+        trimmed.split(|c| c == ',' || c == ';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else if trimmed.contains('/') {
+        trimmed.split('/')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        vec![trimmed]
+    };
+
+    // Normalise chaque partie et retourne le premier résultat non-vide
+    for part in &parts {
+        let normalized = normalize_genre(part);
+        if !normalized.is_empty() {
+            return Some(normalized);
+        }
+    }
+
+    None
+}
+
 // Fonction interne pour obtenir les métadonnées (utilisée par le scan parallèle)
 fn get_metadata_internal(path: &str) -> Metadata {
     // Vérifie le cache mémoire d'abord
@@ -1197,12 +1611,13 @@ fn get_metadata_internal(path: &str) -> Metadata {
 
     let mut metadata = Metadata {
         title: file_name.clone(),
-        artist: "Artiste inconnu".to_string(),
-        album: "Album inconnu".to_string(),
+        artist: "Unknown Artist".to_string(),
+        album: "Unknown Album".to_string(),
         track: 0,
         disc: None,
         year: None,
         genre: None,
+        genre_enriched: false,
         duration: 0.0,
         bit_depth: None,
         sample_rate: None,
@@ -1216,6 +1631,19 @@ fn get_metadata_internal(path: &str) -> Metadata {
         metadata.sample_rate = properties.sample_rate();
         metadata.bit_depth = properties.bit_depth();
         metadata.bitrate = properties.audio_bitrate();
+
+        // Détermine le codec depuis le type de fichier
+        metadata.codec = Some(match tagged_file.file_type() {
+            lofty::FileType::Flac => "FLAC".to_string(),
+            lofty::FileType::Mpeg => "MP3".to_string(),
+            lofty::FileType::Mp4 => {
+                if metadata.bit_depth.is_some() { "ALAC".to_string() }
+                else { "AAC".to_string() }
+            }
+            lofty::FileType::Wav => "WAV".to_string(),
+            lofty::FileType::Aiff => "AIFF".to_string(),
+            _ => "Other".to_string(),
+        });
 
         if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
             if let Some(title) = tag.title() {
@@ -1237,10 +1665,7 @@ fn get_metadata_internal(path: &str) -> Metadata {
                 metadata.year = Some(year);
             }
             if let Some(genre) = tag.genre() {
-                let normalized = normalize_genre(&genre);
-                if !normalized.is_empty() {
-                    metadata.genre = Some(normalized);
-                }
+                metadata.genre = split_and_normalize_genre(&genre);
             }
         }
     }
@@ -1472,6 +1897,12 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
             new_tracks: added_count,
             removed_tracks: removed_count,
         });
+
+        // Lance l'enrichissement des genres en arrière-plan (async, post-scan)
+        let app_clone = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            enrich_genres_from_deezer(app_clone).await;
+        });
     });
 }
 
@@ -1483,6 +1914,51 @@ fn get_library_stats() -> LibraryStats {
     } else {
         LibraryStats::default()
     }
+}
+
+/// Force l'enrichissement des genres (peut être appelé manuellement depuis le frontend)
+#[tauri::command]
+fn trigger_genre_enrichment(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        enrich_genres_from_deezer(app_handle).await;
+    });
+}
+
+/// Reset les flags d'enrichissement pour les tracks sans genre (permet de retenter)
+/// puis relance l'enrichissement avec les améliorations (nettoyage noms, fallback MusicBrainz)
+#[tauri::command]
+fn reset_genre_enrichment(app_handle: tauri::AppHandle) {
+    let mut reset_count = 0usize;
+
+    // Reset dans TRACKS_CACHE
+    if let Ok(mut cache) = TRACKS_CACHE.lock() {
+        for track in cache.tracks.iter_mut() {
+            // Reset uniquement les tracks qui ont été enrichies mais qui n'ont PAS de genre
+            // (c'est-à-dire les échecs précédents)
+            if track.metadata.genre_enriched && track.metadata.genre.is_none() {
+                track.metadata.genre_enriched = false;
+                reset_count += 1;
+            }
+        }
+        save_tracks_cache(&cache);
+    }
+
+    // Reset dans METADATA_CACHE
+    if let Ok(mut cache) = METADATA_CACHE.lock() {
+        for (_, meta) in cache.entries.iter_mut() {
+            if meta.genre_enriched && meta.genre.is_none() {
+                meta.genre_enriched = false;
+            }
+        }
+        save_metadata_cache_to_file(&cache);
+    }
+
+    println!("[Genre Enrichment] Reset {} tracks for re-enrichment", reset_count);
+
+    // Relance l'enrichissement
+    tauri::async_runtime::spawn(async move {
+        enrich_genres_from_deezer(app_handle).await;
+    });
 }
 
 // Obtenir les métadonnées (depuis le cache mémoire ou lecture fichier)
@@ -1504,12 +1980,13 @@ fn get_metadata(path: &str) -> Metadata {
 
     let mut metadata = Metadata {
         title: file_name.clone(),
-        artist: "Artiste inconnu".to_string(),
-        album: "Album inconnu".to_string(),
+        artist: "Unknown Artist".to_string(),
+        album: "Unknown Album".to_string(),
         track: 0,
         disc: None,
         year: None,
         genre: None,
+        genre_enriched: false,
         duration: 0.0,
         bit_depth: None,
         sample_rate: None,
@@ -1523,6 +2000,19 @@ fn get_metadata(path: &str) -> Metadata {
         metadata.sample_rate = properties.sample_rate();
         metadata.bit_depth = properties.bit_depth();
         metadata.bitrate = properties.audio_bitrate();
+
+        // Détermine le codec depuis le type de fichier
+        metadata.codec = Some(match tagged_file.file_type() {
+            lofty::FileType::Flac => "FLAC".to_string(),
+            lofty::FileType::Mpeg => "MP3".to_string(),
+            lofty::FileType::Mp4 => {
+                if metadata.bit_depth.is_some() { "ALAC".to_string() }
+                else { "AAC".to_string() }
+            }
+            lofty::FileType::Wav => "WAV".to_string(),
+            lofty::FileType::Aiff => "AIFF".to_string(),
+            _ => "Other".to_string(),
+        });
 
         if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
             if let Some(title) = tag.title() {
@@ -1541,10 +2031,7 @@ fn get_metadata(path: &str) -> Metadata {
                 metadata.year = Some(year);
             }
             if let Some(genre) = tag.genre() {
-                let normalized = normalize_genre(&genre);
-                if !normalized.is_empty() {
-                    metadata.genre = Some(normalized);
-                }
+                metadata.genre = split_and_normalize_genre(&genre);
             }
         }
     }
@@ -1972,6 +2459,23 @@ fn add_library_path(path: &str) {
     }
 }
 
+// Retirer un chemin de la bibliothèque et supprimer ses tracks du cache
+#[tauri::command]
+fn remove_library_path(path: &str) {
+    let mut config = load_config();
+    config.library_paths.retain(|p| p != path);
+    save_config(&config);
+
+    // Supprimer les tracks de ce dossier du cache en mémoire + disque
+    if let Ok(mut cache) = TRACKS_CACHE.lock() {
+        let before = cache.tracks.len();
+        cache.tracks.retain(|t| !t.path.starts_with(path));
+        let removed = before - cache.tracks.len();
+        println!("[remove_library_path] Removed {} tracks from cache for: {}", removed, path);
+        save_tracks_cache(&cache);
+    }
+}
+
 // Obtenir les chemins de la bibliothèque
 #[tauri::command]
 fn get_library_paths() -> Vec<String> {
@@ -1987,7 +2491,7 @@ async fn select_folder(app: tauri::AppHandle) -> Option<String> {
 
     app.dialog()
         .file()
-        .set_title("Choisir un dossier de musique")
+        .set_title("Choose a music folder")
         .pick_folder(move |folder_path| {
             let _ = tx.send(folder_path.map(|p| p.to_string()));
         });
@@ -2172,10 +2676,24 @@ struct AudioPlaybackState {
     duration: f64,
 }
 
+/// Helper: émet une erreur structurée via l'AppHandle global
+fn emit_frontend_error(code: &str, message: &str, details: &str) {
+    if let Ok(handle_guard) = APP_HANDLE.lock() {
+        if let Some(ref app) = *handle_guard {
+            audio_engine::emit_error(app, code, message, details);
+        }
+    }
+}
+
 /// Joue un fichier audio (non-bloquant)
 /// La durée sera envoyée via l'événement playback_progress
 #[tauri::command]
 fn audio_play(path: String) -> Result<(), String> {
+    // Vérifie que le fichier existe avant de passer au moteur
+    if !Path::new(&path).exists() {
+        emit_frontend_error("file_not_found", "Fichier introuvable", &path);
+        return Err(format!("File not found: {}", path));
+    }
     if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
         if let Some(ref engine) = *engine_guard {
             // Envoie la commande au thread audio (non-bloquant)
@@ -2266,6 +2784,17 @@ fn audio_preload_next(path: String) -> Result<(), String> {
     Err("Audio engine not initialized".to_string())
 }
 
+/// Active/désactive le gapless playback
+#[tauri::command]
+fn set_gapless_enabled(enabled: bool) -> Result<(), String> {
+    if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+        if let Some(ref engine) = *engine_guard {
+            return engine.set_gapless(enabled);
+        }
+    }
+    Err("Audio engine not initialized".to_string())
+}
+
 // === COMMANDES AUDIO BACKEND (Bit-Perfect, Device Control) ===
 
 /// Liste tous les devices audio de sortie disponibles
@@ -2295,7 +2824,10 @@ fn get_current_audio_device() -> Result<audio::DeviceInfo, String> {
 fn set_audio_device(device_id: String) -> Result<(), String> {
     if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
         if let Some(ref engine) = *engine_guard {
-            return engine.set_output_device(&device_id);
+            return engine.set_output_device(&device_id).map_err(|e| {
+                emit_frontend_error("device_switch_failed", "Audio device unavailable", &e);
+                e
+            });
         }
     }
     Err("Audio engine not initialized".to_string())
@@ -2318,7 +2850,14 @@ fn get_audio_sample_rate() -> Result<u32, String> {
 fn set_exclusive_mode(enabled: bool) -> Result<(), String> {
     if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
         if let Some(ref engine) = *engine_guard {
-            return engine.set_exclusive_mode(enabled);
+            return engine.set_exclusive_mode(enabled).map_err(|e| {
+                emit_frontend_error(
+                    "exclusive_mode_failed",
+                    "Exclusive mode failed — check that no other app is using the DAC",
+                    &e,
+                );
+                e
+            });
         }
     }
     Err("Audio engine not initialized".to_string())
@@ -2335,6 +2874,90 @@ fn is_exclusive_mode() -> Result<bool, String> {
     Err("Audio engine not initialized".to_string())
 }
 
+// === COMMANDES ÉGALISEUR (EQ 8 BANDES) ===
+
+/// Active ou désactive l'égaliseur
+#[tauri::command]
+fn set_eq_enabled(enabled: bool) -> Result<(), String> {
+    if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+        if let Some(ref engine) = *engine_guard {
+            engine.eq_state.set_enabled(enabled);
+            // Sauvegarde la préférence
+            save_eq_settings(&engine.eq_state);
+            return Ok(());
+        }
+    }
+    Err("Audio engine not initialized".to_string())
+}
+
+/// Met à jour les gains de toutes les bandes EQ (en dB, -12 à +12)
+#[tauri::command]
+fn set_eq_bands(gains: Vec<f32>) -> Result<(), String> {
+    if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+        if let Some(ref engine) = *engine_guard {
+            engine.eq_state.set_all_gains(&gains);
+            // Sauvegarde
+            save_eq_settings(&engine.eq_state);
+            return Ok(());
+        }
+    }
+    Err("Audio engine not initialized".to_string())
+}
+
+/// Retourne l'état actuel de l'EQ
+#[tauri::command]
+fn get_eq_state() -> Result<EqStateResponse, String> {
+    if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+        if let Some(ref engine) = *engine_guard {
+            return Ok(EqStateResponse {
+                enabled: engine.eq_state.is_enabled(),
+                gains: engine.eq_state.get_all_gains().to_vec(),
+            });
+        }
+    }
+    Err("Audio engine not initialized".to_string())
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct EqStateResponse {
+    enabled: bool,
+    gains: Vec<f32>,
+}
+
+/// Sauvegarde les paramètres EQ dans le fichier settings
+fn save_eq_settings(eq_state: &eq::EqSharedState) {
+    let data_dir = get_data_dir();
+    let eq_file = data_dir.join("eq_settings.json");
+    let settings = serde_json::json!({
+        "enabled": eq_state.is_enabled(),
+        "gains": eq_state.get_all_gains(),
+    });
+    if let Ok(json) = serde_json::to_string_pretty(&settings) {
+        let _ = fs::write(&eq_file, json);
+    }
+}
+
+/// Charge les paramètres EQ depuis le fichier settings
+fn load_eq_settings(eq_state: &eq::EqSharedState) {
+    let data_dir = get_data_dir();
+    let eq_file = data_dir.join("eq_settings.json");
+    if let Ok(data) = fs::read_to_string(&eq_file) {
+        if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&data) {
+            if let Some(enabled) = settings.get("enabled").and_then(|v| v.as_bool()) {
+                eq_state.set_enabled(enabled);
+            }
+            if let Some(gains) = settings.get("gains").and_then(|v| v.as_array()) {
+                let gain_values: Vec<f32> = gains.iter()
+                    .filter_map(|v| v.as_f64().map(|f| f as f32))
+                    .collect();
+                eq_state.set_all_gains(&gain_values);
+            }
+            println!("[EQ] Settings loaded: enabled={}, gains={:?}",
+                eq_state.is_enabled(), eq_state.get_all_gains());
+        }
+    }
+}
+
 // === COMMANDES HISTORIQUE D'ÉCOUTE ===
 
 // Enregistre une lecture
@@ -2345,15 +2968,18 @@ fn record_play(path: String, artist: String, album: String, title: String) {
         .unwrap_or_default()
         .as_secs();
 
-    let entry = ListeningEntry {
-        path,
-        artist,
-        album,
-        title,
-        timestamp,
-    };
-
     if let Ok(mut history) = LISTENING_HISTORY.lock() {
+        // Ajoute au set permanent des paths écoutés (jamais tronqué)
+        history.played_paths.insert(path.clone());
+
+        let entry = ListeningEntry {
+            path,
+            artist,
+            album,
+            title,
+            timestamp,
+        };
+
         // Met à jour last_played
         history.last_played = Some(entry.clone());
 
@@ -2431,6 +3057,16 @@ fn get_all_played_albums() -> Vec<ListeningEntry> {
     }
 }
 
+// Retourne TOUS les chemins de fichiers jamais écoutés (pour les mix de découverte)
+#[tauri::command]
+fn get_all_played_paths() -> Vec<String> {
+    if let Ok(history) = LISTENING_HISTORY.lock() {
+        history.played_paths.iter().cloned().collect()
+    } else {
+        Vec::new()
+    }
+}
+
 // Structure pour un artiste avec son nombre d'écoutes
 #[derive(serde::Serialize, Clone)]
 struct TopArtist {
@@ -2448,7 +3084,7 @@ fn get_top_artists(limit: usize) -> Vec<TopArtist> {
         let mut artist_counts: std::collections::HashMap<String, (u32, String, String)> = std::collections::HashMap::new();
 
         for entry in &history.entries {
-            if !entry.artist.is_empty() && entry.artist != "Artiste inconnu" {
+            if !entry.artist.is_empty() && entry.artist != "Unknown Artist" {
                 let counter = artist_counts.entry(entry.artist.clone()).or_insert((0, entry.album.clone(), entry.path.clone()));
                 counter.0 += 1;
             }
@@ -2482,6 +3118,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Protocole custom noir:// pour servir les pochettes sans base64
         // Économise ~700KB de mémoire JS par pochette (33% inflation base64 évitée)
         .register_uri_scheme_protocol("noir", |_ctx, request| {
@@ -2530,7 +3167,16 @@ pub fn run() {
         .setup(|app| {
             // Initialise l'Audio Engine avec l'AppHandle pour les événements
             let app_handle = app.handle().clone();
+
+            // Stocke l'AppHandle globalement pour les commandes Tauri
+            if let Ok(mut handle_guard) = APP_HANDLE.lock() {
+                *handle_guard = Some(app_handle.clone());
+            }
+
             let engine = AudioEngine::new(Some(app_handle));
+
+            // Charge les paramètres EQ sauvegardés
+            load_eq_settings(&engine.eq_state);
 
             if let Ok(mut engine_guard) = AUDIO_ENGINE.lock() {
                 *engine_guard = Some(engine);
@@ -2556,6 +3202,7 @@ pub fn run() {
             fetch_artist_image,
             clear_cache,
             add_library_path,
+            remove_library_path,
             get_library_paths,
             select_folder,
             // Playlists
@@ -2579,6 +3226,7 @@ pub fn run() {
             audio_set_volume,
             audio_get_state,
             audio_preload_next,
+            set_gapless_enabled,
             // Audio Backend (Bit-Perfect, Device Control)
             get_audio_devices,
             get_current_audio_device,
@@ -2586,17 +3234,25 @@ pub fn run() {
             get_audio_sample_rate,
             set_exclusive_mode,
             is_exclusive_mode,
+            // Equalizer (8-band parametric EQ)
+            set_eq_enabled,
+            set_eq_bands,
+            get_eq_state,
             // Listening History
             record_play,
             get_listening_history,
             get_last_played,
             get_recent_albums,
             get_all_played_albums,
+            get_all_played_paths,
             get_top_artists,
             // Instant Startup & Background Scan
             load_tracks_from_cache,
             start_background_scan,
-            get_library_stats
+            get_library_stats,
+            // Genre Enrichment
+            trigger_genre_enrichment,
+            reset_genre_enrichment
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
