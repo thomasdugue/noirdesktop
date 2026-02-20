@@ -195,11 +195,19 @@ impl AudioEngine {
 
     // === Public API for device control ===
 
-    /// List all available audio output devices
+    /// List all available audio output devices (from cache)
     pub fn list_devices(&self) -> Result<Vec<crate::audio::DeviceInfo>, String> {
         self.backend
             .lock()
             .list_devices()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Refresh device cache from OS and return updated list
+    pub fn refresh_devices(&self) -> Result<Vec<crate::audio::DeviceInfo>, String> {
+        self.backend
+            .lock()
+            .refresh_devices()
             .map_err(|e| e.to_string())
     }
 

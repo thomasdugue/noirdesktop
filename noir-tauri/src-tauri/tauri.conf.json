@@ -22,10 +22,9 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: noir: asset: https://tauri.localhost; img-src 'self' data: blob: noir: asset: https://tauri.localhost https://*.deezer.com https://*.scdn.co https://*.wikimedia.org",
+      "csp": "default-src 'self' 'unsafe-inline' data: blob: noir: https://tauri.localhost; img-src 'self' data: blob: noir: https://tauri.localhost https://*.deezer.com https://*.scdn.co https://*.wikimedia.org; connect-src 'self' https://api.deezer.com https://musicbrainz.org https://coverartarchive.org https://commons.wikimedia.org https://github.com",
       "assetProtocol": {
-        "enable": true,
-        "scope": ["**"]
+        "enable": false
       }
     }
   },

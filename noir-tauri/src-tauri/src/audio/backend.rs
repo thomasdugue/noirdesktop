@@ -50,8 +50,11 @@ use crate::audio::types::*;
 pub trait AudioBackend: Send + Sync {
     // === Device Management ===
 
-    /// List all available output devices
+    /// List all available output devices (from cache, may be stale)
     fn list_devices(&self) -> Result<Vec<DeviceInfo>>;
+
+    /// Refresh device cache from OS and return updated list
+    fn refresh_devices(&mut self) -> Result<Vec<DeviceInfo>>;
 
     /// Get the current output device
     fn current_device(&self) -> Result<DeviceInfo>;

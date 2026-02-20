@@ -3,21 +3,9 @@
 // Import Tauri API
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
-const { getCurrentWindow } = window.__TAURI__.window;
-
-// === WINDOW DRAG (pour déplacer la fenêtre depuis le titlebar) ===
-document.addEventListener('DOMContentLoaded', () => {
-  const titlebar = document.querySelector('.titlebar')
-  if (titlebar) {
-    titlebar.addEventListener('mousedown', (e) => {
-      // Ne drag pas si on clique sur un bouton ou autre élément interactif
-      if (e.target.closest('button, input, a, [data-no-drag]')) return
-      // Démarre le drag de la fenêtre via Tauri
-      e.preventDefault()
-      getCurrentWindow().startDragging()
-    })
-  }
-})
+// === WINDOW DRAG ===
+// Le drag est géré nativement par Tauri 2 via l'attribut data-tauri-drag-region sur le titlebar HTML
+// Ne PAS ajouter de handler JS mousedown → startDragging() car il interfère avec le mécanisme natif
 
 // === AUDIO ENGINE STATE (Player Audiophile Rust) ===
 // Le moteur audio tourne côté Rust, on ne fait que l'interface ici
@@ -595,7 +583,7 @@ function showLoading(message = 'Chargement...') {
     loader.innerHTML = `
       <div class="loading-content">
         <div class="loading-spinner"></div>
-        <div class="loading-message">${message}</div>
+        <div class="loading-message">${escapeHtml(message)}</div>
         <div class="loading-progress"></div>
       </div>
     `
@@ -1126,7 +1114,7 @@ function showInaccessiblePathsWarning(paths) {
     <div class="warning-content">
       <div class="warning-title">Library unavailable</div>
       <div class="warning-message">
-        Some folders in your library are not accessible: <strong>${pathsList}</strong>
+        Some folders in your library are not accessible: <strong>${escapeHtml(pathsList)}</strong>
         <br>Check that your external drive is connected.
       </div>
     </div>
@@ -1138,12 +1126,12 @@ function showInaccessiblePathsWarning(paths) {
     warning.remove()
   })
 
-  // Insère après la titlebar
-  const titlebar = document.querySelector('.titlebar')
-  if (titlebar) {
-    titlebar.insertAdjacentElement('afterend', warning)
+  // Insère en bas, au-dessus du player (pour ne pas conflit avec les traffic lights macOS)
+  const player = document.querySelector('.player')
+  if (player) {
+    player.insertAdjacentElement('beforebegin', warning)
   } else {
-    document.body.prepend(warning)
+    document.body.appendChild(warning)
   }
 }
 
@@ -1789,8 +1777,8 @@ function displayAlbumPage(albumKey) {
 
   // Note: albumsGridDiv est déjà vidé par displayCurrentView() ou navigateToAlbumPage()
 
-  // Récupère la pochette depuis le cache
-  const cover = coverCache.get(album.coverPath)
+  // Récupère la pochette depuis le cache (vérifie les deux caches)
+  const cover = coverCache.get(album.coverPath) || thumbnailCache.get(album.coverPath)
 
   // Nombre de tracks et durée totale
   const totalDuration = album.tracks.reduce((acc, t) => acc + (t.metadata?.duration || 0), 0)
@@ -1877,7 +1865,24 @@ function displayAlbumPage(albumKey) {
   const uniqueArtists = new Set(album.tracks.map(t => t.metadata?.artist || album.artist))
   const isMultiArtist = uniqueArtists.size > 1
 
+  // Détecte si l'album est multi-disc (CD1, CD2, etc.)
+  const uniqueDiscs = new Set(album.tracks.map(t => t.metadata?.disc || 1))
+  const isMultiDisc = uniqueDiscs.size > 1
+  let currentDiscNumber = null
+
   album.tracks.forEach((track, idx) => {
+    // Insère un séparateur de disc si le disc change
+    if (isMultiDisc) {
+      const disc = track.metadata?.disc || 1
+      if (disc !== currentDiscNumber) {
+        currentDiscNumber = disc
+        const separator = document.createElement('div')
+        separator.className = 'disc-separator'
+        separator.innerHTML = `<span class="disc-label">CD ${disc}</span>`
+        tracksContainer.appendChild(separator)
+      }
+    }
+
     const trackItem = document.createElement('div')
     trackItem.className = 'album-track-item'
     trackItem.dataset.trackPath = track.path
@@ -1887,7 +1892,7 @@ function displayAlbumPage(albumKey) {
 
     trackItem.innerHTML = `
       ${getFavoriteButtonHtml(track.path)}
-      <span class="track-number">${idx + 1}</span>
+      <span class="track-number">${track.metadata?.track || (idx + 1)}</span>
       ${isMultiArtist
         ? `<div class="track-info">
             <span class="track-title">${track.metadata?.title || track.name}</span>
@@ -1957,6 +1962,33 @@ function displayAlbumPage(albumKey) {
   })
 
   albumsGridDiv.appendChild(pageContainer)
+
+  // Chargement async du cover si pas en cache — utilise invoke('get_cover') directement
+  if (!isValidImageSrc(cover) && album.coverPath) {
+    // Utilise loadThumbnailAsync qui est le chemin le plus robuste
+    // (essaie thumbnail, puis cover, puis internet)
+    const albumPageCoverContainer = pageContainer.querySelector('.album-page-cover')
+    if (albumPageCoverContainer) {
+      const hiddenImg = document.createElement('img')
+      hiddenImg.style.display = 'none'
+      albumPageCoverContainer.appendChild(hiddenImg)
+
+      loadThumbnailAsync(album.coverPath, hiddenImg).then(() => {
+        const cachedSrc = coverCache.get(album.coverPath) || thumbnailCache.get(album.coverPath)
+        if (isValidImageSrc(cachedSrc) && albumPageCoverContainer) {
+          const placeholder = albumPageCoverContainer.querySelector('.album-cover-placeholder')
+          if (placeholder) {
+            const newImg = document.createElement('img')
+            newImg.src = cachedSrc
+            newImg.alt = album.album
+            placeholder.replaceWith(newImg)
+          }
+          // Nettoie l'img cachée
+          if (hiddenImg.parentNode) hiddenImg.remove()
+        }
+      })
+    }
+  }
 
   // Force scroll en haut - l'utilisateur doit voir l'artwork immédiatement
   const albumsView = document.querySelector('.albums-view')
@@ -2465,6 +2497,7 @@ async function loadThumbnailFromQueue(item) {
     if (isValidImageSrc(thumb)) {
       // Thumbnail trouvé sur disque!
       thumbnailCache.set(path, thumb)
+      coverCache.set(path, thumb) // Sync pour album page, detail panel, info panel
       if (imgElement.isConnected) {
         imgElement.src = thumb
         imgElement.style.display = 'block'
@@ -2503,6 +2536,7 @@ async function loadThumbnailFromQueue(item) {
     if (isValidImageSrc(cover)) {
       // Cover trouvée dans le fichier!
       thumbnailCache.set(path, cover)
+      coverCache.set(path, cover) // Sync pour album page, detail panel, info panel
       if (imgElement.isConnected) {
         imgElement.src = cover
         imgElement.style.display = 'block'
@@ -3828,7 +3862,7 @@ function displayAlbumsGrid() {
     card.addEventListener('click', () => {
       // Ignore si on était en train de drag
       if (customDragState.isDragging) return
-      const cover = coverCache.get(album.coverPath)
+      const cover = coverCache.get(album.coverPath) || thumbnailCache.get(album.coverPath)
       showAlbumDetail(albumKey, cover, card)
     })
 
@@ -4115,7 +4149,12 @@ function displayArtistPage(artistKey) {
 
   // Séparer les albums complets des tracks isolées (albums avec 1 seule track)
   const fullAlbums = artistAlbums.filter(a => a.tracks.length > 1)
-  const looseTracks = artistAlbums.filter(a => a.tracks.length === 1).flatMap(a => a.tracks)
+  let looseTracks = artistAlbums.filter(a => a.tracks.length === 1).flatMap(a => a.tracks)
+
+  // Fallback : si aucun album trouvé mais l'artiste a des tracks, les afficher directement
+  if (artistAlbums.length === 0 && artist.tracks.length > 0) {
+    looseTracks = [...artist.tracks]
+  }
 
   // Grille des albums de l'artiste
   const albumsGrid = pageContainer.querySelector('.artist-albums-grid')
@@ -4177,47 +4216,78 @@ function displayArtistPage(artistKey) {
 
     const trackList = looseSection.querySelector('.artist-loose-tracks-list')
 
-    for (const track of looseTracks) {
+    for (const [idx, track] of looseTracks.entries()) {
       const trackItem = document.createElement('div')
-      trackItem.className = 'artist-loose-track-item'
-
-      const title = track.metadata?.title || track.name
-      const album = track.metadata?.album || ''
-      const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : ''
-
-      trackItem.innerHTML = `
-        <span class="loose-track-title">${escapeHtml(title)}</span>
-        <span class="loose-track-album">${escapeHtml(album)}</span>
-        <span class="loose-track-duration">${duration}</span>
-      `
-
-      // Stocke le path pour le context menu
+      trackItem.className = 'album-track-item'
       trackItem.dataset.trackPath = track.path
 
-      // Clic = lecture
-      trackItem.addEventListener('click', () => {
+      const title = track.metadata?.title || track.name
+      const albumName = track.metadata?.album || ''
+      const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-'
+      const trackNum = track.metadata?.track || (idx + 1)
+
+      trackItem.innerHTML = `
+        ${getFavoriteButtonHtml(track.path)}
+        <span class="track-number">${trackNum}</span>
+        <div class="track-info">
+          <span class="track-title">${escapeHtml(title)}</span>
+          <span class="track-artist">${escapeHtml(albumName)}</span>
+        </div>
+        <button class="track-add-queue${queue.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
+          </svg>
+        </button>
+        <button class="track-add-playlist" title="Add to playlist">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14"/><path d="M5 12h14"/>
+          </svg>
+        </button>
+        <span class="track-duration">${duration}</span>
+      `
+
+      // Double-clic pour jouer (même pattern que les tracks album)
+      trackItem.addEventListener('dblclick', () => {
         const globalIndex = tracks.findIndex(t => t.path === track.path)
         if (globalIndex !== -1) {
           playTrack(globalIndex)
         }
       })
 
+      // Bouton ajouter à la queue
+      trackItem.querySelector('.track-add-queue').addEventListener('click', (e) => {
+        e.stopPropagation()
+        addToQueue(track)
+        showQueueNotification(`"${track.metadata?.title || track.name}" added to queue`)
+        trackItem.querySelector('.track-add-queue').classList.add('in-queue')
+      })
+
+      // Bouton ajouter à une playlist
+      trackItem.querySelector('.track-add-playlist').addEventListener('click', (e) => {
+        e.stopPropagation()
+        showAddToPlaylistMenu(e, track)
+      })
+
+      // Bouton favori
+      const favBtn = trackItem.querySelector('.track-favorite-btn')
+      if (favBtn) {
+        favBtn.addEventListener('click', (e) => {
+          e.stopPropagation()
+          toggleFavorite(track.path, favBtn)
+        })
+      }
+
+      // Menu contextuel (clic droit)
+      trackItem.addEventListener('contextmenu', (e) => {
+        e.preventDefault()
+        const globalIndex = tracks.findIndex(t => t.path === track.path)
+        if (globalIndex !== -1) {
+          showContextMenu(e, track, globalIndex)
+        }
+      })
+
       trackList.appendChild(trackItem)
     }
-
-    // Context menu sur les loose tracks
-    trackList.addEventListener('contextmenu', (e) => {
-      const trackItem = e.target.closest('.artist-loose-track-item')
-      if (trackItem) {
-        e.preventDefault()
-        e.stopPropagation()
-        const trackPath = trackItem.dataset.trackPath
-        const trackIndex = tracks.findIndex(t => t.path === trackPath)
-        if (trackIndex !== -1) {
-          showContextMenu(e, tracks[trackIndex], trackIndex)
-        }
-      }
-    })
 
     // Ajoute directement dans la grille pour qu'elle soit visible
     albumsGrid.appendChild(looseSection)
@@ -4751,11 +4821,16 @@ function formatQuality(metadata, filePath = null) {
   // Format lossless : affiche bit-depth / sample rate
   if (!bitDepth && !sampleRate) return { label: '-', class: '' }
 
-  // Détermine la classe de qualité
+  // Détermine la classe de qualité par sample rate (color coding)
   let qualityClass = 'quality-standard'
-  if (sampleRate >= 96000 || bitDepth >= 24) {
+  if (sampleRate) {
+    if (sampleRate >= 192000) qualityClass = 'quality-192k'
+    else if (sampleRate >= 96000) qualityClass = 'quality-96k'
+    else if (sampleRate >= 48000) qualityClass = 'quality-48k'
+    else qualityClass = 'quality-44k'
+  } else if (bitDepth >= 24) {
     qualityClass = 'quality-hires'
-  } else if (sampleRate >= 44100 && bitDepth >= 16) {
+  } else if (bitDepth >= 16) {
     qualityClass = 'quality-lossless'
   }
 
@@ -4827,6 +4902,32 @@ function showAlbumDetail(albumKey, cover, clickedCard) {
     </div>
     <div class="album-tracks"></div>
   `
+
+  // Chargement async du cover si pas en cache (fallback)
+  if (!isValidImageSrc(cover) && album.coverPath) {
+    const detailCoverContainer = albumDetailDiv.querySelector('.album-detail-cover')
+    if (detailCoverContainer) {
+      // Crée un élément img caché pour loadThumbnailAsync
+      const hiddenImg = document.createElement('img')
+      hiddenImg.style.display = 'none'
+      detailCoverContainer.appendChild(hiddenImg)
+
+      loadThumbnailAsync(album.coverPath, hiddenImg).then(() => {
+        const cachedCover = coverCache.get(album.coverPath) || thumbnailCache.get(album.coverPath)
+        if (isValidImageSrc(cachedCover) && detailCoverContainer) {
+          const placeholder = detailCoverContainer.querySelector('.album-cover-placeholder')
+          if (placeholder) {
+            const newImg = document.createElement('img')
+            newImg.src = cachedCover
+            newImg.alt = album.album
+            placeholder.replaceWith(newImg)
+          }
+          // Nettoie l'img cachée
+          if (hiddenImg.parentNode) hiddenImg.remove()
+        }
+      })
+    }
+  }
 
   // Liste des tracks
   const albumTracksDiv = albumDetailDiv.querySelector('.album-tracks')
@@ -5303,7 +5404,7 @@ function playPreviousTrack() {
   // Filtre les tracks qui sont dans le même dossier ET ont le même album metadata
   const albumTracks = currentFolder ? tracks.filter(t => {
     const folder = t.path.substring(0, t.path.lastIndexOf('/'))
-    return folder === currentFolder && t.metadata?.album === currentTrack?.metadata?.album
+    return (folder === currentFolder || (t.metadata?.album === currentTrack?.metadata?.album && t.metadata?.artist === currentTrack?.metadata?.artist))
   }).sort((a, b) => {
     const discA = a.metadata?.disc || 1
     const discB = b.metadata?.disc || 1
@@ -5397,15 +5498,14 @@ function playNextTrack() {
   }
 
   // 2. Récupère les tracks de l'album en cours
-  // IMPORTANT: On utilise le dossier parent pour identifier les tracks du même album physique
-  // car le nom d'album seul peut créer des collisions entre artistes différents
+  // Match par dossier OU par métadonnées album+artiste (pour albums multi-CD dans des sous-dossiers)
   const currentTrack = tracks[currentTrackIndex]
   const currentFolder = currentTrack?.path ? currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/')) : null
 
-  // Filtre les tracks qui sont dans le même dossier ET ont le même album metadata
+  // Filtre les tracks du même album: même dossier OU même album+artiste (multi-CD)
   const albumTracks = currentFolder ? tracks.filter(t => {
     const folder = t.path.substring(0, t.path.lastIndexOf('/'))
-    return folder === currentFolder && t.metadata?.album === currentTrack?.metadata?.album
+    return (folder === currentFolder || (t.metadata?.album === currentTrack?.metadata?.album && t.metadata?.artist === currentTrack?.metadata?.artist))
   }).sort((a, b) => {
     const discA = a.metadata?.disc || 1
     const discB = b.metadata?.disc || 1
@@ -6206,6 +6306,25 @@ function updateVolumeIcon(volume) {
 
 // === SÉLECTEUR DE SORTIE AUDIO ===
 let currentAudioDeviceId = null
+let devicePollingInterval = null
+
+function stopDevicePolling() {
+  if (devicePollingInterval) {
+    clearInterval(devicePollingInterval)
+    devicePollingInterval = null
+  }
+}
+
+function startDevicePolling() {
+  stopDevicePolling()
+  devicePollingInterval = setInterval(async () => {
+    if (!audioOutputMenu.classList.contains('hidden')) {
+      await loadAudioDevices()
+    } else {
+      stopDevicePolling()
+    }
+  }, 3000)
+}
 
 // Toggle le menu de sélection audio
 audioOutputBtn.addEventListener('click', async (e) => {
@@ -6216,11 +6335,13 @@ audioOutputBtn.addEventListener('click', async (e) => {
     await loadAudioDevices()
     await loadExclusiveMode()
     audioOutputMenu.classList.remove('hidden')
+    startDevicePolling()
     audioOutputBtn.classList.add('active')
   } else {
     // Ferme le menu
     audioOutputMenu.classList.add('hidden')
     audioOutputBtn.classList.remove('active')
+    stopDevicePolling()
   }
 })
 
@@ -6231,14 +6352,15 @@ document.addEventListener('click', (e) => {
       e.target !== audioOutputBtn) {
     audioOutputMenu.classList.add('hidden')
     audioOutputBtn.classList.remove('active')
+    stopDevicePolling()
   }
 })
 
 // Charge la liste des périphériques audio
 async function loadAudioDevices() {
-  console.log('[AUDIO-OUTPUT] Loading audio devices...')
+  console.log('[AUDIO-OUTPUT] Loading audio devices (with refresh)...')
   try {
-    const devices = await invoke('get_audio_devices')
+    const devices = await invoke('refresh_audio_devices')
     console.log('[AUDIO-OUTPUT] Available devices:', devices)
 
     const currentDevice = await invoke('get_current_audio_device')
@@ -6279,7 +6401,7 @@ async function loadAudioDevices() {
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error loading devices:', e)
     console.error('[AUDIO-OUTPUT] Error details:', JSON.stringify(e, null, 2))
-    audioOutputList.innerHTML = `<div style="padding: 16px; color: #ff6b6b;">Error: ${e?.message || e || 'Audio engine not initialized'}</div>`
+    audioOutputList.innerHTML = `<div style="padding: 16px; color: #ff6b6b;">Error: ${escapeHtml(e?.message || e || 'Audio engine not initialized')}</div>`
   }
 }
 
@@ -6399,20 +6521,27 @@ function updateHogModeStatus(isActive) {
   }
 }
 
-// Initialise le tooltip Hog Mode
+// Initialise le tooltip Hog Mode (portaled to body for no-clip)
 function initHogModeTooltip() {
   const infoBtn = document.getElementById('hog-mode-info-btn')
   const tooltip = document.getElementById('hog-mode-tooltip')
 
   if (infoBtn && tooltip) {
+    // Extraire le tooltip du flux du DOM et l'ajouter au body (portal)
+    document.body.appendChild(tooltip)
+
     infoBtn.addEventListener('click', (e) => {
       e.stopPropagation()
+      // Positionne le tooltip au-dessus du bouton info
+      const rect = infoBtn.getBoundingClientRect()
+      tooltip.style.bottom = `${window.innerHeight - rect.top + 12}px`
+      tooltip.style.right = `${window.innerWidth - rect.right}px`
       tooltip.classList.toggle('visible')
     })
 
     // Ferme le tooltip en cliquant ailleurs
     document.addEventListener('click', (e) => {
-      if (!e.target.closest('.hog-mode-container')) {
+      if (!e.target.closest('.hog-mode-container') && !e.target.closest('.hog-mode-tooltip')) {
         tooltip.classList.remove('visible')
       }
     })
@@ -7758,13 +7887,21 @@ async function showTrackInfoPanel(track) {
   const loaderEl = document.getElementById('track-info-artwork-loader')
 
   if (imgEl && placeholderEl && loaderEl) {
+    // Check caches d'abord (instantané, pas de loader)
+    const cachedCover = coverCache.get(track.path) || thumbnailCache.get(track.path)
+    if (isValidImageSrc(cachedCover)) {
+      imgEl.src = cachedCover
+      imgEl.style.display = 'block'
+      placeholderEl.style.display = 'none'
+      loaderEl.style.display = 'none'
+    } else {
     // Affiche le loader pendant le chargement
     loaderEl.style.display = 'flex'
     imgEl.style.display = 'none'
     placeholderEl.style.display = 'none'
 
     try {
-      // Force TOUJOURS le chargement depuis le backend pour garantir l'affichage
+      // Force le chargement depuis le backend
       const cover = await invoke('get_cover', { path: track.path })
 
       if (cover) {
@@ -7793,6 +7930,7 @@ async function showTrackInfoPanel(track) {
       imgEl.style.display = 'none'
       placeholderEl.style.display = 'flex'
     }
+    } // fin else (pas en cache)
   }
 }
 
@@ -8477,6 +8615,8 @@ function hidePlaylistModal() {
   modal.classList.add('hidden')
   playlistModalMode = 'create'
   playlistToRename = null
+  trackToAddToPlaylist = null
+  tracksToAddToPlaylist = null
 }
 
 async function confirmPlaylistModal() {
@@ -8485,41 +8625,58 @@ async function confirmPlaylistModal() {
 
   if (!name) return
 
-  if (playlistModalMode === 'create') {
-    const newPlaylist = await invoke('create_playlist', { name })
-    playlists.push(newPlaylist)
-    updatePlaylistsSidebar()
-    showQueueNotification(`Playlist "${name}" created`)
+  // IMPORTANT: Sauvegarder les refs IMMÉDIATEMENT avant tout await
+  // car hidePlaylistModal() pourrait être appelé pendant les awaits (backdrop click, Escape, etc.)
+  const pendingTrack = trackToAddToPlaylist
+  const pendingTracks = tracksToAddToPlaylist
+  const mode = playlistModalMode
 
-    // Si on ajoutait plusieurs tracks, les ajouter maintenant
-    if (tracksToAddToPlaylist && tracksToAddToPlaylist.length > 0) {
-      for (const track of tracksToAddToPlaylist) {
-        await invoke('add_track_to_playlist', {
-          playlistId: newPlaylist.id,
-          trackPath: track.path
-        })
+  console.log('[PLAYLIST] confirmPlaylistModal called:', { name, mode, hasPendingTrack: !!pendingTrack, hasPendingTracks: !!pendingTracks?.length })
+
+  if (mode === 'create') {
+    try {
+      const newPlaylist = await invoke('create_playlist', { name })
+      console.log('[PLAYLIST] Created playlist:', JSON.stringify(newPlaylist))
+      playlists.push(newPlaylist)
+      updatePlaylistsSidebar()
+
+      // Ajouter les tracks pendantes
+      if (pendingTracks && pendingTracks.length > 0) {
+        for (const track of pendingTracks) {
+          const result = await invoke('add_track_to_playlist', {
+            playlistId: newPlaylist.id,
+            trackPath: track.path
+          })
+          console.log('[PLAYLIST] Added track to playlist:', { trackPath: track.path, result })
+        }
+        await loadPlaylists()
+        showQueueNotification(`${pendingTracks.length} tracks added to "${name}"`)
       }
-      await loadPlaylists()
-      showQueueNotification(`${tracksToAddToPlaylist.length} tracks added to "${name}"`)
-      tracksToAddToPlaylist = null
-      trackToAddToPlaylist = null
+      else if (pendingTrack) {
+        console.log('[PLAYLIST] Adding single track:', { playlistId: newPlaylist.id, trackPath: pendingTrack.path })
+        const result = await invoke('add_track_to_playlist', {
+          playlistId: newPlaylist.id,
+          trackPath: pendingTrack.path
+        })
+        console.log('[PLAYLIST] add_track_to_playlist result:', result)
+        await loadPlaylists()
+        showQueueNotification(`"${pendingTrack.metadata?.title || pendingTrack.name}" added to "${name}"`)
+      } else {
+        showQueueNotification(`Playlist "${name}" created`)
+      }
+    } catch (e) {
+      console.error('[PLAYLIST] Error creating playlist or adding tracks:', e)
+      showToast('Error creating playlist')
     }
-    // Si on ajoutait un seul track
-    else if (trackToAddToPlaylist) {
-      await invoke('add_track_to_playlist', {
-        playlistId: newPlaylist.id,
-        trackPath: trackToAddToPlaylist.path
-      })
-      await loadPlaylists()
-      showQueueNotification(`Added to "${name}"`)
-      trackToAddToPlaylist = null
-    }
-  } else if (playlistModalMode === 'rename' && playlistToRename) {
+  } else if (mode === 'rename' && playlistToRename) {
     await invoke('rename_playlist', { id: playlistToRename.id, newName: name })
     await loadPlaylists()
     showQueueNotification(`Playlist renamed to "${name}"`)
   }
 
+  // Cleanup des variables de pending track
+  trackToAddToPlaylist = null
+  tracksToAddToPlaylist = null
   hidePlaylistModal()
 }
 
@@ -8901,9 +9058,18 @@ async function removeTracksFromLibrary(tracksToRemove) {
   const confirmed = await showConfirmModal(title, message, 'Supprimer')
   if (!confirmed) return
 
-  // Supprime chaque track
+  // Persiste l'exclusion côté Rust (survit aux redémarrages/rescans)
+  const pathsToExclude = tracksToRemove.map(t => t.path)
+  try {
+    await invoke('exclude_tracks_from_library', { paths: pathsToExclude })
+    console.log(`[LIBRARY] Excluded ${pathsToExclude.length} tracks permanently`)
+  } catch (e) {
+    console.error('[LIBRARY] Error excluding tracks:', e)
+  }
+
+  // Supprime chaque track du state frontend
   for (const track of tracksToRemove) {
-    await removeTrackFromLibrary(track)
+    removeTrackFromLibrary(track)
   }
 
   // Clear la sélection

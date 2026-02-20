@@ -640,6 +640,11 @@ impl AudioBackend for CoreAudioBackend {
         Ok(self.device_cache.values().cloned().collect())
     }
 
+    fn refresh_devices(&mut self) -> Result<Vec<DeviceInfo>> {
+        self.refresh_device_cache()?;
+        Ok(self.device_cache.values().cloned().collect())
+    }
+
     fn current_device(&self) -> Result<DeviceInfo> {
         // Always get the CURRENT default device (follows system changes)
         let device_id = match self.get_active_device_id() {

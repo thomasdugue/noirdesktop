@@ -66,6 +66,9 @@ struct Metadata {
 #[derive(Serialize, Deserialize, Default)]
 struct Config {
     library_paths: Vec<String>,
+    /// Tracks explicitly excluded by the user (persist across restarts/scans)
+    #[serde(default)]
+    excluded_paths: Vec<String>,
 }
 
 // Cache des métadonnées
@@ -331,13 +334,29 @@ fn load_config() -> Config {
     }
 }
 
-fn save_config(config: &Config) {
-    let config_path = get_config_path();
-    if let Some(parent) = config_path.parent() {
+/// SECURITY: Write file with restricted permissions (0600 on Unix)
+/// Prevents other users on the system from reading sensitive data
+fn save_file_secure(path: &std::path::Path, content: &str) {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok();
     }
+    fs::write(path, content).ok();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::metadata(path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(path, perms).ok();
+        }
+    }
+}
+
+fn save_config(config: &Config) {
+    let config_path = get_config_path();
     let content = serde_json::to_string_pretty(config).unwrap_or_default();
-    fs::write(config_path, content).ok();
+    save_file_secure(&config_path, &content);
 }
 
 fn load_metadata_cache_from_file() -> MetadataCache {
@@ -352,11 +371,8 @@ fn load_metadata_cache_from_file() -> MetadataCache {
 
 fn save_metadata_cache_to_file(cache: &MetadataCache) {
     let cache_path = get_metadata_cache_path();
-    if let Some(parent) = cache_path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
     let content = serde_json::to_string(cache).unwrap_or_default();
-    fs::write(cache_path, content).ok();
+    save_file_secure(&cache_path, &content);
 }
 
 fn load_cover_cache_from_file() -> CoverCache {
@@ -371,11 +387,8 @@ fn load_cover_cache_from_file() -> CoverCache {
 
 fn save_cover_cache_to_file(cache: &CoverCache) {
     let cache_path = get_data_dir().join("cover_cache.json");
-    if let Some(parent) = cache_path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
     let content = serde_json::to_string(cache).unwrap_or_default();
-    fs::write(cache_path, content).ok();
+    save_file_secure(&cache_path, &content);
 }
 
 fn load_internet_not_found_cache() -> InternetCoverNotFoundCache {
@@ -390,11 +403,8 @@ fn load_internet_not_found_cache() -> InternetCoverNotFoundCache {
 
 fn save_internet_not_found_cache(cache: &InternetCoverNotFoundCache) {
     let cache_path = get_data_dir().join("internet_not_found_cache.json");
-    if let Some(parent) = cache_path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
     let content = serde_json::to_string(cache).unwrap_or_default();
-    fs::write(cache_path, content).ok();
+    save_file_secure(&cache_path, &content);
 }
 
 // === FONCTIONS HISTORIQUE D'ÉCOUTE ===
@@ -421,11 +431,8 @@ fn load_listening_history() -> ListeningHistory {
 
 fn save_listening_history(history: &ListeningHistory) {
     let path = get_listening_history_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
     let content = serde_json::to_string_pretty(history).unwrap_or_default();
-    fs::write(path, content).ok();
+    save_file_secure(&path, &content);
 }
 
 // === DATES D'AJOUT DES TRACKS ===
@@ -441,11 +448,8 @@ fn load_added_dates_cache() -> AddedDatesCache {
 
 fn save_added_dates_cache(cache: &AddedDatesCache) {
     let path = get_added_dates_cache_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
     let content = serde_json::to_string(cache).unwrap_or_default();
-    fs::write(path, content).ok();
+    save_file_secure(&path, &content);
 }
 
 // === TRACKS CACHE (pour démarrage instantané) ===
@@ -461,11 +465,8 @@ fn load_tracks_cache() -> TracksCache {
 
 fn save_tracks_cache(cache: &TracksCache) {
     let path = get_tracks_cache_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
     let content = serde_json::to_string(cache).unwrap_or_default();
-    fs::write(path, content).ok();
+    save_file_secure(&path, &content);
 }
 
 // Calcule les statistiques de la bibliothèque
@@ -531,11 +532,8 @@ fn load_playlists() -> PlaylistsData {
 
 fn save_playlists(data: &PlaylistsData) {
     let path = get_playlists_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
     let content = serde_json::to_string_pretty(data).unwrap_or_default();
-    fs::write(path, content).ok();
+    save_file_secure(&path, &content);
 }
 
 fn generate_playlist_id() -> String {
@@ -1164,7 +1162,8 @@ fn save_all_caches() {
 fn scan_folder(path: &str) -> Vec<AudioTrack> {
     let mut files = Vec::new();
 
-    for entry in WalkDir::new(path).follow_links(true).into_iter().filter_map(|e| e.ok()) {
+    // SECURITY: Limit depth to prevent infinite symlink loops while still following links
+    for entry in WalkDir::new(path).follow_links(true).max_depth(20).into_iter().filter_map(|e| e.ok()) {
         let file_path = entry.path();
         if file_path.is_file() && is_audio_file(file_path) {
             let name = file_path.file_stem()
@@ -1693,8 +1692,10 @@ fn scan_folder_with_metadata(path: &str) -> Vec<TrackWithMetadata> {
     println!("Path exists and is directory: {}", path);
 
     // 1. Collecte tous les chemins de fichiers audio (rapide, séquentiel)
+    // SECURITY: Limit depth to prevent infinite symlink loops while still following links
     let paths: Vec<PathBuf> = WalkDir::new(path)
         .follow_links(true)
+        .max_depth(20)
         .into_iter()
         .filter_map(|e| {
             match e {
@@ -1832,6 +1833,16 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
             }
         };
 
+        // Charge la liste des tracks exclues par l'utilisateur
+        let excluded_paths: std::collections::HashSet<String> = config.excluded_paths
+            .iter()
+            .cloned()
+            .collect();
+
+        if !excluded_paths.is_empty() {
+            println!("[Scan] {} excluded tracks will be filtered out", excluded_paths.len());
+        }
+
         let mut all_tracks: Vec<TrackWithMetadata> = Vec::new();
         let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
         let total_folders = library_paths.len();
@@ -1853,9 +1864,9 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
 
             // Scanne le dossier avec métadonnées
             let tracks = scan_folder_with_metadata(folder_path);
-            // Déduplique par chemin de fichier
+            // Déduplique par chemin de fichier + filtre les exclus
             for track in tracks {
-                if seen_paths.insert(track.path.clone()) {
+                if seen_paths.insert(track.path.clone()) && !excluded_paths.contains(&track.path) {
                     all_tracks.push(track);
                 }
             }
@@ -2476,6 +2487,48 @@ fn remove_library_path(path: &str) {
     }
 }
 
+/// Exclure des tracks de la bibliothèque (persistant : survit aux redémarrages et rescans)
+#[tauri::command]
+fn exclude_tracks_from_library(paths: Vec<String>) -> usize {
+    if paths.is_empty() { return 0; }
+
+    // 1. Ajouter les paths à la liste d'exclusion dans la config
+    let mut config = load_config();
+    let mut added = 0;
+    for path in &paths {
+        if !config.excluded_paths.contains(path) {
+            config.excluded_paths.push(path.clone());
+            added += 1;
+        }
+    }
+    if added > 0 {
+        save_config(&config);
+    }
+
+    // 2. Retirer les tracks du cache en mémoire + disque
+    let paths_set: std::collections::HashSet<&String> = paths.iter().collect();
+    let mut removed = 0;
+    if let Ok(mut cache) = TRACKS_CACHE.lock() {
+        let before = cache.tracks.len();
+        cache.tracks.retain(|t| !paths_set.contains(&t.path));
+        removed = before - cache.tracks.len();
+        if removed > 0 {
+            save_tracks_cache(&cache);
+        }
+    }
+
+    // 3. Retirer des métadonnées cache aussi
+    if let Ok(mut meta_cache) = METADATA_CACHE.lock() {
+        for path in &paths {
+            meta_cache.entries.remove(path);
+        }
+        save_metadata_cache_to_file(&meta_cache);
+    }
+
+    println!("[exclude_tracks] Excluded {} paths, removed {} from cache", added, removed);
+    removed
+}
+
 // Obtenir les chemins de la bibliothèque
 #[tauri::command]
 fn get_library_paths() -> Vec<String> {
@@ -2797,12 +2850,23 @@ fn set_gapless_enabled(enabled: bool) -> Result<(), String> {
 
 // === COMMANDES AUDIO BACKEND (Bit-Perfect, Device Control) ===
 
-/// Liste tous les devices audio de sortie disponibles
+/// Liste tous les devices audio de sortie disponibles (depuis le cache)
 #[tauri::command]
 fn get_audio_devices() -> Result<Vec<audio::DeviceInfo>, String> {
     if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
         if let Some(ref engine) = *engine_guard {
             return engine.list_devices();
+        }
+    }
+    Err("Audio engine not initialized".to_string())
+}
+
+/// Rafraîchit le cache devices depuis l'OS et retourne la liste mise à jour
+#[tauri::command]
+fn refresh_audio_devices() -> Result<Vec<audio::DeviceInfo>, String> {
+    if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+        if let Some(ref engine) = *engine_guard {
+            return engine.refresh_devices();
         }
     }
     Err("Audio engine not initialized".to_string())
@@ -2933,7 +2997,7 @@ fn save_eq_settings(eq_state: &eq::EqSharedState) {
         "gains": eq_state.get_all_gains(),
     });
     if let Ok(json) = serde_json::to_string_pretty(&settings) {
-        let _ = fs::write(&eq_file, json);
+        save_file_secure(&eq_file, &json);
     }
 }
 
@@ -3138,9 +3202,40 @@ pub fn run() {
                     .unwrap();
             };
 
+            // SECURITY: Canonicalize path and verify it stays within allowed data_dir
+            // Prevents path traversal attacks like noir:///covers/../../etc/passwd
+            let canonical = match file_path.canonicalize() {
+                Ok(p) => p,
+                Err(_) => {
+                    return tauri::http::Response::builder()
+                        .status(tauri::http::StatusCode::NOT_FOUND)
+                        .body(Vec::new())
+                        .unwrap();
+                }
+            };
+            let allowed_base = match base_dir.canonicalize() {
+                Ok(p) => p,
+                Err(_) => {
+                    return tauri::http::Response::builder()
+                        .status(tauri::http::StatusCode::NOT_FOUND)
+                        .body(Vec::new())
+                        .unwrap();
+                }
+            };
+            if !canonical.starts_with(&allowed_base) {
+                #[cfg(debug_assertions)]
+                println!("[NOIR PROTOCOL] BLOCKED path traversal attempt: {:?}", path);
+                return tauri::http::Response::builder()
+                    .status(tauri::http::StatusCode::FORBIDDEN)
+                    .body(Vec::new())
+                    .unwrap();
+            }
+
+            #[cfg(debug_assertions)]
             println!("[NOIR PROTOCOL] Request: {} -> {:?}", path, file_path);
             match std::fs::read(&file_path) {
                 Ok(data) => {
+                    #[cfg(debug_assertions)]
                     println!("[NOIR PROTOCOL] OK: {} bytes", data.len());
                     let mime = if path.ends_with(".png") {
                         "image/png"
@@ -3156,6 +3251,7 @@ pub fn run() {
                         .unwrap()
                 }
                 Err(e) => {
+                    #[cfg(debug_assertions)]
                     println!("[NOIR PROTOCOL] Error reading {:?}: {}", file_path, e);
                     tauri::http::Response::builder()
                         .status(tauri::http::StatusCode::NOT_FOUND)
@@ -3203,6 +3299,7 @@ pub fn run() {
             clear_cache,
             add_library_path,
             remove_library_path,
+            exclude_tracks_from_library,
             get_library_paths,
             select_folder,
             // Playlists
@@ -3229,6 +3326,7 @@ pub fn run() {
             set_gapless_enabled,
             // Audio Backend (Bit-Perfect, Device Control)
             get_audio_devices,
+            refresh_audio_devices,
             get_current_audio_device,
             set_audio_device,
             get_audio_sample_rate,

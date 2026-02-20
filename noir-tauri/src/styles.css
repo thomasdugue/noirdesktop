@@ -94,11 +94,11 @@ body.dragging-active * {
   left: 0;
   right: 0;
   z-index: 9999; /* Au-dessus de tout sauf le player */
-  /* Background quasi-invisible pour un hit-testing fiable */
-  background: rgba(0, 0, 0, 0.01);
+  /* Background quasi-invisible pour un hit-testing fiable (0.15 pour WebKit) */
+  background: rgba(0, 0, 0, 0.15);
   /* Espace pour les boutons de fenêtre macOS (traffic lights) */
   padding-left: 80px;
-  padding-right: 16px;
+  padding-right: 30px;
   /* Important: la zone doit capturer les événements de drag */
   pointer-events: auto;
   /* Flexbox pour positionner le bouton settings à droite */
@@ -536,21 +536,26 @@ body.sidebar-resizing * {
 
 /* === WARNING INACCESSIBLE PATHS === */
 .inaccessible-paths-warning {
+  position: fixed;
+  bottom: 94px;
+  left: 0;
+  right: 0;
+  z-index: 999;
   display: flex;
   align-items: flex-start;
   gap: 12px;
   padding: 12px 16px;
   background: linear-gradient(135deg, #3d2a00 0%, #2a1f00 100%);
-  border-bottom: 1px solid #5a4000;
+  border-top: 1px solid #5a4000;
   color: #fff;
   font-size: 13px;
-  animation: slideDown 0.3s ease;
+  animation: slideUp 0.3s ease;
 }
 
-@keyframes slideDown {
+@keyframes slideUp {
   from {
     opacity: 0;
-    transform: translateY(-100%);
+    transform: translateY(100%);
   }
   to {
     opacity: 1;
@@ -1143,7 +1148,7 @@ body.sidebar-resizing * {
   display: flex;
   flex-direction: column;
   width: 100%;
-  height: calc(100vh - 48px - 80px); /* viewport - header - player */
+  height: calc(100vh - 48px - 102px); /* viewport - header - player */
   min-height: 400px;
 }
 
@@ -1258,26 +1263,60 @@ body.sidebar-resizing * {
 
 .quality-tag {
   font-size: 10px;
-  font-weight: 500;
+  font-weight: 600;
   padding: 3px 8px;
   border-radius: 4px;
   background: #222;
   color: #666;
+  border: 1px solid transparent;
+  letter-spacing: 0.3px;
 }
 
 .quality-tag.quality-lossless {
-  background: #1a1a1a;
-  color: #fff;
+  background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 50%, #1a1a1a 100%);
+  color: #aaa;
+  border-color: #333;
 }
 
 .quality-tag.quality-hires {
-  background: #1a1a1a;
-  color: #fff;
+  background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 50%, #1a1a1a 100%);
+  color: #ccc;
+  border-color: #444;
 }
 
 .quality-tag.quality-bitrate {
   background: #1a1a1a;
-  color: #888;
+  color: #666;
+  border-color: #2a2a2a;
+}
+
+/* Sample rate metallic tags */
+.quality-tag.quality-44k {
+  background: linear-gradient(135deg, #2a2a2a 0%, #404040 40%, #555 50%, #404040 60%, #2a2a2a 100%);
+  color: #999;
+  border: 1px solid #444;
+  text-shadow: 0 1px 1px rgba(0,0,0,0.5);
+}
+
+.quality-tag.quality-48k {
+  background: linear-gradient(135deg, #4a2f10 0%, #8B5E34 30%, #CD7F32 50%, #8B5E34 70%, #4a2f10 100%);
+  color: #fff;
+  border: 1px solid #8B5E34;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+}
+
+.quality-tag.quality-96k {
+  background: linear-gradient(135deg, #555 0%, #999 30%, #C0C5CE 50%, #999 70%, #555 100%);
+  color: #fff;
+  border: 1px solid #888;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+}
+
+.quality-tag.quality-192k {
+  background: linear-gradient(135deg, #6B4F00 0%, #B8860B 30%, #FFD700 50%, #B8860B 70%, #6B4F00 100%);
+  color: #fff;
+  border: 1px solid #B8860B;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
 }
 
 /* Tags dans la vue album detail */
@@ -1719,6 +1758,25 @@ body.sidebar-resizing * {
 .album-tracks {
   display: flex;
   flex-direction: column;
+}
+
+/* Disc separator for multi-CD albums */
+.disc-separator {
+  padding: 16px 16px 8px;
+  color: #555;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.disc-separator:first-child {
+  padding-top: 8px;
+}
+
+.disc-separator:not(:first-child) {
+  border-top: 1px solid #222;
+  margin-top: 8px;
 }
 
 .album-track-item {
@@ -2487,7 +2545,7 @@ body.sidebar-resizing * {
   align-items: center;
   gap: 12px;
   z-index: 1000;
-  height: 72px;
+  height: 94px;
 }
 
 .player.hidden {
@@ -2502,7 +2560,7 @@ body.sidebar-resizing * {
   min-width: 0;
   overflow: hidden;
   flex-shrink: 0;
-  max-width: 180px;
+  max-width: 240px;
 }
 
 /* Bouton Queue séparé */
@@ -2564,7 +2622,7 @@ body.sidebar-resizing * {
 
 /* Espace pour le player quand il est visible */
 body.player-visible .app {
-  padding-bottom: 72px;
+  padding-bottom: 94px;
 }
 
 /* Pochette d'album */
@@ -2653,10 +2711,12 @@ body.player-visible .app {
 #track-name {
   font-size: 14px;
   font-weight: 500;
-  display: block;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.3;
 }
 
 .track-meta {
@@ -2760,7 +2820,7 @@ body.player-visible .app {
     transparent 100%
   );
   background-size: 300% 100%;
-  animation: silver-shine 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: silver-shine 15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   pointer-events: none;
   border-radius: inherit;
 }
@@ -2801,7 +2861,7 @@ body.player-visible .app {
 
 @keyframes silver-shine {
   0% { background-position: 200% center; }
-  60% { background-position: -200% center; }
+  12% { background-position: -200% center; }
   100% { background-position: -200% center; }
 }
 
@@ -3229,11 +3289,9 @@ body.player-visible .app {
   color: #888;
 }
 
-/* Tooltip */
+/* Tooltip — position: fixed, portaled to body via JS */
 .hog-mode-tooltip {
-  position: absolute;
-  bottom: calc(100% + 12px);
-  right: 0;
+  position: fixed;
   width: 280px;
   background: #1a1a1a;
   border: 1px solid #333;
@@ -3244,7 +3302,7 @@ body.player-visible .app {
   visibility: hidden;
   transform: translateY(8px);
   transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.25s, transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  z-index: 100;
+  z-index: 10000;
 }
 
 .hog-mode-tooltip.visible {
@@ -3464,7 +3522,7 @@ body.player-visible .app {
   position: fixed;
   top: 38px;
   right: 0;
-  bottom: 80px;
+  bottom: 102px;
   width: 320px;
   background: #111;
   border-left: 1px solid #1a1a1a;
@@ -3579,7 +3637,7 @@ body:not(.player-visible) .eq-panel {
 .eq-preset-dropdown {
   position: absolute;
   top: 100%;
-  right: 0;
+  left: 0;
   margin-top: 4px;
   background: #1a1a1a;
   border: 1px solid #333;
@@ -3714,7 +3772,7 @@ body:not(.player-visible) .eq-panel {
   position: fixed;
   top: 38px;
   right: 0;
-  bottom: 80px;
+  bottom: 102px;
   width: 320px;
   background: #0d0d0d;
   border-left: 1px solid #1a1a1a;
@@ -4138,7 +4196,7 @@ body:not(.player-visible) .queue-panel {
   position: fixed;
   top: 38px;
   right: 0;
-  bottom: 80px;
+  bottom: 102px;
   width: 380px;
   background: linear-gradient(180deg, #0a0a0a 0%, #0d0d0d 100%);
   border-left: 1px solid #1a1a1a;
@@ -4485,7 +4543,7 @@ body:not(.player-visible) .track-info-panel {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 20px;
+  margin: 16px 20px 0;
   padding: 10px 14px;
   background: linear-gradient(135deg, #3d2a00 0%, #2a1d00 100%);
   border: 1px solid #5a4000;
@@ -4541,7 +4599,7 @@ body:not(.player-visible) .track-info-panel {
   position: fixed;
   top: 38px;
   right: 0;
-  bottom: 80px;
+  bottom: 102px;
   width: 360px;
   background: #111;
   border-left: 1px solid #222;
