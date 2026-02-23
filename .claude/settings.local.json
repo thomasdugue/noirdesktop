@@ -13,7 +13,30 @@
       "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd track info panel with full metadata display\n\n- Add \"Informations\" button to track context menu\n- New side panel \\(380px\\) with slide-in animation\n- Display: artwork, title, artist, album, quality badge\n- Audio specs grid: sample rate, bit depth, bitrate\n- Metadata: duration, format, year, track number, codec\n- File path display with monospace font\n- Quality badges: Hi-Res \\(gold\\), Lossless \\(blue\\), Lossy \\(gray\\)\n- Auto-close queue panel when opening info panel\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git commit:*)",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(hdiutil create:*)",
+      "WebFetch(domain:developers.deezer.com)",
+      "WebFetch(domain:musicbrainz.org)",
+      "WebFetch(domain:www.last.fm)",
+      "WebFetch(domain:developer.spotify.com)",
+      "Bash(curl:*)",
+      "Bash(cargo tree:*)",
+      "Bash(rustup doc:*)",
+      "Bash(cargo doc:*)",
+      "Bash(xattr:*)",
+      "Bash(ls:*)",
+      "Bash(osascript:*)",
+      "WebFetch(domain:noir.audio)",
+      "Bash(cargo clean:*)",
+      "Bash(cargo tauri dev:*)",
+      "Bash(xargs kill:*)",
+      "WebFetch(domain:api.deezer.com)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(node -c:*)",
+      "Bash(node:*)",
+      "Bash(node --input-type=module -e \"import ''./src/utils.js''\")",
+      "Bash(git remote add:*)"
     ]
   }
 }

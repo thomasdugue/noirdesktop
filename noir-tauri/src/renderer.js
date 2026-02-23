@@ -1,8 +1,21 @@
 // renderer.js - Gère l'interface utilisateur et la lecture audio
 
-// Import Tauri API
-const { invoke, convertFileSrc } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+// Import Tauri API depuis le module d'état partagé
+import { invoke, convertFileSrc, listen } from './state.js';
+// Import des fonctions utilitaires
+import {
+  isValidImageSrc, loadCachedImage,
+  setManagedTimeout, clearManagedTimeout, clearAllManagedTimeouts,
+  getResponsiveItemCount, getCodecFromPath,
+  getWaveformAnimationHTML, getSineWaveAnimationHTML,
+  showLoading, updateLoading, hideLoading,
+  showToast, escapeHtml,
+  formatTime, formatAlbumDuration, formatQuality
+} from './utils.js';
+// Import auto-update
+import { initAutoUpdate } from './auto-update.js';
+// Import EQ
+import { eqInit, openEqPanel, closeEqPanel, toggleEqPanel, getEqPanelOpen, setEqPanelCallbacks, eqUpdateStatusUI, eqUpdatePanelToggleLabel } from './eq.js';
 // === WINDOW DRAG ===
 // Le drag est géré nativement par Tauri 2 via l'attribut data-tauri-drag-region sur le titlebar HTML
 // Ne PAS ajouter de handler JS mousedown → startDragging() car il interfère avec le mécanisme natif
@@ -334,32 +347,7 @@ let albumSortMode = 'artist-asc' // 'artist-asc', 'artist-desc', 'album-asc', 'a
 const coverCache = new Map()      // Cache des pochettes { path: "noir://localhost/covers/xxx.jpg" }
 const thumbnailCache = new Map()  // Cache des thumbnails { path: "noir://localhost/thumbnails/xxx_thumb.jpg" }
 
-// Helper pour vérifier si une valeur est une image valide (data URI ou noir:// URL)
-function isValidImageSrc(src) {
-  return src && (src.startsWith('data:image') || src.startsWith('noir://'))
-}
-
-// Helper pour charger une image depuis le cache avec gestion d'erreur
-function loadCachedImage(img, placeholder, cachedSrc) {
-  if (!img || !isValidImageSrc(cachedSrc)) return false
-
-  // Debug: log noir:// protocol usage
-  if (cachedSrc.startsWith('noir://')) {
-    console.log('[NOIR] Loading from protocol:', cachedSrc.substring(0, 60))
-  }
-
-  img.onload = () => {
-    img.style.display = 'block'
-    if (placeholder) placeholder.style.display = 'none'
-  }
-  img.onerror = () => {
-    console.warn('[COVER] Failed to load cached image:', cachedSrc)
-    img.style.display = 'none'
-    if (placeholder) placeholder.style.display = 'flex'
-  }
-  img.src = cachedSrc
-  return true
-}
+// isValidImageSrc, loadCachedImage → importés depuis utils.js
 let metadataLoaded = false        // Indique si les métadonnées ont été chargées
 let trackAddedDates = {}          // Dates d'ajout des tracks { path: timestamp }
 
@@ -476,140 +464,15 @@ function observeCoverLoading(card, coverPath) {
   coverObserver.observe(card)
 }
 
-// === GESTION DES TIMEOUTS (évite les fuites mémoire) ===
-const activeTimeouts = new Map()  // { id: timeoutId }
-let timeoutCounter = 0
+// setManagedTimeout, clearManagedTimeout, clearAllManagedTimeouts → importés depuis utils.js
 
-function setManagedTimeout(callback, delay, groupId = null) {
-  const id = groupId || `timeout_${++timeoutCounter}`
-  // Annule l'ancien timeout du même groupe si existant
-  if (activeTimeouts.has(id)) {
-    clearTimeout(activeTimeouts.get(id))
-  }
-  const timeoutId = setTimeout(() => {
-    activeTimeouts.delete(id)
-    callback()
-  }, delay)
-  activeTimeouts.set(id, timeoutId)
-  return id
-}
-
-function clearManagedTimeout(id) {
-  if (activeTimeouts.has(id)) {
-    clearTimeout(activeTimeouts.get(id))
-    activeTimeouts.delete(id)
-  }
-}
-
-function clearAllManagedTimeouts(prefix = null) {
-  for (const [id, timeoutId] of activeTimeouts.entries()) {
-    if (!prefix || id.startsWith(prefix)) {
-      clearTimeout(timeoutId)
-      activeTimeouts.delete(id)
-    }
-  }
-}
-
-// === RESPONSIVE ITEM COUNT (pour Homepage) ===
-function getResponsiveItemCount() {
-  const mainContent = document.querySelector('.main-content')
-  const width = mainContent ? mainContent.clientWidth : window.innerWidth - 280
-
-  // Calcule le nombre d'items selon la largeur disponible
-  if (width < 480) {
-    return { tracks: 4, carousel: 12 }
-  } else if (width < 768) {
-    return { tracks: 8, carousel: 15 }
-  } else if (width < 1024) {
-    return { tracks: 9, carousel: 20 }
-  } else {
-    return { tracks: 8, carousel: 25 }
-  }
-}
+// getResponsiveItemCount → importé depuis utils.js
 
 // Navigation menu
 const navItems = document.querySelectorAll('.nav-item')
 
-// === HELPER: Détecte le codec depuis l'extension du fichier ===
-function getCodecFromPath(path) {
-  if (!path) return null
-  const ext = path.split('.').pop()?.toLowerCase()
-  const codecMap = {
-    'flac': 'FLAC',
-    'alac': 'ALAC',
-    'wav': 'WAV',
-    'aiff': 'AIFF',
-    'mp3': 'MP3',
-    'm4a': 'AAC',
-    'aac': 'AAC',
-    'ogg': 'OGG',
-    'opus': 'OPUS',
-    'wma': 'WMA',
-    'dsd': 'DSD',
-    'dsf': 'DSD',
-    'dff': 'DSD'
-  }
-  return codecMap[ext] || ext?.toUpperCase()
-}
-
-// === ANIMATION WAVEFORM POUR "LECTURE EN COURS" ===
-// Génère le HTML pour l'animation barres waveform (inspirée du hero de la landing page)
-function getWaveformAnimationHTML() {
-  const bars = 48
-  const center = bars / 2
-  let html = '<div class="waveform-animation">'
-  for (let i = 0; i < bars; i++) {
-    const dist = Math.abs(i - center) / center
-    const maxH = 60 * (1 - dist * 0.7)
-    const delay = (i * 0.05).toFixed(2)
-    const duration = (1.2 + Math.random() * 0.8).toFixed(2)
-    html += `<div class="waveform-bar" style="height:${maxH}px;animation-delay:${delay}s;animation-duration:${duration}s"></div>`
-  }
-  html += '</div>'
-  return html
-}
-
-// Alias pour compatibilité
-function getSineWaveAnimationHTML() {
-  return getWaveformAnimationHTML()
-}
-
-// === INDICATEUR DE CHARGEMENT ===
-function showLoading(message = 'Chargement...') {
-  let loader = document.getElementById('loading-overlay')
-  if (!loader) {
-    loader = document.createElement('div')
-    loader.id = 'loading-overlay'
-    loader.innerHTML = `
-      <div class="loading-content">
-        <div class="loading-spinner"></div>
-        <div class="loading-message">${escapeHtml(message)}</div>
-        <div class="loading-progress"></div>
-      </div>
-    `
-    document.body.appendChild(loader)
-  } else {
-    loader.querySelector('.loading-message').textContent = message
-    loader.style.display = 'flex'
-  }
-}
-
-function updateLoading(message, progress = null) {
-  const loader = document.getElementById('loading-overlay')
-  if (loader) {
-    loader.querySelector('.loading-message').textContent = message
-    if (progress !== null) {
-      loader.querySelector('.loading-progress').textContent = progress
-    }
-  }
-}
-
-function hideLoading() {
-  const loader = document.getElementById('loading-overlay')
-  if (loader) {
-    loader.style.display = 'none'
-  }
-}
+// getCodecFromPath, getWaveformAnimationHTML, getSineWaveAnimationHTML → importés depuis utils.js
+// showLoading, updateLoading, hideLoading → importés depuis utils.js
 
 // === SÉLECTION DE DOSSIER ===
 async function selectFolder() {
@@ -890,9 +753,6 @@ const statMp3 = document.getElementById('stat-mp3')
 const statFlac16 = document.getElementById('stat-flac16')
 const statFlac24 = document.getElementById('stat-flac24')
 
-// Toast
-const toast = document.getElementById('toast')
-
 // États
 let isIndexing = false
 let isIndexationExpanded = false
@@ -959,17 +819,7 @@ function updateIndexationProgress(progress) {
   updateIndexationUI()
 }
 
-// Affiche un toast de notification
-function showToast(message, duration = 3000) {
-  if (!toast) return
-
-  toast.textContent = message
-  toast.classList.add('show')
-
-  setTimeout(() => {
-    toast.classList.remove('show')
-  }, duration)
-}
+// showToast → importé depuis utils.js
 
 // Lance le scan en arrière-plan
 async function startBackgroundScan() {
@@ -2737,13 +2587,7 @@ async function loadArtistImageFromQueue(item) {
 }
 
 // === AFFICHAGE DE LA PAGE HOME ===
-// Fonction utilitaire pour échapper le HTML (évite XSS)
-function escapeHtml(text) {
-  if (!text) return ''
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
-}
+// escapeHtml → importé depuis utils.js
 
 async function displayHomeView() {
   // Note: albumsGridDiv est déjà vidé par displayCurrentView()
@@ -4795,52 +4639,7 @@ function updateTracksFilter() {
 }
 
 // Formate la qualité audio
-// Lossy (MP3, AAC, OGG) → "320 kbps"
-// Lossless (FLAC, ALAC, WAV, AIFF) → "24-bit / 96kHz"
-function formatQuality(metadata, filePath = null) {
-  if (!metadata) return { label: '-', class: '' }
-
-  const bitDepth = metadata.bitDepth
-  const sampleRate = metadata.sampleRate
-  const bitrate = metadata.bitrate
-
-  // Détecte si c'est un format lossy basé sur l'extension du fichier ou l'absence de bitDepth
-  const isLossy = filePath
-    ? /\.(mp3|aac|ogg|m4a|wma|opus)$/i.test(filePath)
-    : (!bitDepth && bitrate)
-
-  if (isLossy) {
-    // Format lossy : affiche le bitrate en kbps
-    if (bitrate) {
-      const kbps = Math.round(bitrate)
-      return { label: `${kbps} kbps`, class: 'quality-lossy' }
-    }
-    return { label: 'Lossy', class: 'quality-lossy' }
-  }
-
-  // Format lossless : affiche bit-depth / sample rate
-  if (!bitDepth && !sampleRate) return { label: '-', class: '' }
-
-  // Détermine la classe de qualité par sample rate (color coding)
-  let qualityClass = 'quality-standard'
-  if (sampleRate) {
-    if (sampleRate >= 192000) qualityClass = 'quality-192k'
-    else if (sampleRate >= 96000) qualityClass = 'quality-96k'
-    else if (sampleRate >= 48000) qualityClass = 'quality-48k'
-    else qualityClass = 'quality-44k'
-  } else if (bitDepth >= 24) {
-    qualityClass = 'quality-hires'
-  } else if (bitDepth >= 16) {
-    qualityClass = 'quality-lossless'
-  }
-
-  // Format: "24-bit / 96kHz" ou "16-bit / 44.1kHz"
-  const bits = bitDepth ? `${bitDepth}-bit` : ''
-  const rate = sampleRate ? `${sampleRate >= 1000 ? (sampleRate / 1000).toFixed(1).replace('.0', '') : sampleRate}kHz` : ''
-  const label = [bits, rate].filter(Boolean).join(' / ')
-
-  return { label: label || '-', class: qualityClass }
-}
+// formatQuality → importé depuis utils.js
 
 // Affiche le panel de détail d'un album sous la carte cliquée
 function showAlbumDetail(albumKey, cover, clickedCard) {
@@ -6596,436 +6395,12 @@ exclusiveModeCheckbox.addEventListener('change', async () => {
   }
 })
 
-// === ÉGALISEUR 8 BANDES ===
+// === ÉGALISEUR → importé depuis eq.js ===
 
-const EQ_FREQS = [32, 64, 250, 1000, 2000, 4000, 8000, 16000]
-const EQ_LABELS_JS = ['32', '64', '250', '1k', '2k', '4k', '8k', '16k']
-const EQ_MIN_DB = -12
-const EQ_MAX_DB = 12
-const EQ_SVG_WIDTH = 280
-const EQ_SVG_HEIGHT = 140
-const EQ_MARGIN_X = 20
-const EQ_GRAPH_WIDTH = EQ_SVG_WIDTH - 2 * EQ_MARGIN_X
-const EQ_MARGIN_TOP = 10
-const EQ_MARGIN_BOTTOM = 10
-const EQ_GRAPH_HEIGHT = EQ_SVG_HEIGHT - EQ_MARGIN_TOP - EQ_MARGIN_BOTTOM
 
-let eqGains = new Float32Array(8) // tous à 0 dB
-let eqEnabled = false
-let eqDraggingIndex = -1
-let eqInitialized = false
-let isEqPanelOpen = false
 
-const EQ_PRESETS = {
-  'Flat':       [0, 0, 0, 0, 0, 0, 0, 0],
-  'Bass Boost': [6, 5, 3, 0, 0, 0, 0, 0],
-  'Treble Boost': [0, 0, 0, 0, 1, 3, 5, 6],
-  'Loudness':   [4, 3, 0, -1, -1, 0, 3, 4],
-  'Vocal':      [-2, -1, 0, 3, 4, 2, 0, -1],
-  'Rock':       [4, 3, 1, 0, -1, 1, 3, 4],
-  'Jazz':       [3, 2, 0, 1, -1, -1, 1, 3],
-  'Classical':  [0, 0, 0, 0, 0, -1, -2, -3],
-  'Electronic': [5, 4, 1, 0, 0, 1, 3, 5],
-  'Hip-Hop':    [5, 4, 2, 0, -1, 1, 0, 2],
-  'Late Night': [3, 2, 0, -2, -2, 0, 1, 2],
-}
 
-// Conversion dB → Y dans le SVG
-function eqDbToY(db) {
-  // +12 dB → top (EQ_MARGIN_TOP), -12 dB → bottom (EQ_SVG_HEIGHT - EQ_MARGIN_BOTTOM), 0 → center
-  const center = EQ_MARGIN_TOP + EQ_GRAPH_HEIGHT / 2
-  return center - (db / EQ_MAX_DB) * (EQ_GRAPH_HEIGHT / 2)
-}
-
-function eqYToDb(y) {
-  const center = EQ_MARGIN_TOP + EQ_GRAPH_HEIGHT / 2
-  return -((y - center) / (EQ_GRAPH_HEIGHT / 2)) * EQ_MAX_DB
-}
-
-// Position X pour chaque bande (espacement logarithmique)
-function eqFreqToX(index) {
-  return EQ_MARGIN_X + (index / 7) * EQ_GRAPH_WIDTH
-}
-
-// Génère une courbe spline passant par les 8 points
-function eqBuildCurvePath(gains, closePath) {
-  const points = gains.map((g, i) => ({ x: eqFreqToX(i), y: eqDbToY(g) }))
-  // Catmull-Rom → cubic Bézier smooth spline
-  let d = `M ${points[0].x},${points[0].y}`
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[Math.max(i - 1, 0)]
-    const p1 = points[i]
-    const p2 = points[i + 1]
-    const p3 = points[Math.min(i + 2, points.length - 1)]
-    const cp1x = p1.x + (p2.x - p0.x) / 6
-    const cp1y = p1.y + (p2.y - p0.y) / 6
-    const cp2x = p2.x - (p3.x - p1.x) / 6
-    const cp2y = p2.y - (p3.y - p1.y) / 6
-    d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y}`
-  }
-  if (closePath) {
-    // Ferme le chemin pour le fill (descend au bas puis revient au début)
-    const bottom = EQ_SVG_HEIGHT - EQ_MARGIN_BOTTOM
-    d += ` L ${points[points.length - 1].x},${bottom} L ${points[0].x},${bottom} Z`
-  }
-  return d
-}
-
-// Initialise le SVG de la courbe EQ
-function eqInitSVG() {
-  const svg = document.getElementById('eq-curve-svg')
-  if (!svg) return
-
-  // Namespace SVG
-  const ns = 'http://www.w3.org/2000/svg'
-
-  // Clear
-  svg.innerHTML = ''
-
-  // Grille horizontale (-12, -6, 0, +6, +12 dB)
-  const dbLines = [-12, -6, 0, 6, 12]
-  for (const db of dbLines) {
-    const y = eqDbToY(db)
-    const line = document.createElementNS(ns, 'line')
-    line.setAttribute('x1', EQ_MARGIN_X)
-    line.setAttribute('y1', y)
-    line.setAttribute('x2', EQ_SVG_WIDTH - EQ_MARGIN_X)
-    line.setAttribute('y2', y)
-    line.setAttribute('class', db === 0 ? 'eq-zero-line' : 'eq-grid-line')
-    svg.appendChild(line)
-
-    // Label dB (seulement -12, 0, +12)
-    if (db === -12 || db === 0 || db === 12) {
-      const label = document.createElementNS(ns, 'text')
-      label.setAttribute('x', EQ_MARGIN_X - 3)
-      label.setAttribute('y', y + 3)
-      label.setAttribute('text-anchor', 'end')
-      label.setAttribute('class', 'eq-db-label')
-      label.textContent = db > 0 ? `+${db}` : `${db}`
-      svg.appendChild(label)
-    }
-  }
-
-  // Grille verticale (8 fréquences)
-  for (let i = 0; i < 8; i++) {
-    const x = eqFreqToX(i)
-    const line = document.createElementNS(ns, 'line')
-    line.setAttribute('x1', x)
-    line.setAttribute('y1', EQ_MARGIN_TOP)
-    line.setAttribute('x2', x)
-    line.setAttribute('y2', EQ_SVG_HEIGHT - EQ_MARGIN_BOTTOM)
-    line.setAttribute('class', 'eq-grid-line')
-    svg.appendChild(line)
-  }
-
-  // Fill sous la courbe
-  const fillPath = document.createElementNS(ns, 'path')
-  fillPath.setAttribute('id', 'eq-curve-fill')
-  fillPath.setAttribute('class', 'eq-curve-fill')
-  fillPath.setAttribute('d', eqBuildCurvePath(eqGains, true))
-  svg.appendChild(fillPath)
-
-  // Courbe principale
-  const curvePath = document.createElementNS(ns, 'path')
-  curvePath.setAttribute('id', 'eq-curve-path')
-  curvePath.setAttribute('class', 'eq-curve-path')
-  curvePath.setAttribute('d', eqBuildCurvePath(eqGains, false))
-  svg.appendChild(curvePath)
-
-  // 8 points draggables
-  for (let i = 0; i < 8; i++) {
-    const circle = document.createElementNS(ns, 'circle')
-    circle.setAttribute('cx', eqFreqToX(i))
-    circle.setAttribute('cy', eqDbToY(eqGains[i]))
-    circle.setAttribute('r', 5)
-    circle.setAttribute('class', 'eq-point')
-    circle.setAttribute('data-band', i)
-    circle.id = `eq-point-${i}`
-    svg.appendChild(circle)
-  }
-
-  // Event handlers pour drag
-  svg.addEventListener('mousedown', eqOnMouseDown)
-  svg.addEventListener('mousemove', eqOnMouseMove)
-  svg.addEventListener('mouseup', eqOnMouseUp)
-  svg.addEventListener('mouseleave', eqOnMouseUp)
-}
-
-function eqOnMouseDown(e) {
-  const point = e.target.closest('.eq-point')
-  if (!point) return
-  eqDraggingIndex = parseInt(point.dataset.band)
-  point.classList.add('dragging')
-  e.preventDefault()
-}
-
-function eqOnMouseMove(e) {
-  if (eqDraggingIndex < 0) return
-  const svg = document.getElementById('eq-curve-svg')
-  const rect = svg.getBoundingClientRect()
-  const scaleY = EQ_SVG_HEIGHT / rect.height
-  const y = (e.clientY - rect.top) * scaleY
-  const db = Math.round(eqYToDb(y) * 2) / 2 // Snap à 0.5 dB
-  const clampedDb = Math.max(EQ_MIN_DB, Math.min(EQ_MAX_DB, db))
-  eqGains[eqDraggingIndex] = clampedDb
-  eqUpdateCurve()
-  eqUpdatePresetLabel()
-}
-
-function eqOnMouseUp() {
-  if (eqDraggingIndex >= 0) {
-    const point = document.getElementById(`eq-point-${eqDraggingIndex}`)
-    if (point) point.classList.remove('dragging')
-    eqDraggingIndex = -1
-    // Envoie les gains au backend
-    eqSendGains()
-  }
-}
-
-function eqUpdateCurve() {
-  const curvePath = document.getElementById('eq-curve-path')
-  const fillPath = document.getElementById('eq-curve-fill')
-  if (curvePath) curvePath.setAttribute('d', eqBuildCurvePath(eqGains, false))
-  if (fillPath) fillPath.setAttribute('d', eqBuildCurvePath(eqGains, true))
-  // Met à jour les positions des points
-  for (let i = 0; i < 8; i++) {
-    const circle = document.getElementById(`eq-point-${i}`)
-    if (circle) {
-      circle.setAttribute('cy', eqDbToY(eqGains[i]))
-    }
-  }
-}
-
-async function eqSendGains() {
-  try {
-    await invoke('set_eq_bands', { gains: Array.from(eqGains) })
-  } catch (e) {
-    console.error('[EQ] Error setting bands:', e)
-  }
-}
-
-async function eqSetEnabled(enabled) {
-  eqEnabled = enabled
-  const checkbox = document.getElementById('eq-enabled-checkbox')
-  if (checkbox) checkbox.checked = enabled
-  eqUpdateStatusUI()
-  eqUpdatePanelToggleLabel()
-  try {
-    await invoke('set_eq_enabled', { enabled })
-  } catch (e) {
-    console.error('[EQ] Error toggling EQ:', e)
-  }
-}
-
-// Met à jour le texte de statut sous le label "Égaliseur"
-function eqUpdateStatusUI() {
-  const statusEl = document.getElementById('eq-mode-status')
-  if (!statusEl) return
-  if (eqEnabled) {
-    const presetName = eqFindActivePreset()
-    statusEl.textContent = presetName || 'Custom'
-    statusEl.classList.add('active')
-  } else {
-    statusEl.textContent = 'Disabled'
-    statusEl.classList.remove('active')
-  }
-}
-
-// Trouve quel preset correspond aux gains actuels (ou null si custom)
-function eqFindActivePreset() {
-  for (const [name, preset] of Object.entries(EQ_PRESETS)) {
-    if (name === 'Flat' && preset.every((g, i) => Math.abs(g - eqGains[i]) < 0.1)) return 'Flat'
-    if (preset.every((g, i) => Math.abs(g - eqGains[i]) < 0.1)) return name
-  }
-  return null
-}
-
-// Met à jour le label du bouton dropdown preset
-function eqUpdatePresetLabel() {
-  const labelEl = document.getElementById('eq-preset-label')
-  if (!labelEl) return
-  const presetName = eqFindActivePreset()
-  labelEl.textContent = presetName || 'Custom'
-  eqUpdateStatusUI()
-  eqUpdatePanelToggleLabel()
-}
-
-function eqApplyPreset(name) {
-  const preset = EQ_PRESETS[name]
-  if (!preset) return
-  for (let i = 0; i < 8; i++) {
-    eqGains[i] = preset[i]
-  }
-  eqUpdateCurve()
-  eqUpdatePresetLabel()
-  eqSendGains()
-  // Ferme le dropdown
-  const dropdown = document.getElementById('eq-preset-dropdown')
-  if (dropdown) dropdown.classList.add('hidden')
-}
-
-function eqBuildPresetDropdown() {
-  const container = document.getElementById('eq-preset-dropdown')
-  if (!container) return
-  container.innerHTML = ''
-  for (const name of Object.keys(EQ_PRESETS)) {
-    const item = document.createElement('button')
-    item.className = 'eq-preset-dropdown-item'
-    item.dataset.preset = name
-    item.textContent = name
-    item.addEventListener('click', () => eqApplyPreset(name))
-    container.appendChild(item)
-  }
-  eqUpdatePresetLabel()
-}
-
-// === EQ SIDE PANEL OPEN/CLOSE ===
-
-function openEqPanel() {
-  const panel = document.getElementById('eq-panel')
-  if (!panel) return
-
-  // Ferme le menu de sortie audio
-  if (audioOutputMenu && !audioOutputMenu.classList.contains('hidden')) {
-    audioOutputMenu.classList.add('hidden')
-    audioOutputBtn.classList.remove('active')
-  }
-
-  // Ferme les autres panels
-  if (isQueuePanelOpen) toggleQueuePanel()
-  if (isTrackInfoPanelOpen) closeTrackInfoPanel()
-  if (isSettingsPanelOpen) closeSettings()
-
-  isEqPanelOpen = true
-  panel.classList.add('open')
-}
-
-function closeEqPanel() {
-  const panel = document.getElementById('eq-panel')
-  if (!panel) return
-  isEqPanelOpen = false
-  panel.classList.remove('open')
-  // Ferme aussi le dropdown preset
-  const dropdown = document.getElementById('eq-preset-dropdown')
-  if (dropdown) dropdown.classList.add('hidden')
-}
-
-function toggleEqPanel() {
-  if (isEqPanelOpen) {
-    closeEqPanel()
-  } else {
-    openEqPanel()
-  }
-}
-
-// Initialisation de l'EQ au démarrage
-async function eqInit() {
-  if (eqInitialized) return
-  eqInitialized = true
-
-  // Charge l'état depuis le backend
-  try {
-    const state = await invoke('get_eq_state')
-    eqEnabled = state.enabled
-    for (let i = 0; i < Math.min(state.gains.length, 8); i++) {
-      eqGains[i] = state.gains[i]
-    }
-  } catch (e) {
-    console.log('[EQ] Could not load EQ state:', e)
-  }
-
-  // Met à jour le checkbox + status
-  const checkbox = document.getElementById('eq-enabled-checkbox')
-  if (checkbox) checkbox.checked = eqEnabled
-  eqUpdateStatusUI()
-  eqUpdatePanelToggleLabel()
-
-  // Init SVG + preset dropdown
-  eqInitSVG()
-  eqBuildPresetDropdown()
-
-  // Bouton info (icône EQ dans le footer sortie audio) → ouvre le side panel
-  const eqInfoBtn = document.getElementById('eq-mode-info-btn')
-  if (eqInfoBtn) {
-    eqInfoBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      toggleEqPanel()
-    })
-  }
-
-  // Toggle switch checkbox dans le side panel
-  if (checkbox) {
-    checkbox.addEventListener('change', () => {
-      eqSetEnabled(checkbox.checked)
-      eqUpdatePanelToggleLabel()
-    })
-  }
-
-  // Reset button
-  const flatBtn = document.getElementById('eq-flat-btn')
-  if (flatBtn) {
-    flatBtn.addEventListener('click', () => eqApplyPreset('Flat'))
-  }
-
-  // Preset dropdown toggle
-  const presetDropdownBtn = document.getElementById('eq-preset-dropdown-btn')
-  const presetDropdown = document.getElementById('eq-preset-dropdown')
-  if (presetDropdownBtn && presetDropdown) {
-    presetDropdownBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      presetDropdown.classList.toggle('hidden')
-    })
-  }
-
-  // Close button du panel
-  const closeBtn = document.getElementById('close-eq-panel')
-  if (closeBtn) {
-    closeBtn.addEventListener('click', closeEqPanel)
-  }
-
-  // Fermer le dropdown preset au clic ailleurs (dans le panel)
-  document.addEventListener('click', (e) => {
-    if (presetDropdown && !presetDropdown.classList.contains('hidden')) {
-      if (!e.target.closest('.eq-preset-dropdown-container')) {
-        presetDropdown.classList.add('hidden')
-      }
-    }
-  })
-}
-
-// Met à jour le label dans le toggle row du side panel
-function eqUpdatePanelToggleLabel() {
-  const label = document.getElementById('eq-panel-enabled-label')
-  if (!label) return
-  if (eqEnabled) {
-    const presetName = eqFindActivePreset()
-    label.textContent = presetName || 'Custom'
-    label.classList.add('active')
-  } else {
-    label.textContent = 'Disabled'
-    label.classList.remove('active')
-  }
-}
-
-// Lancer l'init EQ au chargement de l'app
-setTimeout(eqInit, 500)
-
-// === UTILITAIRES ===
-function formatTime(seconds) {
-  const mins = Math.floor(seconds / 60)
-  const secs = Math.floor(seconds % 60)
-  return `${mins}:${secs.toString().padStart(2, '0')}`
-}
-
-// Formate une durée d'album en heures et minutes
-function formatAlbumDuration(seconds) {
-  const hours = Math.floor(seconds / 3600)
-  const mins = Math.floor((seconds % 3600) / 60)
-  if (hours > 0) {
-    return `${hours}h${mins > 0 ? mins + 'm' : ''}`
-  }
-  return `${mins}m`
-}
+// formatTime, formatAlbumDuration → importés depuis utils.js
 
 // === FILE D'ATTENTE (QUEUE) ===
 
@@ -7108,7 +6483,7 @@ function toggleQueuePanel() {
     // Ferme les autres panels avant d'ouvrir
     if (isTrackInfoPanelOpen) closeTrackInfoPanel()
     if (isSettingsPanelOpen) closeSettings()
-    if (isEqPanelOpen) closeEqPanel()
+    if (getEqPanelOpen()) closeEqPanel()
   }
   isQueuePanelOpen = !isQueuePanelOpen
   const panel = document.getElementById('queue-panel')
@@ -7663,7 +7038,7 @@ async function showTrackInfoPanel(track) {
   // Ferme les autres panels avant d'ouvrir
   if (isQueuePanelOpen) toggleQueuePanel()
   if (isSettingsPanelOpen) closeSettings()
-  if (isEqPanelOpen) closeEqPanel()
+  if (getEqPanelOpen()) closeEqPanel()
 
   trackInfoCurrentTrack = track
   isTrackInfoPanelOpen = true
@@ -9658,7 +9033,7 @@ function closeAllPanels() {
   if (isQueuePanelOpen) toggleQueuePanel()
   if (isTrackInfoPanelOpen) closeTrackInfoPanel()
   if (isSettingsPanelOpen) closeSettings()
-  if (isEqPanelOpen) closeEqPanel()
+  if (getEqPanelOpen()) closeEqPanel()
 }
 
 // Seek relatif en secondes
@@ -9797,7 +9172,7 @@ function openSettings() {
   // Ferme les autres panels
   if (isQueuePanelOpen) toggleQueuePanel()
   if (isTrackInfoPanelOpen) closeTrackInfoPanel()
-  if (isEqPanelOpen) closeEqPanel()
+  if (getEqPanelOpen()) closeEqPanel()
 
   isSettingsPanelOpen = true
   panel.classList.add('open')
@@ -10142,106 +9517,7 @@ function initSettingsPanel() {
   }
 }
 
-// === AUTO-UPDATE ===
-let pendingUpdate = null
-
-async function checkForUpdates(showNoUpdateToast = false) {
-  const statusEl = document.getElementById('settings-update-status')
-  const availableRow = document.getElementById('settings-update-available')
-
-  try {
-    const { check } = window.__TAURI__.updater
-    if (!check) {
-      if (showNoUpdateToast) showToast('Check not available')
-      return
-    }
-
-    if (statusEl) statusEl.textContent = 'Checking...'
-
-    const update = await check()
-    if (update?.available) {
-      pendingUpdate = update
-      const versionEl = document.getElementById('settings-update-version')
-      if (versionEl) versionEl.textContent = `Update available: v${update.version}`
-      if (availableRow) availableRow.style.display = 'flex'
-      if (statusEl) statusEl.textContent = `Version actuelle : ${await getAppVersion()}`
-      showToast(`Update v${update.version} available`)
-    } else {
-      pendingUpdate = null
-      if (availableRow) availableRow.style.display = 'none'
-      if (statusEl) statusEl.textContent = `Up to date — v${await getAppVersion()}`
-      if (showNoUpdateToast) showToast('No update available')
-    }
-  } catch (e) {
-    console.log('[UPDATE] Check failed (expected if no server):', e)
-    if (statusEl) statusEl.textContent = `Version actuelle : ${await getAppVersion()}`
-    if (showNoUpdateToast) showToast('Unable to check for updates')
-  }
-}
-
-async function installUpdate() {
-  if (!pendingUpdate) return
-  try {
-    showToast('Installing update...')
-    await pendingUpdate.downloadAndInstall()
-    showToast('Update installed — restarting...')
-    const { relaunch } = window.__TAURI__.process
-    if (relaunch) await relaunch()
-  } catch (e) {
-    console.error('[UPDATE] Install failed:', e)
-    showToast('Error during installation')
-  }
-}
-
-async function getAppVersion() {
-  try {
-    const { getVersion } = window.__TAURI__.app
-    return await getVersion()
-  } catch {
-    return '0.1.0'
-  }
-}
-
-async function updateVersionDisplay() {
-  const version = await getAppVersion()
-  const el = document.getElementById('settings-version-label')
-  if (el) el.textContent = `Noir v${version}`
-  const statusEl = document.getElementById('settings-update-status')
-  if (statusEl) statusEl.textContent = `Version actuelle : ${version}`
-}
-
-function initAutoUpdate() {
-  // Auto-update toggle
-  const autoUpdateToggle = document.getElementById('settings-auto-update')
-  if (autoUpdateToggle) {
-    const saved = localStorage.getItem('settings_auto_update')
-    autoUpdateToggle.checked = saved !== 'false' // default: true
-    autoUpdateToggle.addEventListener('change', () => {
-      localStorage.setItem('settings_auto_update', autoUpdateToggle.checked)
-    })
-  }
-
-  // Check button
-  const checkBtn = document.getElementById('settings-check-update')
-  if (checkBtn) {
-    checkBtn.addEventListener('click', () => checkForUpdates(true))
-  }
-
-  // Install button
-  const installBtn = document.getElementById('settings-install-update')
-  if (installBtn) {
-    installBtn.addEventListener('click', installUpdate)
-  }
-
-  // Version display
-  updateVersionDisplay()
-
-  // Startup check (silent, after 5s)
-  const autoEnabled = localStorage.getItem('settings_auto_update') !== 'false'
-  if (autoEnabled) {
-    setTimeout(() => checkForUpdates(false), 5000)
-  }
-}
+// === AUTO-UPDATE → importé depuis auto-update.js ===
 
 // Synchronise le Hog Mode entre player bar et settings panel
 function updateHogModeUI(enabled) {
@@ -10303,6 +9579,19 @@ document.addEventListener('DOMContentLoaded', () => {
   initSettingsPanel()
   applyDefaultVolume()
   initAutoUpdate()
+  // Init EQ avec callbacks pour fermer les autres panels
+  setEqPanelCallbacks({
+    closeOtherPanels: () => {
+      if (audioOutputMenu && !audioOutputMenu.classList.contains('hidden')) {
+        audioOutputMenu.classList.add('hidden')
+        audioOutputBtn.classList.remove('active')
+      }
+      if (isQueuePanelOpen) toggleQueuePanel()
+      if (isTrackInfoPanelOpen) closeTrackInfoPanel()
+      if (isSettingsPanelOpen) closeSettings()
+    }
+  })
+  setTimeout(eqInit, 500)
   // Auto-resume après un délai pour laisser la bibliothèque se charger
   setTimeout(handleAutoResume, 3000)
 })
