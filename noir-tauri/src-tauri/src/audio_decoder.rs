@@ -171,10 +171,12 @@ pub fn probe_audio_file(path: &str) -> Result<AudioInfo, String> {
     if let Some(info) = try_probe_with_symphonia(path) {
         // Vérifie que le sample_rate est plausible (pas un fallback)
         if info.sample_rate > 8000 && info.sample_rate <= 384000 {
+            #[cfg(debug_assertions)]
             println!("DEBUG PROBE (Symphonia): {}Hz, {}bit, {}ch",
                 info.sample_rate, info.bit_depth, info.channels);
             return Ok(info);
         }
+        #[cfg(debug_assertions)]
         println!("DEBUG PROBE: Symphonia returned suspicious rate {}Hz, trying lofty...",
             info.sample_rate);
     }
@@ -259,6 +261,7 @@ fn probe_with_lofty(path: &str) -> Result<AudioInfo, String> {
     let duration_seconds = props.duration().as_secs_f64();
     let total_frames = (duration_seconds * sample_rate as f64) as u64;
 
+    #[cfg(debug_assertions)]
     println!("DEBUG PROBE (lofty): {}Hz, {}bit, {}ch, {:.2}s",
         sample_rate, bit_depth, channels, duration_seconds);
 
@@ -342,6 +345,7 @@ pub fn start_streaming_with_config(
     let symphonia_bit_depth = track.codec_params.bits_per_sample;
 
     // Log si Symphonia et lofty divergent (utile pour debug)
+    #[cfg(debug_assertions)]
     if let Some(sym_rate) = symphonia_sample_rate {
         if sym_rate != source_sample_rate {
             println!("⚠️  Symphonia reports {}Hz but probe_audio_file found {}Hz - using {}Hz",
@@ -359,11 +363,13 @@ pub fn start_streaming_with_config(
     let output_sample_rate = target_sample_rate.unwrap_or(source_sample_rate);
     let needs_resampling = output_sample_rate != source_sample_rate;
 
-    // LOG DEBUG OBLIGATOIRE
-    println!("DEBUG STREAM: Source: {}Hz → Output: {}Hz, Resampling: {}",
-        source_sample_rate, output_sample_rate, needs_resampling);
-    if needs_resampling {
-        println!("  → Resampler will convert {}Hz → {}Hz", source_sample_rate, output_sample_rate);
+    #[cfg(debug_assertions)]
+    {
+        println!("DEBUG STREAM: Source: {}Hz → Output: {}Hz, Resampling: {}",
+            source_sample_rate, output_sample_rate, needs_resampling);
+        if needs_resampling {
+            println!("  → Resampler will convert {}Hz → {}Hz", source_sample_rate, output_sample_rate);
+        }
     }
 
     // IMPORTANT: n_frames est le nombre de FRAMES (pas samples)
@@ -388,6 +394,7 @@ pub fn start_streaming_with_config(
     let ring_capacity = (RING_BUFFER_SECONDS * output_sample_rate as f64 * channels as f64) as usize;
     let pre_roll_samples = (ring_capacity as f64 * PRE_ROLL_PERCENT) as usize;
 
+    #[cfg(debug_assertions)]
     println!(
         "=== Audio File Info ===\n  source_rate: {}Hz\n  output_rate: {}Hz (resampling: {})\n  bit_depth: {}bit\n  channels: {}\n  total_frames: {}\n  duration: {:.3}s\n  RingBuffer: {} samples ({:.1}s)\n  pre-roll: {:.0}ms",
         source_sample_rate, output_sample_rate, needs_resampling,
@@ -472,6 +479,7 @@ pub fn start_streaming_with_config(
         thread::sleep(std::time::Duration::from_micros(100));
     }
 
+    #[cfg(debug_assertions)]
     println!("Streaming ready in {:?}", start.elapsed());
 
     Ok(StreamingSession {
@@ -503,19 +511,20 @@ fn decoder_thread(
     // Le sample rate utilisé pour calculer les positions dépend du resampling
     let position_sample_rate = output_sample_rate;
 
-    // DEBUG: Variables pour tracer le seek
+    // Variables pour tracer le seek (debug only)
     let mut last_seek_target: f64 = 0.0;
     let mut first_packet_after_seek = false;
+    #[allow(unused_variables)]
     let mut prefill_start_logged = false;
 
-    // [DEBUG-D] Vérifier s'il y a une queue intermédiaire
+    #[cfg(debug_assertions)]
     println!("[DEBUG-D] No intermediate queue found — decoder writes directly to RingBuffer");
 
     loop {
         // Vérifie les commandes (non-bloquant)
         match command_rx.try_recv() {
             Ok(DecoderCommand::Seek(time_seconds)) => {
-                // [DEBUG-A] Log seek request
+                #[cfg(debug_assertions)]
                 println!("[DEBUG-A] Seek requested to: {:.3}s", time_seconds);
                 last_seek_target = time_seconds;
                 first_packet_after_seek = true;
@@ -530,11 +539,13 @@ fn decoder_thread(
                 let flush_start = std::time::Instant::now();
                 while !state.flush_complete.load(Ordering::Acquire) {
                     if flush_start.elapsed().as_millis() > 500 {
+                        #[cfg(debug_assertions)]
                         println!("Decoder: Flush timeout after 500ms, continuing anyway");
                         break;
                     }
                     std::thread::sleep(std::time::Duration::from_micros(500));
                 }
+                #[cfg(debug_assertions)]
                 println!("Decoder: Buffer flush complete, proceeding with seek");
 
                 // ÉTAPE 3: Effectue le seek dans symphonia
@@ -548,10 +559,12 @@ fn decoder_thread(
                         // Reset le décodeur après le seek
                         decoder.reset();
 
-                        // [DEBUG-A] Log decoder position after seek
-                        let decoder_position_ts = seeked_to.actual_ts as f64 / source_sample_rate as f64;
-                        println!("[DEBUG-A] Decoder reports position after seek: frame={}, estimated_time={:.3}s",
-                            seeked_to.actual_ts, decoder_position_ts);
+                        #[cfg(debug_assertions)]
+                        {
+                            let decoder_position_ts = seeked_to.actual_ts as f64 / source_sample_rate as f64;
+                            println!("[DEBUG-A] Decoder reports position after seek: frame={}, estimated_time={:.3}s",
+                                seeked_to.actual_ts, decoder_position_ts);
+                        }
 
                         // Calcule la nouvelle position (en OUTPUT samples)
                         let new_position = (time_seconds * position_sample_rate as f64 * channels as f64) as usize;
@@ -560,6 +573,7 @@ fn decoder_thread(
                         state.seek_position.store(new_position as u64, Ordering::Release);
                         samples_since_start = 0;
 
+                        #[cfg(debug_assertions)]
                         println!("Decoder: Seeked to frame {}, position {:.2}s",
                             seeked_to.actual_ts, time_seconds);
 
@@ -574,6 +588,7 @@ fn decoder_thread(
                 }
             }
             Ok(DecoderCommand::Stop) => {
+                #[cfg(debug_assertions)]
                 println!("Decoder: Stopping");
                 break;
             }
@@ -609,12 +624,14 @@ fn decoder_thread(
             continue;
         }
 
-        // [DEBUG-A] Log first packet after seek
         if first_packet_after_seek {
-            let packet_ts = packet.ts();
-            let packet_time = packet_ts as f64 / source_sample_rate as f64;
-            println!("[DEBUG-A] First decoded packet after seek: ts={}, time={:.3}s (target was {:.3}s)",
-                packet_ts, packet_time, last_seek_target);
+            #[cfg(debug_assertions)]
+            {
+                let packet_ts = packet.ts();
+                let packet_time = packet_ts as f64 / source_sample_rate as f64;
+                println!("[DEBUG-A] First decoded packet after seek: ts={}, time={:.3}s (target was {:.3}s)",
+                    packet_ts, packet_time, last_seek_target);
+            }
             first_packet_after_seek = false;
         }
 
@@ -638,7 +655,7 @@ fn decoder_thread(
             temp_buffer.clone()
         };
 
-        // [DEBUG-B] Log pre-fill start (first write after seek)
+        #[cfg(debug_assertions)]
         if state.seeking.load(Ordering::Relaxed) && !prefill_start_logged {
             let write_position_samples = current_file_position;
             let write_position_time = write_position_samples as f64 / channels as f64 / output_sample_rate as f64;
@@ -662,6 +679,7 @@ fn decoder_thread(
         if !pre_roll_ready.load(Ordering::Relaxed) && samples_since_start >= pre_roll_samples {
             pre_roll_ready.store(true, Ordering::Release);
             state.seeking.store(false, Ordering::Release);
+            #[cfg(debug_assertions)]
             println!(
                 "Pre-roll ready: {} samples ({:.0}ms)",
                 samples_since_start,
@@ -676,22 +694,25 @@ fn decoder_thread(
             let current_prefill = state.samples_since_seek.load(Ordering::Relaxed);
 
             if current_prefill >= prefill_samples {
-                // [DEBUG-B] Log pre-fill end
-                let end_position_time = current_file_position as f64 / channels as f64 / output_sample_rate as f64;
-                println!("[DEBUG-B] Pre-fill end: last sample at position {:.3}s ({} samples written since seek)",
-                    end_position_time, current_prefill);
+                #[cfg(debug_assertions)]
+                {
+                    let end_position_time = current_file_position as f64 / channels as f64 / output_sample_rate as f64;
+                    println!("[DEBUG-B] Pre-fill end: last sample at position {:.3}s ({} samples written since seek)",
+                        end_position_time, current_prefill);
+                    println!(
+                        "Seek complete: pre-fill {} samples ({:.0}ms)",
+                        current_prefill,
+                        (current_prefill / channels) as f64 / output_sample_rate as f64 * 1000.0
+                    );
+                }
 
                 state.seeking.store(false, Ordering::Release);
-                println!(
-                    "Seek complete: pre-fill {} samples ({:.0}ms)",
-                    current_prefill,
-                    (current_prefill / channels) as f64 / output_sample_rate as f64 * 1000.0
-                );
             }
         }
     }
 
     state.decoding_complete.store(true, Ordering::Release);
+    #[cfg(debug_assertions)]
     println!("Decoding complete");
 }
 

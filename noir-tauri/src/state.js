@@ -5,6 +5,12 @@
 export const { invoke, convertFileSrc } = window.__TAURI__.core;
 export const { listen } = window.__TAURI__.event;
 
+// === HELPER ===
+// Vide un objet sans casser les références partagées entre modules
+export function clearObject(obj) {
+  for (const key of Object.keys(obj)) delete obj[key]
+}
+
 // === AUDIO ENGINE STATE ===
 export const playback = {
   currentTrackIndex: -1,
@@ -17,6 +23,24 @@ export const playback = {
   repeatMode: 'off',         // 'off', 'all', 'one'
   shufflePlayedTracks: new Set(),
   lastVolume: 100,
+  currentVolume: 1.0,
+  // Interpolation fluide (60 FPS)
+  lastRustPosition: 0,
+  lastRustTimestamp: 0,
+  interpolationAnimationId: null,
+  isSeekingUI: false,
+  isPausedFromRust: false,
+  lastDisplayedPosition: 0,
+  seekTimeoutId: null,
+  seekPending: false,
+  isUserDragging: false,
+  seekTargetPosition: 0,
+  // Toggle protection
+  isTogglingPlayState: false,
+  lastToggleAction: null,
+  // Audio device
+  currentAudioDeviceId: null,
+  devicePollingInterval: null,
 };
 
 // === LIBRARY DATA ===
@@ -46,6 +70,14 @@ export const ui = {
   isEqPanelOpen: false,
   isSettingsPanelOpen: false,
   trackInfoCurrentTrack: null,
+  // Navigation
+  navigationHistory: [],
+  currentAlbumPageKey: null,
+  currentArtistPageKey: null,
+  currentMixData: null,
+  // Indexation
+  isIndexing: false,
+  isIndexationExpanded: false,
 };
 
 // === QUEUE ===
@@ -82,6 +114,12 @@ export const favorites = {
   tracks: new Set(),
 };
 
+// === CONTEXT MENU STATE ===
+export const contextMenu = {
+  tracks: [],
+  trackIndex: -1,
+};
+
 // === PERFORMANCE DIAGNOSTICS ===
 export const PERF = {
   thumbnailCalls: 0,
@@ -91,6 +129,7 @@ export const PERF = {
   internetFallbacks: 0,
   totalLoadTime: 0,
   slowLoads: [],
+  pageLoads: [],
 
   reset() {
     this.thumbnailCalls = 0;
@@ -154,4 +193,5 @@ export const dom = {
   audioOutputMenu: document.getElementById('audio-output-menu'),
   audioOutputList: document.getElementById('audio-output-list'),
   exclusiveModeCheckbox: document.getElementById('exclusive-mode-checkbox'),
+  navItems: document.querySelectorAll('.nav-item'),
 };

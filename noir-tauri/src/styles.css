@@ -943,7 +943,7 @@ body.sidebar-resizing * {
 .albums-view {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden; /* Empêche le débordement horizontal */
+  overflow-x: clip; /* clip ne crée pas de scroll container → les carousels peuvent déborder dans le padding */
   padding: 24px;
   /* Optimisations de performance pour le scroll */
   contain: layout style;
@@ -1166,7 +1166,7 @@ body.sidebar-resizing * {
 
 .tracks-list-header {
   display: grid;
-  grid-template-columns: 28px 2fr 1fr 1fr 100px 60px 36px 36px;
+  grid-template-columns: 28px 2fr 1fr 1fr 120px 60px 36px 36px;
   gap: 16px;
   padding: 8px 16px;
   font-size: 12px;
@@ -1194,7 +1194,7 @@ body.sidebar-resizing * {
 
 .tracks-list-item {
   display: grid;
-  grid-template-columns: 28px 2fr 1fr 1fr 100px 60px 36px 36px;
+  grid-template-columns: 28px 2fr 1fr 1fr 120px 60px 36px 36px;
   gap: 16px;
   padding: 12px 16px;
   border-radius: 4px;
@@ -1259,6 +1259,8 @@ body.sidebar-resizing * {
 .tracks-list-quality {
   display: flex;
   align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .quality-tag {
@@ -1928,9 +1930,8 @@ body.sidebar-resizing * {
 
 .home-section {
   margin-bottom: 40px;
-  /* CRITIQUE: Ne peut pas dépasser le parent */
   max-width: 100%;
-  overflow: hidden;
+  /* overflow: visible (défaut) — ne pas mettre hidden ici, ça clipperait le carousel */
   box-sizing: border-box;
 }
 
@@ -1960,52 +1961,21 @@ body.sidebar-resizing * {
   overflow: hidden;
 }
 
-/* Animation waveform barres en background (inspirée du hero landing page) */
-.home-resume-tile .waveform-animation {
+/* Particle canvas animation in Now Playing tile */
+.home-resume-tile .particle-canvas {
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 2px;
-  padding: 0 16px;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
   z-index: 0;
-  opacity: 0.12;
 }
 
-.waveform-bar {
-  flex: 1;
-  max-width: 4px;
-  background: #fff;
-  border-radius: 2px 2px 0 0;
-  animation: waveformPulse ease-in-out infinite alternate;
-  transform-origin: bottom;
-}
-
-@keyframes waveformPulse {
-  0% { transform: scaleY(0.2); }
-  100% { transform: scaleY(1); }
-}
-
-/* Le contenu de la tuile doit être au-dessus de l'animation */
-.home-resume-tile > *:not(.waveform-animation) {
+/* Le contenu de la tuile doit être au-dessus du canvas */
+.home-resume-tile > *:not(.particle-canvas) {
   position: relative;
   z-index: 1;
-}
-
-/* Pause les animations waveform quand la home n'est pas visible (économie CPU) */
-.home-hidden .waveform-animation,
-.albums-view:not(.home-visible) .waveform-animation {
-  animation-play-state: paused;
-}
-
-.home-hidden .waveform-bar,
-.albums-view:not(.home-visible) .waveform-bar {
-  animation-play-state: paused;
 }
 
 .home-resume-tile:hover {
@@ -2291,11 +2261,12 @@ body.sidebar-resizing * {
   overflow-x: auto;
   overflow-y: hidden;
   padding-bottom: 16px;
+  padding-right: 24px; /* Respiration pour le dernier item au bord droit */
   scroll-snap-type: x mandatory;
   -webkit-overflow-scrolling: touch;
-  /* CRITIQUE: Ne peut pas dépasser la fenêtre */
-  max-width: 100%;
-  width: 100%;
+  /* Dépasse dans le padding droit de .albums-view pour atteindre le bord fenêtre */
+  width: calc(100% + 24px);
+  max-width: calc(100% + 24px);
   box-sizing: border-box;
 }
 
@@ -2753,6 +2724,7 @@ body.player-visible .app {
   white-space: nowrap;
   flex-shrink: 1;
   min-width: 100px;
+  position: relative;
 }
 
 .specs-source, .specs-output {
@@ -2823,6 +2795,55 @@ body.player-visible .app {
   animation: silver-shine 15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   pointer-events: none;
   border-radius: inherit;
+}
+
+/* Badge "BIT PERFECT" — overlay absolu sur le container SRC→OUT */
+.bit-perfect-badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-family: var(--font-body);
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #C0C5CE;
+  text-shadow: 0 0 10px rgba(192, 197, 206, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+/* Reflet silver qui balaie le texte gauche → droite */
+.bit-perfect-badge::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0) 25%,
+    rgba(255, 255, 255, 0.9) 50%,
+    rgba(255, 255, 255, 0) 75%,
+    transparent 100%
+  );
+  transform: translateX(-200%);
+  pointer-events: none;
+}
+
+.bit-perfect-badge.shimmering::after {
+  animation: bp-shimmer 0.8s ease-in-out forwards;
+}
+
+@keyframes bp-shimmer {
+  from { transform: translateX(-200%); }
+  to   { transform: translateX(200%);  }
 }
 
 /* État Resampled (cyan) - resampling actif mais fonctionnel */
@@ -4513,6 +4534,284 @@ body:not(.player-visible) .track-info-panel {
   cursor: not-allowed;
 }
 
+/* Edit button in track info panel */
+.track-info-edit-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: none;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #666;
+  font-size: 11px;
+  font-family: var(--font-body);
+  cursor: pointer;
+  transition: color var(--transition-normal), border-color var(--transition-normal);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.track-info-edit-btn:hover {
+  color: #ccc;
+  border-color: #555;
+}
+
+/* Edit form in track info panel */
+.track-info-edit-form {
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.track-info-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.track-info-edit-field-row {
+  display: flex;
+  gap: 12px;
+}
+
+.track-info-edit-field-row .track-info-edit-field {
+  flex: 1;
+}
+
+.track-info-edit-label {
+  font-size: 9px;
+  font-family: var(--font-body);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #555;
+}
+
+.track-info-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: #111;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  color: #ccc;
+  font-size: 12px;
+  font-family: var(--font-body);
+  transition: border-color var(--transition-normal), color var(--transition-normal);
+  box-sizing: border-box;
+}
+
+.track-info-input:focus {
+  outline: none;
+  border-color: #444;
+  color: #fff;
+}
+
+.track-info-input::placeholder {
+  color: #3a3a3a;
+}
+
+/* Genre combobox */
+.genre-combobox {
+  position: relative;
+  width: 100%;
+}
+
+.genre-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #111;
+  border: 1px solid #2a2a2a;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  max-height: 160px;
+  overflow-y: auto;
+  z-index: 200;
+}
+
+.genre-dropdown.open {
+  display: block;
+}
+
+.genre-dropdown-item {
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: var(--font-body);
+  color: #888;
+  cursor: pointer;
+}
+
+.genre-dropdown-item:hover {
+  background: #1a1a1a;
+  color: #fff;
+}
+
+.track-info-edit-actions {
+  display: flex;
+  gap: 8px;
+  padding: 16px 24px;
+  border-top: 1px solid #151515;
+  flex-shrink: 0;
+}
+
+.track-info-cancel-btn {
+  flex: 1;
+  padding: 9px 16px;
+  background: none;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  color: #555;
+  font-size: 11px;
+  font-family: var(--font-body);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--transition-normal), border-color var(--transition-normal);
+}
+
+.track-info-cancel-btn:hover {
+  color: #aaa;
+  border-color: #444;
+}
+
+.track-info-save-btn {
+  flex: 2;
+  padding: 9px 16px;
+  background: #1e1e1e;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  color: #ccc;
+  font-size: 11px;
+  font-family: var(--font-body);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background var(--transition-normal), color var(--transition-normal), border-color var(--transition-normal);
+}
+
+.track-info-save-btn:hover {
+  background: #282828;
+  color: #fff;
+  border-color: #555;
+}
+
+.track-info-save-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Bulk edit modal */
+.bulk-edit-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bulk-edit-dialog {
+  background: #141414;
+  border: 1px solid #252525;
+  border-radius: 8px;
+  width: 380px;
+  max-width: calc(100vw - 40px);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.bulk-edit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #1e1e1e;
+  flex-shrink: 0;
+}
+
+.bulk-edit-title {
+  font-size: 13px;
+  font-family: var(--font-body);
+  color: #ccc;
+  letter-spacing: 0.5px;
+}
+
+.bulk-edit-close {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 16px;
+  transition: color var(--transition-normal);
+  padding: 0;
+}
+
+.bulk-edit-close:hover {
+  color: #ccc;
+}
+
+.bulk-edit-hint {
+  font-size: 10px;
+  color: #444;
+  letter-spacing: 0.5px;
+  padding: 10px 20px 4px;
+  flex-shrink: 0;
+}
+
+.bulk-edit-fields {
+  padding: 8px 20px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.track-info-edit-field-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 2px;
+}
+
+.bulk-edit-checkbox {
+  width: 14px;
+  height: 14px;
+  accent-color: #666;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.bulk-edit-checkbox-label {
+  font-size: 11px;
+  font-family: var(--font-body);
+  color: #666;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+
+.bulk-edit-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px 18px;
+  border-top: 1px solid #1e1e1e;
+  flex-shrink: 0;
+}
+
 /* Artwork loader */
 .track-info-artwork-loader {
   width: 200px;
@@ -4959,6 +5258,12 @@ body:not(.player-visible) .track-info-panel {
   color: #555;
   text-transform: uppercase;
   letter-spacing: 2px;
+}
+
+.playlists-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .btn-icon-small {

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::io::Cursor;
 use once_cell::sync::Lazy;
 use walkdir::WalkDir;
-use lofty::{Accessor, AudioFile, Probe, TaggedFileExt, MimeType};
+use lofty::{Accessor, AudioFile, Probe, TaggedFileExt, MimeType, TagExt};
 use base64::{Engine as _, engine::general_purpose};
 use tauri_plugin_dialog::DialogExt;
 use reqwest::Client;
@@ -577,7 +577,7 @@ fn ensure_favorites_playlist(data: &mut PlaylistsData) {
 
 // === UTILITAIRES ===
 fn is_audio_file(path: &Path) -> bool {
-    let extensions = ["mp3", "flac", "wav", "m4a", "aac", "ogg", "wma", "aiff", "alac", "dsd", "dsf", "dff"];
+    let extensions = ["mp3", "flac", "wav", "m4a", "aac", "ogg", "aiff", "alac"];
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| extensions.contains(&e.to_lowercase().as_str()))
@@ -2082,6 +2082,78 @@ fn refresh_metadata(path: &str) -> Metadata {
     get_metadata(path)
 }
 
+// Écrire les métadonnées d'un fichier audio et invalider son cache
+#[tauri::command]
+fn write_metadata(
+    path: String,
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    year: Option<u32>,
+    track_number: Option<u32>,
+    genre: Option<String>,
+) -> Result<(), String> {
+    // SECURITY: Validate that the path is within a configured library path
+    let config = load_config();
+    let canonical_path = Path::new(&path).canonicalize()
+        .map_err(|e| format!("Cannot resolve path: {}", e))?;
+    let is_in_library = config.library_paths.iter().any(|lib_path| {
+        if let Ok(canonical_lib) = Path::new(lib_path).canonicalize() {
+            canonical_path.starts_with(&canonical_lib)
+        } else {
+            false
+        }
+    });
+    if !is_in_library {
+        return Err("Security: file is not within any configured library path".to_string());
+    }
+
+    let mut tagged_file = Probe::open(&path)
+        .map_err(|e| format!("Cannot open file: {}", e))?
+        .read()
+        .map_err(|e| format!("Cannot read tags: {}", e))?;
+
+    // Fallback vers first_tag_mut pour les fichiers sans primary tag (AIFF, WAV non-tagués…)
+    // NLL : vérification immutable d'abord (borrow relâché après is_some()), puis borrow mut
+    let tag = if tagged_file.primary_tag().is_some() {
+        tagged_file.primary_tag_mut()
+    } else {
+        tagged_file.first_tag_mut()
+    }.ok_or_else(|| "No tag found in this file".to_string())?;
+
+    // Utiliser ref pour conserver les valeurs après set_* (nécessaire pour la mise à jour du cache)
+    if let Some(ref v) = title        { tag.set_title(v.clone()); }
+    if let Some(ref v) = artist       { tag.set_artist(v.clone()); }
+    if let Some(ref v) = album        { tag.set_album(v.clone()); }
+    if let Some(v) = year             { tag.set_year(v); }
+    if let Some(v) = track_number     { tag.set_track(v); }
+    if let Some(ref v) = genre        { tag.set_genre(v.clone()); }
+
+    tag.save_to_path(&path)
+        .map_err(|e| format!("Error saving: {}", e))?;
+
+    // Invalider METADATA_CACHE pour ce path
+    if let Ok(mut cache) = METADATA_CACHE.lock() {
+        cache.entries.remove(&path);
+    }
+
+    // Mettre à jour TRACKS_CACHE pour éviter que load_tracks_from_cache retourne
+    // des données obsolètes (ex: genre_enrichment_complete recharge les tracks)
+    if let Ok(mut cache) = TRACKS_CACHE.lock() {
+        if let Some(track) = cache.tracks.iter_mut().find(|t| t.path == path) {
+            if let Some(ref v) = title        { track.metadata.title  = v.clone(); }
+            if let Some(ref v) = artist       { track.metadata.artist = v.clone(); }
+            if let Some(ref v) = album        { track.metadata.album  = v.clone(); }
+            if let Some(v) = year             { track.metadata.year   = Some(v); }
+            if let Some(v) = track_number     { track.metadata.track  = v; }
+            if let Some(ref v) = genre        { track.metadata.genre  = Some(v.clone()); }
+        }
+        save_tracks_cache(&cache);
+    }
+
+    Ok(())
+}
+
 // Charger tout le cache de métadonnées (pour le frontend)
 #[tauri::command]
 fn load_all_metadata_cache() -> HashMap<String, Metadata> {
@@ -2550,6 +2622,116 @@ async fn select_folder(app: tauri::AppHandle) -> Option<String> {
         });
 
     rx.recv().ok().flatten()
+}
+
+// === EXPORT / IMPORT M3U ===
+
+#[tauri::command]
+async fn export_playlist_m3u(playlist_id: String, app: tauri::AppHandle) -> Result<String, String> {
+    use std::sync::mpsc::channel;
+
+    // 1. Charger la playlist
+    let data = load_playlists();
+    let playlist = data.playlists.iter()
+        .find(|p| p.id == playlist_id)
+        .ok_or("Playlist not found")?;
+
+    // 2. Générer le contenu M3U
+    let mut m3u = String::from("#EXTM3U\n");
+    if let Ok(cache) = TRACKS_CACHE.lock() {
+        for track_path in &playlist.track_paths {
+            if let Some(track) = cache.tracks.iter().find(|t| t.path == *track_path) {
+                let duration_secs = track.metadata.duration as i64;
+                let artist = &track.metadata.artist;
+                let title = &track.metadata.title;
+                m3u.push_str(&format!("#EXTINF:{},{} - {}\n", duration_secs, artist, title));
+            }
+            m3u.push_str(track_path);
+            m3u.push('\n');
+        }
+    }
+
+    // 3. Dialogue de sauvegarde
+    let safe_name = playlist.name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let default_filename = format!("{}.m3u", safe_name);
+
+    let (tx, rx) = channel();
+    app.dialog()
+        .file()
+        .set_title("Export playlist as M3U")
+        .set_file_name(&default_filename)
+        .add_filter("M3U Playlist", &["m3u"])
+        .save_file(move |file_path| {
+            let _ = tx.send(file_path.map(|p| p.to_string()));
+        });
+
+    let file_path = rx.recv()
+        .map_err(|_| "Dialog error".to_string())?
+        .ok_or("Export cancelled")?;
+
+    // 4. Écrire le fichier
+    std::fs::write(&file_path, &m3u)
+        .map_err(|e| format!("Failed to write M3U: {}", e))?;
+
+    Ok(file_path)
+}
+
+#[tauri::command]
+async fn import_playlist_m3u(app: tauri::AppHandle) -> Result<Playlist, String> {
+    use std::sync::mpsc::channel;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // 1. Dialogue d'ouverture
+    let (tx, rx) = channel();
+    app.dialog()
+        .file()
+        .set_title("Import M3U playlist")
+        .add_filter("M3U Playlist", &["m3u", "m3u8"])
+        .pick_file(move |file_path| {
+            let _ = tx.send(file_path.map(|p| p.to_string()));
+        });
+
+    let file_path = rx.recv()
+        .map_err(|_| "Dialog error".to_string())?
+        .ok_or("Import cancelled")?;
+
+    // 2. Lire et parser le fichier M3U
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read M3U: {}", e))?;
+
+    let track_paths: Vec<String> = content.lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|line| std::path::Path::new(line).exists())
+        .map(|line| line.to_string())
+        .collect();
+
+    // 3. Nom de la playlist = nom du fichier sans extension
+    let playlist_name = std::path::Path::new(&file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Imported Playlist")
+        .to_string();
+
+    // 4. Créer la playlist
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let playlist = Playlist {
+        id: format!("playlist_{}", now),
+        name: playlist_name,
+        track_paths,
+        created_at: now,
+        is_system: false,
+    };
+
+    let mut data = load_playlists();
+    data.playlists.push(playlist.clone());
+    save_playlists(&data);
+
+    Ok(playlist)
 }
 
 // === COMMANDES PLAYLISTS ===
@@ -3176,6 +3358,23 @@ fn get_top_artists(limit: usize) -> Vec<TopArtist> {
     }
 }
 
+/// Helper pour les réponses HTTP du protocol handler noir://
+/// Évite les .unwrap() répétés (safe mais meilleure hygiène de code)
+fn noir_response(status: tauri::http::StatusCode, body: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(status)
+        .body(body)
+        .expect("valid HTTP response with known status code")
+}
+
+fn noir_response_with_headers(mime: &str, data: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .header(tauri::http::header::CONTENT_TYPE, mime)
+        .header(tauri::http::header::CACHE_CONTROL, "max-age=31536000, immutable")
+        .body(data)
+        .expect("valid HTTP response with known headers")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3196,39 +3395,23 @@ pub fn run() {
             } else if path.starts_with("/thumbnails/") {
                 base_dir.join("thumbnails").join(&path[12..])
             } else {
-                return tauri::http::Response::builder()
-                    .status(tauri::http::StatusCode::NOT_FOUND)
-                    .body(Vec::new())
-                    .unwrap();
+                return noir_response(tauri::http::StatusCode::NOT_FOUND, Vec::new());
             };
 
             // SECURITY: Canonicalize path and verify it stays within allowed data_dir
             // Prevents path traversal attacks like noir:///covers/../../etc/passwd
             let canonical = match file_path.canonicalize() {
                 Ok(p) => p,
-                Err(_) => {
-                    return tauri::http::Response::builder()
-                        .status(tauri::http::StatusCode::NOT_FOUND)
-                        .body(Vec::new())
-                        .unwrap();
-                }
+                Err(_) => return noir_response(tauri::http::StatusCode::NOT_FOUND, Vec::new()),
             };
             let allowed_base = match base_dir.canonicalize() {
                 Ok(p) => p,
-                Err(_) => {
-                    return tauri::http::Response::builder()
-                        .status(tauri::http::StatusCode::NOT_FOUND)
-                        .body(Vec::new())
-                        .unwrap();
-                }
+                Err(_) => return noir_response(tauri::http::StatusCode::NOT_FOUND, Vec::new()),
             };
             if !canonical.starts_with(&allowed_base) {
                 #[cfg(debug_assertions)]
                 println!("[NOIR PROTOCOL] BLOCKED path traversal attempt: {:?}", path);
-                return tauri::http::Response::builder()
-                    .status(tauri::http::StatusCode::FORBIDDEN)
-                    .body(Vec::new())
-                    .unwrap();
+                return noir_response(tauri::http::StatusCode::FORBIDDEN, Vec::new());
             }
 
             #[cfg(debug_assertions)]
@@ -3244,19 +3427,12 @@ pub fn run() {
                     } else {
                         "image/jpeg"
                     };
-                    tauri::http::Response::builder()
-                        .header(tauri::http::header::CONTENT_TYPE, mime)
-                        .header(tauri::http::header::CACHE_CONTROL, "max-age=31536000, immutable")
-                        .body(data)
-                        .unwrap()
+                    noir_response_with_headers(mime, data)
                 }
                 Err(e) => {
                     #[cfg(debug_assertions)]
                     println!("[NOIR PROTOCOL] Error reading {:?}: {}", file_path, e);
-                    tauri::http::Response::builder()
-                        .status(tauri::http::StatusCode::NOT_FOUND)
-                        .body(Vec::new())
-                        .unwrap()
+                    noir_response(tauri::http::StatusCode::NOT_FOUND, Vec::new())
                 }
             }
         })
@@ -3302,6 +3478,9 @@ pub fn run() {
             exclude_tracks_from_library,
             get_library_paths,
             select_folder,
+            // M3U Export/Import
+            export_playlist_m3u,
+            import_playlist_m3u,
             // Playlists
             get_playlists,
             create_playlist,
@@ -3350,7 +3529,9 @@ pub fn run() {
             get_library_stats,
             // Genre Enrichment
             trigger_genre_enrichment,
-            reset_genre_enrichment
+            reset_genre_enrichment,
+            // Metadata Writing
+            write_metadata
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
