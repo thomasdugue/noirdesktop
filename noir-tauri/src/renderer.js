@@ -17,7 +17,7 @@ import { initAutoUpdate } from './auto-update.js';
 // Import EQ
 import { eqInit, openEqPanel, closeEqPanel, toggleEqPanel, getEqPanelOpen, setEqPanelCallbacks, eqUpdateStatusUI, eqUpdatePanelToggleLabel } from './eq.js';
 // Import Fullscreen Player
-import { openFullscreenPlayer, closeFullscreenPlayer, toggleFullscreenPlayer, isFullscreenOpen, updateFullscreenData, setFullscreenPlayState, setFullscreenRms, setNextTrackInfoCallback } from './fullscreen-player.js';
+import { openFullscreenPlayer, closeFullscreenPlayer, toggleFullscreenPlayer, isFullscreenOpen, updateFullscreenData, setFullscreenPlayState, setFullscreenRms, setNextTrackInfoCallback, setCurrentTrackPathCallback } from './fullscreen-player.js';
 // === WINDOW DRAG ===
 // Le drag est géré nativement par Tauri 2 via l'attribut data-tauri-drag-region sur le titlebar HTML
 // Ne PAS ajouter de handler JS mousedown → startDragging() car il interfère avec le mécanisme natif
@@ -5329,6 +5329,7 @@ function syncFsPlayPauseIcon(playing) {
 
 // === FULLSCREEN PLAYER INIT ===
 setNextTrackInfoCallback(() => getNextTrackInfo())
+setCurrentTrackPathCallback(() => currentTrackIndex >= 0 && tracks[currentTrackIndex] ? tracks[currentTrackIndex].path : null)
 
 document.getElementById('fs-close')?.addEventListener('click', () => {
   closeFullscreenPlayer()

@@ -4,46 +4,28 @@
 //   Phase 1 : Convergence — compression dans le tunnel invisible
 //   Phase 2 : Signal wave — particules ressortent en onde, amplitude = RMS audio
 
+import { invoke } from './state.js'
+
 // ============================================================
 //  COLOR EXTRACTION — Couleurs dominantes depuis la cover
 // ============================================================
 
-function extractDominantColors(imgElement, count = 3) {
-  const canvas = document.createElement('canvas')
-  const ctx = canvas.getContext('2d')
-  const size = 64
-  canvas.width = size
-  canvas.height = size
-
-  try {
-    ctx.drawImage(imgElement, 0, 0, size, size)
-    const data = ctx.getImageData(0, 0, size, size).data
-    return colorsFromPixelData(data, count)
-  } catch (e) {
-    // noir:// protocol taints canvas — fallback to fetch + createImageBitmap
-    return null
-  }
-}
-
-// Async fallback: fetch the image as blob to avoid CORS/tainted canvas
-async function extractDominantColorsAsync(src, count = 3) {
-  try {
-    const resp = await fetch(src)
-    const blob = await resp.blob()
-    const bitmap = await createImageBitmap(blob, { resizeWidth: 64, resizeHeight: 64 })
-
-    const canvas = document.createElement('canvas')
-    const ctx = canvas.getContext('2d')
-    canvas.width = 64
-    canvas.height = 64
-    ctx.drawImage(bitmap, 0, 0, 64, 64)
-    bitmap.close()
-
-    const data = ctx.getImageData(0, 0, 64, 64).data
-    return colorsFromPixelData(data, count)
-  } catch (e) {
-    return defaultColors()
-  }
+// Extract colors from a base64 data URI (guaranteed to work, no CORS issues)
+async function extractColorsFromBase64(dataUri, count = 3) {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      canvas.width = 64
+      canvas.height = 64
+      ctx.drawImage(img, 0, 0, 64, 64)
+      const data = ctx.getImageData(0, 0, 64, 64).data
+      resolve(colorsFromPixelData(data, count))
+    }
+    img.onerror = () => resolve(defaultColors())
+    img.src = dataUri
+  })
 }
 
 function colorsFromPixelData(data, count) {
@@ -147,7 +129,7 @@ let fsIsOpen = false
 let fsIsPlaying = false
 let fsRmsEnergy = 0       // Current RMS from Rust (0.0 - ~0.5)
 let fsSmoothedRms = 0     // Smoothed for animation
-const PARTICLE_COUNT = 380
+const PARTICLE_COUNT = 600
 
 
 // ============================================================
@@ -209,27 +191,35 @@ export function setFullscreenRms(rms) {
 export function updateFullscreenData() {
   if (!fsIsOpen) return
 
-  // Extract colors from cover
-  const coverImg = document.querySelector('#cover-art img')
-  if (coverImg && coverImg.complete && coverImg.naturalWidth > 0) {
-    const syncColors = extractDominantColors(coverImg)
-    if (syncColors && syncColors.length > 0) {
-      fsColors = syncColors
-    } else if (coverImg.src) {
-      // Sync failed (tainted canvas from noir:// protocol) — use async fetch
-      extractDominantColorsAsync(coverImg.src).then(colors => {
-        if (colors && colors.length > 0) fsColors = colors
-      })
-    }
-  }
-
   // Update fullscreen cover
+  const coverImg = document.querySelector('#cover-art img')
   const fsCover = document.getElementById('fs-cover')
   if (fsCover && coverImg) {
     fsCover.src = coverImg.src
     fsCover.style.display = 'block'
   } else if (fsCover) {
     fsCover.style.display = 'none'
+  }
+
+  // Extract colors via Rust base64 (bypasses noir:// CORS/tainted canvas)
+  if (_getCurrentTrackPathCb) {
+    const trackPath = _getCurrentTrackPathCb()
+    if (trackPath && trackPath !== _lastColorTrackPath) {
+      _lastColorTrackPath = trackPath
+      invoke('get_cover_base64', { path: trackPath }).then(dataUri => {
+        if (!dataUri) return
+        extractColorsFromBase64(dataUri).then(colors => {
+          if (colors && colors.length > 0) {
+            fsColors = colors
+            // Update existing particles with new colors
+            for (const p of fsParticles) {
+              const col = colors[Math.floor(Math.random() * colors.length)]
+              p.r = col[0]; p.g = col[1]; p.b = col[2]
+            }
+          }
+        })
+      })
+    }
   }
 
   // Update title & artist
@@ -265,10 +255,17 @@ export function updateFullscreenData() {
   }
 }
 
-// Callback for next track info — set from renderer.js
+// Callbacks set from renderer.js to avoid circular imports
 let _getNextTrackInfoCb = null
+let _getCurrentTrackPathCb = null
+let _lastColorTrackPath = null
+
 export function setNextTrackInfoCallback(cb) {
   _getNextTrackInfoCb = cb
+}
+
+export function setCurrentTrackPathCallback(cb) {
+  _getCurrentTrackPathCb = cb
 }
 
 
