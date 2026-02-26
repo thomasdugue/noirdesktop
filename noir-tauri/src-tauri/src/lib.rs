@@ -3120,6 +3120,17 @@ fn is_exclusive_mode() -> Result<bool, String> {
     Err("Audio engine not initialized".to_string())
 }
 
+/// Retourne le statut détaillé du Hog Mode (device, PID, conflit)
+#[tauri::command]
+fn hog_mode_status() -> Result<crate::audio::HogModeStatus, String> {
+    if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+        if let Some(ref engine) = *engine_guard {
+            return engine.hog_mode_status();
+        }
+    }
+    Err("Audio engine not initialized".to_string())
+}
+
 // === COMMANDES ÉGALISEUR (EQ 8 BANDES) ===
 
 /// Active ou désactive l'égaliseur
@@ -3511,6 +3522,7 @@ pub fn run() {
             get_audio_sample_rate,
             set_exclusive_mode,
             is_exclusive_mode,
+            hog_mode_status,
             // Equalizer (8-band parametric EQ)
             set_eq_enabled,
             set_eq_bands,

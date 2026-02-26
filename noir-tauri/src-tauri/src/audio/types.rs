@@ -73,6 +73,23 @@ impl Default for ExclusiveMode {
     }
 }
 
+/// Detailed Hog Mode status returned to the frontend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HogModeStatus {
+    /// Whether exclusive mode is currently active
+    pub enabled: bool,
+    /// Device name that is (or would be) hogged
+    pub device_name: String,
+    /// Device ID
+    pub device_id: String,
+    /// PID owning the hog mode (-1 = nobody)
+    pub owner_pid: i32,
+    /// Whether we own the hog mode
+    pub owned_by_us: bool,
+    /// Human-readable status message
+    pub message: String,
+}
+
 /// Device change event types
 #[derive(Debug, Clone)]
 pub enum DeviceEvent {

@@ -267,6 +267,14 @@ impl AudioEngine {
         self.backend.lock().exclusive_mode() == ExclusiveMode::Exclusive
     }
 
+    /// Get detailed Hog Mode status
+    pub fn hog_mode_status(&self) -> Result<crate::audio::HogModeStatus, String> {
+        self.backend
+            .lock()
+            .hog_mode_status()
+            .map_err(|e| e.to_string())
+    }
+
     fn audio_thread_main(
         command_rx: Receiver<AudioCommand>,
         state: Arc<PlaybackState>,
