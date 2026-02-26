@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noir — Install</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@200;300;400;500&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0a0a0a;
+      font-family: 'Geist Mono', 'Space Mono', monospace;
+    }
+
+    /* ── Outer glow for the window ── */
+    .window-wrap {
+      position: relative;
+    }
+    .window-wrap::before {
+      content: '';
+      position: absolute;
+      inset: -1px;
+      border-radius: 13px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02), rgba(255,255,255,0.06));
+      z-index: 0;
+    }
+
+    /* ── macOS Window ── */
+    .window {
+      width: 700px;
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+      z-index: 1;
+      box-shadow:
+        0 0 0 0.5px rgba(255,255,255,0.08),
+        0 0 0 1px rgba(0,0,0,0.8),
+        0 40px 80px rgba(0,0,0,0.95),
+        0 16px 32px rgba(0,0,0,0.7);
+    }
+
+    /* ── Titlebar ── */
+    .titlebar {
+      height: 40px;
+      background: #080808;
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      border-bottom: 0.5px solid #111;
+      position: relative;
+      user-select: none;
+    }
+
+    .traffic-lights {
+      display: flex;
+      gap: 8px;
+      position: absolute;
+      left: 14px;
+    }
+    .tl {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+    .tl.close    { background: #ff5f57; }
+    .tl.minimize { background: #febc2e; }
+    .tl.maximize { background: #28c840; }
+
+    .titlebar-title {
+      flex: 1;
+      text-align: center;
+      font-size: 10px;
+      font-weight: 400;
+      letter-spacing: 0.45em;
+      color: #333;
+      text-transform: uppercase;
+    }
+
+    /* ── DMG Content ── */
+    .dmg-body {
+      width: 700px;
+      height: 350px;
+      background: #000;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Noise grain */
+    .dmg-body::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      opacity: 0.03;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 300px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Subtle radial glow */
+    .dmg-body::after {
+      content: '';
+      position: absolute;
+      width: 480px;
+      height: 280px;
+      background: radial-gradient(ellipse at center,
+        rgba(255,255,255,0.03) 0%,
+        rgba(255,255,255,0.01) 35%,
+        transparent 65%);
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Content row ── */
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      justify-content: center;
+      padding: 0 48px;
+    }
+
+    /* ── Icon slot ── */
+    .icon-slot {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+
+    .icon-label {
+      font-size: 10px;
+      font-weight: 400;
+      letter-spacing: 0.22em;
+      color: #444;
+      text-transform: uppercase;
+    }
+
+    /* ── Noir App Icon (logo from landing page) ── */
+    .noir-icon {
+      width: 88px;
+      height: 88px;
+      border-radius: 20px;
+      background: #000;
+      border: 0.5px solid #1a1a1a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow:
+        0 0 0 0.5px rgba(255,255,255,0.06),
+        0 20px 50px rgba(0,0,0,0.95),
+        inset 0 1px 0 rgba(255,255,255,0.04);
+      animation: float 4s cubic-bezier(.4,0,.6,1) infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50%       { transform: translateY(-7px); }
+    }
+
+    /* ── Arrow + instruction block ── */
+    .arrow-block {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+      max-width: 200px;
+      margin: 0 8px;
+      padding-bottom: 28px; /* align with icon center (label height offset) */
+    }
+
+    .arrow-svg {
+      animation: drift 2.6s ease-in-out infinite;
+      display: block;
+    }
+
+    @keyframes drift {
+      0%, 100% { transform: translateX(-3px); opacity: 0.3; }
+      50%       { transform: translateX(3px);  opacity: 0.65; }
+    }
+
+    .arrow-text {
+      font-size: 8.5px;
+      font-weight: 400;
+      letter-spacing: 0.22em;
+      color: #333;
+      text-transform: uppercase;
+      text-align: center;
+      line-height: 1.6;
+      white-space: nowrap;
+    }
+
+    /* ── Applications Icon ── */
+    .apps-icon {
+      width: 88px;
+      height: 88px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      filter: saturate(0.5) brightness(0.6);
+    }
+
+    /* ── Footer bar ── */
+    .footer-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 36px;
+      background: #000;
+      border-top: 0.5px solid #0f0f0f;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 2;
+    }
+
+    .footer-tag {
+      font-size: 8px;
+      font-weight: 400;
+      letter-spacing: 0.3em;
+      color: #222;
+      text-transform: uppercase;
+    }
+
+    .footer-badges {
+      display: flex;
+      gap: 10px;
+    }
+
+    .badge {
+      font-size: 7.5px;
+      font-weight: 400;
+      letter-spacing: 0.2em;
+      color: #1f1f1f;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+  <div class="window-wrap">
+    <div class="window">
+
+      <!-- Titlebar -->
+      <div class="titlebar">
+        <div class="traffic-lights">
+          <div class="tl close"></div>
+          <div class="tl minimize"></div>
+          <div class="tl maximize"></div>
+        </div>
+        <div class="titlebar-title">Noir</div>
+      </div>
+
+      <!-- DMG content -->
+      <div class="dmg-body">
+
+        <div class="row">
+
+          <!-- Noir icon (exact logo from landing page) -->
+          <div class="icon-slot">
+            <div class="noir-icon">
+              <svg width="54" height="42" viewBox="0 0 100 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <g fill="white" fill-rule="evenodd">
+                  <ellipse cx="12" cy="40" rx="8" ry="8"/>
+                  <rect x="24" y="18" width="14" height="44" rx="7"/>
+                  <rect x="43" y="4" width="14" height="72" rx="7"/>
+                  <rect x="62" y="18" width="14" height="44" rx="7"/>
+                  <ellipse cx="88" cy="40" rx="8" ry="8"/>
+                </g>
+              </svg>
+            </div>
+            <span class="icon-label">Noir</span>
+          </div>
+
+          <!-- Arrow + label -->
+          <div class="arrow-block">
+            <svg class="arrow-svg" width="72" height="16" viewBox="0 0 72 16" fill="none">
+              <line x1="0" y1="8" x2="60" y2="8" stroke="rgba(255,255,255,0.5)" stroke-width="0.75"/>
+              <polyline points="50,2 60,8 50,14" stroke="rgba(255,255,255,0.5)" stroke-width="0.75" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+            </svg>
+            <div class="arrow-text">Drag Noir to<br>Applications to install</div>
+          </div>
+
+          <!-- Applications folder -->
+          <div class="icon-slot">
+            <div class="apps-icon">
+              <svg width="88" height="80" viewBox="0 0 90 82" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M8 30 C8 24 12 20 18 20 L32 20 Q36 20 38 23 L42 28 L82 28 C86 28 84 28 84 30 Z" fill="#6CB8FF"/>
+                <rect x="8" y="28" width="74" height="46" rx="6" fill="#4A9DFF"/>
+                <rect x="8" y="28" width="74" height="16" rx="6" fill="#6BC5FF" opacity="0.45"/>
+                <rect x="19" y="40" width="14" height="13" rx="3" fill="white" opacity="0.65"/>
+                <rect x="38" y="40" width="14" height="13" rx="3" fill="white" opacity="0.5"/>
+                <rect x="57" y="40" width="14" height="13" rx="3" fill="white" opacity="0.6"/>
+                <rect x="19" y="57" width="14" height="13" rx="3" fill="white" opacity="0.5"/>
+                <rect x="38" y="57" width="14" height="13" rx="3" fill="white" opacity="0.65"/>
+                <rect x="57" y="57" width="14" height="13" rx="3" fill="white" opacity="0.5"/>
+              </svg>
+            </div>
+            <span class="icon-label">Applications</span>
+          </div>
+
+        </div>
+
+        <!-- Footer bar -->
+        <div class="footer-bar">
+          <span class="footer-tag">Noir — v0.1.0 beta</span>
+          <div class="footer-badges">
+            <span class="badge">FLAC</span>
+            <span class="badge">ALAC</span>
+            <span class="badge">WAV</span>
+            <span class="badge">AIFF</span>
+            <span class="badge">24-BIT / 192KHZ</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</body>
+</html>

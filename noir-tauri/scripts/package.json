@@ -1,0 +1,13 @@
+{
+  "name": "noir-feedback-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Noir beta feedback classification agent",
+  "scripts": {
+    "agent": "node feedback-agent.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@octokit/rest": "^21.0.0"
+  }
+}

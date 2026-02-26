@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noir — Dev Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@200;300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg:       #000;
+      --bg1:      #080808;
+      --bg2:      #0e0e0e;
+      --border:   #1a1a1a;
+      --border2:  #222;
+      --text:     #e8e8e8;
+      --muted:    #555;
+      --muted2:   #333;
+      --white:    #fff;
+      --green:    #22c55e;
+      --amber:    #c89b4a;
+      --red:      #e05050;
+      --blue:     #4a9dff;
+      --font: 'Geist Mono', monospace;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
+
+    /* ── Layout ── */
+    .app { display: grid; grid-template-rows: 52px 1fr; height: 100vh; overflow: hidden; }
+
+    /* ── Header ── */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px; border-bottom: 0.5px solid var(--border);
+      background: var(--bg1);
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .logo-mark svg { display: block; }
+    .app-title { font-size: 11px; font-weight: 400; letter-spacing: 0.35em; color: var(--muted); text-transform: uppercase; }
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    .token-wrap { display: flex; align-items: center; gap: 8px; }
+    .token-status { width: 6px; height: 6px; border-radius: 50%; background: var(--muted2); }
+    .token-status.ok { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.4); }
+    .token-input {
+      background: var(--bg2); border: 0.5px solid var(--border2); border-radius: 4px;
+      padding: 5px 10px; color: var(--muted); font-family: var(--font); font-size: 11px;
+      width: 260px; outline: none; letter-spacing: 0.05em;
+    }
+    .token-input:focus { border-color: var(--muted); color: var(--text); }
+    .token-input::placeholder { color: var(--muted2); }
+    .btn-sm {
+      background: var(--bg2); border: 0.5px solid var(--border2); border-radius: 4px;
+      padding: 5px 12px; color: var(--muted); font-family: var(--font); font-size: 11px;
+      cursor: pointer; letter-spacing: 0.05em; transition: all 0.15s;
+    }
+    .btn-sm:hover { border-color: var(--muted); color: var(--text); }
+
+    /* ── Main grid ── */
+    main { display: grid; grid-template-columns: 1fr 380px; overflow: hidden; }
+
+    /* ── Issues panel ── */
+    .issues-panel { border-right: 0.5px solid var(--border); overflow-y: auto; padding: 20px 24px; }
+    .panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px; padding-bottom: 12px; border-bottom: 0.5px solid var(--border);
+    }
+    .panel-title { font-size: 10px; font-weight: 500; letter-spacing: 0.3em; color: var(--muted); text-transform: uppercase; }
+    .issue-count { font-size: 10px; color: var(--muted2); }
+
+    .filter-bar { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+    .filter-chip {
+      font-size: 9px; letter-spacing: 0.15em; padding: 3px 8px; border-radius: 3px;
+      background: var(--bg2); border: 0.5px solid var(--border2); color: var(--muted);
+      cursor: pointer; text-transform: uppercase; transition: all 0.1s;
+    }
+    .filter-chip.active { border-color: var(--white); color: var(--white); }
+    .filter-chip.bug.active    { border-color: var(--red);   color: var(--red); }
+    .filter-chip.ux.active     { border-color: var(--blue);  color: var(--blue); }
+    .filter-chip.sprint.active { border-color: var(--green); color: var(--green); }
+
+    .issues-list { display: flex; flex-direction: column; gap: 2px; }
+
+    .issue-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 12px; border-radius: 5px; cursor: pointer;
+      border: 0.5px solid transparent; transition: all 0.12s; user-select: none;
+    }
+    .issue-row:hover { background: var(--bg2); border-color: var(--border); }
+    .issue-row.selected { background: var(--bg2); border-color: var(--border2); }
+    .issue-row.selected .issue-checkbox { background: var(--white); border-color: var(--white); }
+    .issue-row.selected .issue-checkbox::after { opacity: 1; }
+
+    .issue-checkbox {
+      width: 14px; height: 14px; border-radius: 3px; border: 0.5px solid var(--muted2);
+      background: transparent; flex-shrink: 0; margin-top: 1px; position: relative;
+    }
+    .issue-checkbox::after {
+      content: ''; position: absolute; inset: 2px; border-radius: 1px;
+      background: var(--bg); opacity: 0;
+    }
+
+    .issue-content { flex: 1; min-width: 0; }
+    .issue-title { font-size: 12px; font-weight: 400; color: var(--text); line-height: 1.4; margin-bottom: 6px; }
+    .issue-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+    .badge {
+      font-size: 8.5px; letter-spacing: 0.1em; padding: 2px 6px; border-radius: 3px;
+      text-transform: uppercase; font-weight: 400;
+    }
+    .badge.bug     { background: rgba(224,80,80,0.1);  color: var(--red);   border: 0.5px solid rgba(224,80,80,0.2); }
+    .badge.ux      { background: rgba(74,157,255,0.1); color: var(--blue);  border: 0.5px solid rgba(74,157,255,0.2); }
+    .badge.feature { background: rgba(200,155,74,0.1); color: var(--amber); border: 0.5px solid rgba(200,155,74,0.2); }
+    .badge.sprint  { background: rgba(34,197,94,0.08); color: var(--green); border: 0.5px solid rgba(34,197,94,0.15); }
+    .badge.high    { background: rgba(224,80,80,0.08); color: #c04040;      border: 0.5px solid rgba(224,80,80,0.12); }
+    .badge.effort  { background: var(--bg2); color: var(--muted); border: 0.5px solid var(--border2); }
+    .badge.verdict { font-size: 8px; }
+
+    .issue-number { font-size: 9px; color: var(--muted2); flex-shrink: 0; margin-top: 1px; }
+
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--muted2); }
+    .empty-state p { font-size: 11px; line-height: 1.8; }
+
+    .loading { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 40px; color: var(--muted2); font-size: 11px; }
+    .spinner { width: 14px; height: 14px; border: 1px solid var(--border2); border-top-color: var(--muted); border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Actions panel ── */
+    .actions-panel { display: flex; flex-direction: column; overflow-y: auto; padding: 20px; gap: 8px; background: var(--bg); }
+
+    .selection-bar {
+      background: var(--bg2); border: 0.5px solid var(--border2); border-radius: 5px;
+      padding: 10px 12px; display: flex; align-items: center; justify-content: space-between;
+      min-height: 38px;
+    }
+    .selection-label { font-size: 10px; color: var(--muted); letter-spacing: 0.1em; }
+    .selection-issues { font-size: 10px; color: var(--green); letter-spacing: 0.05em; }
+    .btn-clear { background: none; border: none; color: var(--muted2); cursor: pointer; font-family: var(--font); font-size: 11px; }
+    .btn-clear:hover { color: var(--text); }
+
+    /* ── Action cards ── */
+    .action-card {
+      background: var(--bg1); border: 0.5px solid var(--border);
+      border-radius: 6px; padding: 14px; transition: border-color 0.15s;
+    }
+    .action-card:hover { border-color: var(--border2); }
+    .action-card.disabled { opacity: 0.4; pointer-events: none; }
+
+    .action-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .action-icon { font-size: 14px; }
+    .action-name { font-size: 11px; font-weight: 500; color: var(--white); letter-spacing: 0.05em; }
+    .action-desc { font-size: 10px; color: var(--muted); line-height: 1.5; margin-bottom: 10px; }
+
+    .cmd-preview {
+      background: var(--bg); border: 0.5px solid var(--border); border-radius: 4px;
+      padding: 8px 10px; font-size: 10px; color: var(--muted); line-height: 1.5;
+      margin-bottom: 10px; word-break: break-all; letter-spacing: 0.02em;
+    }
+    .cmd-preview .cmd-highlight { color: var(--text); }
+
+    .btn-copy {
+      width: 100%; background: var(--bg2); border: 0.5px solid var(--border2);
+      border-radius: 4px; padding: 7px; color: var(--muted); font-family: var(--font);
+      font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; cursor: pointer;
+      transition: all 0.15s; display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .btn-copy:hover { border-color: var(--muted); color: var(--text); }
+    .btn-copy.copied { border-color: var(--green); color: var(--green); }
+    .btn-copy.debug  { border-color: rgba(74,157,255,0.3); color: var(--blue); }
+    .btn-copy.debug:hover { border-color: var(--blue); }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(16px);
+      background: var(--bg2); border: 0.5px solid var(--border2); border-radius: 5px;
+      padding: 8px 16px; font-size: 11px; color: var(--text); pointer-events: none;
+      opacity: 0; transition: all 0.2s; white-space: nowrap; z-index: 100;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="header-left">
+      <div class="logo-mark">
+        <svg width="28" height="22" viewBox="0 0 100 80" fill="none">
+          <g fill="white" fill-rule="evenodd">
+            <ellipse cx="12" cy="40" rx="8" ry="8"/>
+            <rect x="24" y="18" width="14" height="44" rx="7"/>
+            <rect x="43" y="4" width="14" height="72" rx="7"/>
+            <rect x="62" y="18" width="14" height="44" rx="7"/>
+            <ellipse cx="88" cy="40" rx="8" ry="8"/>
+          </g>
+        </svg>
+      </div>
+      <span class="app-title">Dev Dashboard</span>
+    </div>
+    <div class="header-right">
+      <div class="token-wrap">
+        <div class="token-status" id="tokenStatus"></div>
+        <input class="token-input" id="tokenInput" type="password"
+          placeholder="GitHub PAT (stocké en local, jamais envoyé)"
+          autocomplete="off" spellcheck="false">
+        <button class="btn-sm" onclick="saveToken()">Save</button>
+        <button class="btn-sm" onclick="loadIssues()">↻ Refresh</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main>
+
+    <!-- Issues panel -->
+    <div class="issues-panel">
+      <div class="panel-header">
+        <span class="panel-title">Issues</span>
+        <span class="issue-count" id="issueCount">—</span>
+      </div>
+
+      <div class="filter-bar">
+        <span class="filter-chip active" data-filter="all" onclick="setFilter('all',this)">All</span>
+        <span class="filter-chip bug"    data-filter="bug"    onclick="setFilter('bug',this)">Bugs</span>
+        <span class="filter-chip ux"     data-filter="ux"     onclick="setFilter('ux',this)">UX</span>
+        <span class="filter-chip sprint" data-filter="sprint" onclick="setFilter('sprint',this)">⚡ Sprint</span>
+        <span class="filter-chip"        data-filter="high"   onclick="setFilter('high',this)">🔴 High prio</span>
+      </div>
+
+      <div class="issues-list" id="issuesList">
+        <div class="empty-state">
+          <p>Entre ton GitHub PAT<br>et clique Save pour charger les issues.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions panel -->
+    <div class="actions-panel">
+
+      <!-- Selection bar -->
+      <div class="selection-bar">
+        <span class="selection-label">Issues sélectionnées</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="selection-issues" id="selectionDisplay">aucune</span>
+          <button class="btn-clear" onclick="clearSelection()">✕</button>
+        </div>
+      </div>
+
+      <!-- Action 1: Feedback agent -->
+      <div class="action-card">
+        <div class="action-header">
+          <span class="action-icon">🔄</span>
+          <span class="action-name">Feedback Agent</span>
+        </div>
+        <div class="action-desc">Récupère & classifie les nouvelles issues GitHub avec Claude Haiku.</div>
+        <div class="cmd-preview">
+          <span class="cmd-highlight">node</span> scripts/feedback-agent.js
+        </div>
+        <button class="btn-copy" onclick="copyCmd('agent')">
+          <span>⎘</span> Copier la commande
+        </button>
+      </div>
+
+      <!-- Action 2: Synthèse sprint -->
+      <div class="action-card">
+        <div class="action-header">
+          <span class="action-icon">📊</span>
+          <span class="action-name">Synthèse Sprint</span>
+        </div>
+        <div class="action-desc">Analyse coût / impact / risques de toutes les sprint candidates. Génère SPRINT.md.</div>
+        <div class="cmd-preview">
+          <span class="cmd-highlight">node</span> scripts/sprint-planner.js
+        </div>
+        <button class="btn-copy" onclick="copyCmd('synth')">
+          <span>⎘</span> Copier la commande
+        </button>
+      </div>
+
+      <!-- Action 3: Plan détaillé -->
+      <div class="action-card" id="planCard">
+        <div class="action-header">
+          <span class="action-icon">🎯</span>
+          <span class="action-name">Plan d'implémentation</span>
+        </div>
+        <div class="action-desc">Génère un plan détaillé (Claude Sonnet) pour les issues cochées ci-contre.</div>
+        <div class="cmd-preview" id="planPreview">
+          <span style="color:var(--muted2)">← Sélectionne des issues d'abord</span>
+        </div>
+        <button class="btn-copy" id="planBtn" onclick="copyCmd('plan')" disabled style="opacity:0.4;cursor:default">
+          <span>⎘</span> Copier la commande
+        </button>
+      </div>
+
+      <!-- Action 4: Debug mode -->
+      <div class="action-card">
+        <div class="action-header">
+          <span class="action-icon">🔧</span>
+          <span class="action-name">Launch Debug</span>
+        </div>
+        <div class="action-desc">Lance l'app Noir en mode développement Tauri avec hot-reload.</div>
+        <div class="cmd-preview">
+          <span class="cmd-highlight">npm run tauri dev</span>
+          <br><span style="color:var(--muted2)">  # dans noir-tauri/</span>
+        </div>
+        <button class="btn-copy debug" onclick="copyCmd('debug')">
+          <span>⎘</span> Copier la commande
+        </button>
+      </div>
+
+      <!-- Spacer -->
+      <div style="flex:1"></div>
+
+      <!-- Footer -->
+      <div style="font-size:9px;color:var(--muted2);letter-spacing:0.15em;text-align:center;padding:8px 0;border-top:0.5px solid var(--border);">
+        NOIR DEV DASHBOARD · v0.1.0 beta
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+
+const REPO_OWNER   = 'thomasdugue'
+const REPO_NAME    = 'noir-feedback'
+const PROJECT_DIR  = '~/Documents/Thomas/noirdesktop/noir-tauri'
+const ENV_CMD      = `export $(cat scripts/.env.local | xargs)`
+
+// ── State ────────────────────────────────────────────────────────────────────
+
+let allIssues    = []
+let selected     = new Set()   // issue numbers
+let activeFilter = 'all'
+
+// ── Token ────────────────────────────────────────────────────────────────────
+
+function saveToken() {
+  const val = document.getElementById('tokenInput').value.trim()
+  if (!val) return
+  localStorage.setItem('noir_gh_token', val)
+  updateTokenStatus(true)
+  loadIssues()
+  showToast('Token sauvegardé ✓')
+}
+
+function getToken() {
+  return localStorage.getItem('noir_gh_token') || ''
+}
+
+function updateTokenStatus(ok) {
+  document.getElementById('tokenStatus').className = 'token-status' + (ok ? ' ok' : '')
+}
+
+// ── GitHub API ────────────────────────────────────────────────────────────────
+
+async function loadIssues() {
+  const token = getToken()
+  if (!token) return
+
+  document.getElementById('issuesList').innerHTML = `
+    <div class="loading"><div class="spinner"></div> Chargement des issues…</div>`
+
+  try {
+    const headers = { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github+json' }
+    const res = await fetch(
+      `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues?state=open&labels=beta&per_page=100`,
+      { headers }
+    )
+    if (!res.ok) throw new Error(`GitHub API: ${res.status}`)
+    allIssues = await res.json()
+    updateTokenStatus(true)
+    renderIssues()
+    document.getElementById('issueCount').textContent = `${allIssues.length} issues`
+  } catch (e) {
+    updateTokenStatus(false)
+    document.getElementById('issuesList').innerHTML = `
+      <div class="empty-state"><p>Erreur: ${e.message}<br>Vérifie ton PAT GitHub.</p></div>`
+  }
+}
+
+// ── Filtering ─────────────────────────────────────────────────────────────────
+
+function setFilter(filter, el) {
+  activeFilter = filter
+  document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'))
+  el.classList.add('active')
+  renderIssues()
+}
+
+function getFilteredIssues() {
+  if (activeFilter === 'all')    return allIssues
+  if (activeFilter === 'bug')    return allIssues.filter(i => i.labels.some(l => l.name === 'category:bug'))
+  if (activeFilter === 'ux')     return allIssues.filter(i => i.labels.some(l => l.name === 'category:ux'))
+  if (activeFilter === 'sprint') return allIssues.filter(i => i.labels.some(l => l.name === 'sprint-candidate'))
+  if (activeFilter === 'high')   return allIssues.filter(i => i.labels.some(l => l.name === 'priority:high'))
+  return allIssues
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+
+function getLabel(issue, prefix) {
+  return issue.labels.find(l => l.name.startsWith(prefix))?.name.replace(prefix, '') ?? null
+}
+
+function renderIssues() {
+  const issues  = getFilteredIssues()
+  const listEl  = document.getElementById('issuesList')
+
+  if (issues.length === 0) {
+    listEl.innerHTML = `<div class="empty-state"><p>Aucune issue pour ce filtre.</p></div>`
+    return
+  }
+
+  listEl.innerHTML = issues.map(issue => {
+    const category = getLabel(issue, 'category:')
+    const effort   = getLabel(issue, 'effort:')
+    const priority = getLabel(issue, 'priority:')
+    const isSprint = issue.labels.some(l => l.name === 'sprint-candidate')
+    const isSelected = selected.has(issue.number)
+
+    const badges = [
+      category ? `<span class="badge ${category}">${category}</span>` : '',
+      priority === 'high' ? `<span class="badge high">🔴 high</span>` : '',
+      isSprint ? `<span class="badge sprint">⚡ sprint</span>` : '',
+      effort ? `<span class="badge effort">${effort}</span>` : '',
+    ].filter(Boolean).join('')
+
+    return `
+      <div class="issue-row ${isSelected ? 'selected' : ''}"
+           onclick="toggleIssue(${issue.number}, this)">
+        <div class="issue-checkbox"></div>
+        <div class="issue-content">
+          <div class="issue-title">${escHtml(issue.title)}</div>
+          <div class="issue-meta">${badges}</div>
+        </div>
+        <span class="issue-number">#${issue.number}</span>
+      </div>`
+  }).join('')
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+
+// ── Selection ─────────────────────────────────────────────────────────────────
+
+function toggleIssue(number, rowEl) {
+  if (selected.has(number)) {
+    selected.delete(number)
+    rowEl.classList.remove('selected')
+    rowEl.querySelector('.issue-checkbox').style.background = ''
+  } else {
+    selected.add(number)
+    rowEl.classList.add('selected')
+  }
+  updateSelectionUI()
+}
+
+function clearSelection() {
+  selected.clear()
+  document.querySelectorAll('.issue-row.selected').forEach(el => el.classList.remove('selected'))
+  updateSelectionUI()
+}
+
+function updateSelectionUI() {
+  const nums = [...selected].sort((a,b) => a-b)
+  const display  = document.getElementById('selectionDisplay')
+  const preview  = document.getElementById('planPreview')
+  const planBtn  = document.getElementById('planBtn')
+
+  if (nums.length === 0) {
+    display.textContent = 'aucune'
+    preview.innerHTML = `<span style="color:var(--muted2)">← Sélectionne des issues d'abord</span>`
+    planBtn.disabled = true
+    planBtn.style.opacity = '0.4'
+    planBtn.style.cursor  = 'default'
+  } else {
+    display.textContent = nums.map(n => `#${n}`).join(', ')
+    preview.innerHTML = `<span class="cmd-highlight">node</span> scripts/sprint-planner.js <span class="cmd-highlight">--plan</span> ${nums.join(',')}`
+    planBtn.disabled = false
+    planBtn.style.opacity = '1'
+    planBtn.style.cursor  = 'pointer'
+  }
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+
+const COMMANDS = {
+  agent: `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/feedback-agent.js`,
+  synth: `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/sprint-planner.js`,
+  debug: `cd ${PROJECT_DIR} && npm run tauri dev`,
+  plan:  () => {
+    const nums = [...selected].sort((a,b) => a-b).join(',')
+    return `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/sprint-planner.js --plan ${nums}`
+  },
+}
+
+async function copyCmd(key) {
+  const cmd = typeof COMMANDS[key] === 'function' ? COMMANDS[key]() : COMMANDS[key]
+  if (!cmd) return
+
+  try {
+    await navigator.clipboard.writeText(cmd)
+    const btn = event.currentTarget
+    const orig = btn.innerHTML
+    btn.innerHTML = '<span>✓</span> Copié !'
+    btn.classList.add('copied')
+    setTimeout(() => { btn.innerHTML = orig; btn.classList.remove('copied') }, 1800)
+    showToast(`Commande copiée — colle dans ton terminal`)
+  } catch (e) {
+    showToast('Erreur clipboard')
+  }
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+
+let toastTimer
+function showToast(msg) {
+  const el = document.getElementById('toast')
+  el.textContent = msg
+  el.classList.add('show')
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2400)
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+;(function init() {
+  const token = getToken()
+  if (token) {
+    document.getElementById('tokenInput').value = token
+    updateTokenStatus(true)
+    loadIssues()
+  }
+})()
+</script>
+</body>
+</html>
