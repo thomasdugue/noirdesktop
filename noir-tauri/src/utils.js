@@ -100,25 +100,135 @@ export function getCodecFromPath(path) {
   return codecMap[ext] || ext?.toUpperCase()
 }
 
-// === ANIMATIONS ===
+// === PARTICLE ANIMATION ===
+// Effet : chaos (gauche) → tunnel convergent (centre) → signal analogique sinusoïdal (droite)
 
-export function getWaveformAnimationHTML() {
-  const bars = 48
-  const center = bars / 2
-  let html = '<div class="waveform-animation">'
-  for (let i = 0; i < bars; i++) {
-    const dist = Math.abs(i - center) / center
-    const maxH = 60 * (1 - dist * 0.7)
-    const delay = (i * 0.05).toFixed(2)
-    const duration = (1.2 + Math.random() * 0.8).toFixed(2)
-    html += `<div class="waveform-bar" style="height:${maxH}px;animation-delay:${delay}s;animation-duration:${duration}s"></div>`
+const activeParticleAnimations = new Map()
+const PARTICLE_COUNT = 65
+
+export function createParticleCanvas(container) {
+  destroyParticleCanvas(container)
+
+  const canvas = document.createElement('canvas')
+  canvas.className = 'particle-canvas'
+  container.insertBefore(canvas, container.firstChild)
+
+  const ctx = canvas.getContext('2d')
+  const dpr = window.devicePixelRatio || 1
+  let w = 0, h = 0
+
+  function resize() {
+    w = container.offsetWidth
+    h = container.offsetHeight
+    canvas.width = w * dpr
+    canvas.height = h * dpr
+    canvas.style.width = w + 'px'
+    canvas.style.height = h + 'px'
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   }
-  html += '</div>'
-  return html
+  resize()
+
+  // fromLeft=true : recycle depuis le bord gauche, false : placement initial aléatoire
+  function resetParticle(p, fromLeft) {
+    p.x = fromLeft ? -5 : Math.random() * w
+    p.y = Math.random() * h
+    p.speed = 0.5 + Math.random() * 0.6
+    p.drift = Math.random() * Math.PI * 2
+    p.driftSpeed = 0.018 + Math.random() * 0.025
+    p.size = 0.8 + Math.random() * 1.6
+    p.opacity = 0.12 + Math.random() * 0.20
+  }
+
+  const particles = []
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const p = {}
+    resetParticle(p, false)
+    particles.push(p)
+  }
+
+  let waveTime = 0
+  // Objet mutable pour que destroyParticleCanvas annule toujours le bon frame
+  const state = { canvas, animId: null }
+  activeParticleAnimations.set(container, state)
+
+  function smoothstep(t) {
+    const c = Math.max(0, Math.min(1, t))
+    return c * c * (3 - 2 * c)
+  }
+
+  function animate() {
+    if (!container.isConnected) {
+      activeParticleAnimations.delete(container)
+      return
+    }
+
+    state.animId = requestAnimationFrame(animate)
+
+    // Pas de dessin quand la home est cachée (CPU quasi nul)
+    if (container.offsetParent === null) return
+
+    const cw = container.offsetWidth
+    const ch = container.offsetHeight
+    if (cw !== w || ch !== h) resize()
+
+    waveTime += 0.04
+    ctx.clearRect(0, 0, w, h)
+
+    const cy = h / 2
+
+    for (const p of particles) {
+      p.drift += p.driftSpeed
+      p.x += p.speed
+
+      // Recyclage depuis la gauche quand la particule sort à droite
+      if (p.x > w + 5) resetParticle(p, true)
+
+      const xFrac = Math.max(0, Math.min(1, p.x / w))
+
+      // --- Calcul des y cibles par zone ---
+      // Zone chaos : dérive sinusoïdale propre à chaque particule
+      const noiseY = cy + (h * 0.40) * Math.sin(p.drift)
+      // Zone signal : onde sinusoïdale commune (signal analogique)
+      // freq=6 → ~2.4 cycles visibles dans la zone onde (60%→100%)
+      const waveY = cy + (h * 0.27) * Math.sin(6 * Math.PI * 2 * xFrac - waveTime)
+
+      let y, alpha
+
+      if (xFrac < 0.35) {
+        // Zone chaos : désorganisé, flux de gauche
+        y = noiseY
+        alpha = p.opacity
+
+      } else if (xFrac < 0.62) {
+        // Zone tunnel : convergence progressive vers le centre
+        const blend = smoothstep((xFrac - 0.35) / 0.27)
+        y = noiseY + (cy - noiseY) * blend
+        alpha = p.opacity + blend * 0.07
+
+      } else {
+        // Zone signal : émergence progressive de l'onde analogique
+        const blend = smoothstep((xFrac - 0.62) / 0.23)
+        y = cy + (waveY - cy) * blend
+        alpha = p.opacity + 0.07 + blend * 0.10
+      }
+
+      ctx.beginPath()
+      ctx.arc(p.x, y, p.size, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(alpha, 1)})`
+      ctx.fill()
+    }
+  }
+
+  state.animId = requestAnimationFrame(animate)
 }
 
-export function getSineWaveAnimationHTML() {
-  return getWaveformAnimationHTML()
+export function destroyParticleCanvas(container) {
+  const anim = activeParticleAnimations.get(container)
+  if (anim) {
+    cancelAnimationFrame(anim.animId)
+    if (anim.canvas.parentNode) anim.canvas.remove()
+    activeParticleAnimations.delete(container)
+  }
 }
 
 // === LOADING OVERLAY ===

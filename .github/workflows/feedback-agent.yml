@@ -1,0 +1,44 @@
+name: Feedback Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      comment:
+        description: "Optional note for this run"
+        required: false
+        default: ""
+
+jobs:
+  classify:
+    name: Classify GitHub Issues
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: noir-tauri/scripts/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: noir-tauri/scripts
+
+      - name: Run feedback agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.NOIR_GITHUB_TOKEN }}
+          NOIR_FEEDBACK_REPO: thomasdugue/noir-feedback
+        run: node feedback-agent.js
+        working-directory: noir-tauri/scripts
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feedback-report
+          path: noir-tauri/scripts/feedback-report.md
+          retention-days: 30

@@ -431,10 +431,16 @@ unsafe extern "C" fn render_callback(
             buffer.mDataByteSize as usize / 4,
         );
 
-        for (i, sample) in interleaved_buf[..read].iter().enumerate() {
-            if i < out_samples.len() {
-                out_samples[i] = sample * volume;
+        if volume < 1.0 {
+            for (i, sample) in interleaved_buf[..read].iter().enumerate() {
+                if i < out_samples.len() {
+                    out_samples[i] = sample * volume;
+                }
             }
+        } else {
+            // Bit-perfect bypass: copy samples without modification
+            let copy_len = read.min(out_samples.len());
+            out_samples[..copy_len].copy_from_slice(&interleaved_buf[..copy_len]);
         }
         // Fill remaining with silence
         for sample in out_samples[read..].iter_mut() {
@@ -453,7 +459,7 @@ unsafe extern "C" fn render_callback(
             for frame in 0..in_number_frames as usize {
                 let idx = frame * data.channels_count as usize + ch;
                 if frame < frames_read && idx < read {
-                    out_samples[frame] = interleaved_buf[idx] * volume;
+                    out_samples[frame] = if volume < 1.0 { interleaved_buf[idx] * volume } else { interleaved_buf[idx] };
                 } else {
                     out_samples[frame] = 0.0;
                 }

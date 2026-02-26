@@ -56,6 +56,13 @@ biquad = "0.4"
 # FFT pour visualisations (optionnel, pour plus tard)
 # rustfft = "6.1"
 
+# === RELEASE PROFILE (Anti-reverse-engineering + Performance) ===
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
+
 # === PLATFORM-SPECIFIC AUDIO BACKENDS ===
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreAudio safe wrapper for AudioUnit streaming (replaces CPAL for output)

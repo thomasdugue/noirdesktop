@@ -1,0 +1,43 @@
+name: Sprint Plan
+
+on:
+  workflow_dispatch:
+    inputs:
+      issues:
+        description: "Issue numbers (comma-separated, e.g. 8,12,13)"
+        required: true
+
+jobs:
+  plan:
+    name: Generate implementation plans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: noir-tauri/scripts/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: noir-tauri/scripts
+
+      - name: Generate plans for issues ${{ github.event.inputs.issues }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.NOIR_GITHUB_TOKEN }}
+          NOIR_FEEDBACK_REPO: thomasdugue/noir-feedback
+        run: node sprint-planner.js --plan ${{ github.event.inputs.issues }}
+        working-directory: noir-tauri/scripts
+
+      - name: Upload SPRINT.md
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sprint-plan
+          path: noir-tauri/scripts/SPRINT.md
+          retention-days: 30

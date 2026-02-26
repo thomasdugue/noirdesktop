@@ -1,0 +1,39 @@
+name: Sprint Synthesis
+
+on:
+  workflow_dispatch:
+
+jobs:
+  synthesis:
+    name: Analyse sprint candidates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: noir-tauri/scripts/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: noir-tauri/scripts
+
+      - name: Run sprint synthesis
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.NOIR_GITHUB_TOKEN }}
+          NOIR_FEEDBACK_REPO: thomasdugue/noir-feedback
+        run: node sprint-planner.js
+        working-directory: noir-tauri/scripts
+
+      - name: Upload SPRINT.md
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sprint-report
+          path: noir-tauri/scripts/SPRINT.md
+          retention-days: 30

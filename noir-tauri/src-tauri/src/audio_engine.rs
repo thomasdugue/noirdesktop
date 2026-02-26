@@ -32,6 +32,7 @@ fn find_best_output_rate_from_backend(
     source_rate: u32,
     backend: &mut Box<dyn AudioBackend>,
 ) -> (u32, bool) {
+    #[cfg(debug_assertions)]
     println!("[Hardware] Attempting to set DAC to {}Hz...", source_rate);
 
     // Récupère les infos du device courant
@@ -53,9 +54,11 @@ fn find_best_output_rate_from_backend(
         match backend.prepare_for_streaming(&config) {
             Ok(actual_rate) => {
                 if actual_rate == source_rate {
+                    #[cfg(debug_assertions)]
                     println!("[Hardware] SUCCESS - DAC configured at {}Hz (bit-perfect)", source_rate);
                     return (source_rate, true);
                 } else {
+                    #[cfg(debug_assertions)]
                     println!("[Hardware] Rate changed to {}Hz by backend", actual_rate);
                     return (actual_rate, actual_rate == source_rate);
                 }
@@ -65,10 +68,12 @@ fn find_best_output_rate_from_backend(
             }
         }
     } else {
+        #[cfg(debug_assertions)]
         println!("[Hardware] {}Hz NOT supported by device (supported: {:?})",
             source_rate, supported_rates);
     }
 
+    #[cfg(debug_assertions)]
     println!("[Hardware] FAILED - Falling back to resampling at {}Hz", current_rate);
     (current_rate, false)
 }
@@ -166,6 +171,7 @@ impl AudioEngine {
         // Create audio backend for device control
         let backend: Box<dyn AudioBackend> = match create_backend() {
             Ok(b) => {
+                #[cfg(debug_assertions)]
                 println!("Audio backend created: {}", b.name());
                 b
             }
@@ -278,7 +284,10 @@ impl AudioEngine {
         {
             let backend_guard = backend.lock();
             match backend_guard.current_device() {
-                Ok(dev) => println!("Initial audio device: {} (ID: {})", dev.name, dev.id),
+                Ok(dev) => {
+                    #[cfg(debug_assertions)]
+                    println!("Initial audio device: {} (ID: {})", dev.name, dev.id);
+                }
                 Err(e) => {
                     eprintln!("No audio output device available: {}", e);
                     return;
@@ -315,6 +324,7 @@ impl AudioEngine {
         loop {
             match command_rx.recv() {
                 Ok(AudioCommand::Play(path, start_position)) => {
+                    #[cfg(debug_assertions)]
                     println!("=== Starting playback: {} at {:?}s ===", path, start_position);
                     let start_time = std::time::Instant::now();
 
@@ -334,9 +344,11 @@ impl AudioEngine {
                     {
                         let mut stream_guard = current_stream.lock();
                         if let Some(mut stream) = stream_guard.take() {
+                            #[cfg(debug_assertions)]
                             println!("[AudioEngine] Stopping previous stream...");
                             let _ = stream.stop();
                             drop(stream);
+                            #[cfg(debug_assertions)]
                             println!("[AudioEngine] Previous stream stopped and dropped");
                         }
                     }
@@ -376,7 +388,10 @@ impl AudioEngine {
                     {
                         let backend_guard = backend.lock();
                         match backend_guard.current_device() {
-                            Ok(dev) => println!("[AudioEngine] Using device: {} (ID: {})", dev.name, dev.id),
+                            Ok(dev) => {
+                                #[cfg(debug_assertions)]
+                                println!("[AudioEngine] Using device: {} (ID: {})", dev.name, dev.id);
+                            }
                             Err(e) => eprintln!("[AudioEngine] Device info unavailable: {}", e),
                         }
                     }
@@ -388,6 +403,7 @@ impl AudioEngine {
                         match backend_guard.prepare_for_streaming(&stream_config) {
                             Ok(actual_rate) => {
                                 let bit_perfect = actual_rate == source_info.sample_rate;
+                                #[cfg(debug_assertions)]
                                 println!("[Backend] Device prepared: {} Hz (requested: {} Hz, bit-perfect: {})",
                                     actual_rate, source_info.sample_rate, bit_perfect);
                                 (actual_rate, bit_perfect)
@@ -403,6 +419,7 @@ impl AudioEngine {
                     let needs_resampling = !is_bit_perfect;
                     let target_rate = if needs_resampling { Some(optimal_rate) } else { None };
 
+                    #[cfg(debug_assertions)]
                     println!("Source: {}Hz, Output: {}Hz, Bit-Perfect: {}, Resampling: {}",
                         source_info.sample_rate, optimal_rate, is_bit_perfect, needs_resampling);
 
@@ -417,6 +434,7 @@ impl AudioEngine {
                     match session_result {
                         Ok(mut session) => {
                             let init_time = start_time.elapsed();
+                            #[cfg(debug_assertions)]
                             println!("Streaming session ready in {:?}", init_time);
 
                             // Utilise le OUTPUT sample rate (après resampling éventuel)
@@ -471,6 +489,7 @@ impl AudioEngine {
                                             state.is_playing.store(true, Ordering::Relaxed);
                                             state.is_paused.store(false, Ordering::Relaxed);
                                             *current_stream.lock() = Some(s);
+                                        #[cfg(debug_assertions)]
                                         println!("=== Playback started in {:?} ===", start_time.elapsed());
 
                                         // Émet les specs audio SOURCE vs OUTPUT (vraies valeurs!)

@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noir — Dev Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@200;300;400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.7/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #000; --bg1: #0a0a0a; --bg2: #111; --bg3: #161616;
+      --border: #1e1e1e; --border2: #2a2a2a;
+      --text: #ebebeb; --sub: #aaa; --muted: #666; --dim: #3a3a3a; --white: #fff;
+      --green: #3ecf6a; --amber: #d4a44e; --red: #e05858; --blue: #5aacff;
+      --font: 'Geist Mono', monospace;
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.5; }
+    .app { display: grid; grid-template-rows: 54px 1fr; height: 100vh; overflow: hidden; }
+
+    /* ── Header ── */
+    header { display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--border); background: var(--bg1); }
+    .header-left { display: flex; align-items: center; gap: 14px; }
+    .logo-mark svg { display: block; }
+    .app-title { font-size: 11px; font-weight: 400; letter-spacing: 0.4em; color: var(--muted); text-transform: uppercase; }
+    .header-right { display: flex; align-items: center; gap: 10px; }
+    .token-wrap { display: flex; align-items: center; gap: 8px; }
+    .token-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); transition: background 0.3s; flex-shrink: 0; }
+    .token-dot.ok { background: var(--green); box-shadow: 0 0 8px rgba(62,207,106,0.35); }
+    .token-input { background: var(--bg2); border: 1px solid var(--border2); border-radius: 5px; padding: 6px 11px; color: var(--sub); font-family: var(--font); font-size: 12px; width: 260px; outline: none; letter-spacing: 0.04em; }
+    .token-input:focus { border-color: var(--muted); color: var(--text); }
+    .token-input::placeholder { color: var(--dim); }
+    .btn-sm { background: var(--bg2); border: 1px solid var(--border2); border-radius: 5px; padding: 6px 13px; color: var(--sub); font-family: var(--font); font-size: 12px; cursor: pointer; letter-spacing: 0.04em; transition: all 0.15s; }
+    .btn-sm:hover { border-color: var(--muted); color: var(--text); }
+
+    /* ── 3-column layout ── */
+    main { display: grid; grid-template-columns: 1fr 1.6fr 1fr; overflow: hidden; }
+
+    /* ── Issues panel (left) ── */
+    .issues-panel { border-right: 1px solid var(--border); overflow-y: auto; padding: 18px 20px; }
+    .panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .panel-title { font-size: 10px; font-weight: 500; letter-spacing: 0.35em; color: var(--sub); text-transform: uppercase; }
+    .issue-count { font-size: 11px; color: var(--muted); }
+    .filter-bar { display: flex; gap: 5px; margin-bottom: 14px; flex-wrap: wrap; }
+    .filter-chip { font-size: 9px; letter-spacing: 0.1em; padding: 3px 8px; border-radius: 4px; background: var(--bg2); border: 1px solid var(--border2); color: var(--muted); cursor: pointer; text-transform: uppercase; transition: all 0.12s; }
+    .filter-chip:hover { color: var(--sub); border-color: var(--muted); }
+    .filter-chip.active { border-color: var(--white); color: var(--white); }
+    .filter-chip.bug.active { border-color: var(--red); color: var(--red); }
+    .filter-chip.ux.active { border-color: var(--blue); color: var(--blue); }
+    .filter-chip.sprint.active { border-color: var(--green); color: var(--green); }
+    .issues-list { display: flex; flex-direction: column; gap: 2px; }
+    .issue-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; transition: all 0.12s; user-select: none; }
+    .issue-row:hover { background: var(--bg2); border-color: var(--border); }
+    .issue-row.selected { background: var(--bg2); border-color: var(--border2); }
+    .issue-row.selected .issue-checkbox { background: var(--white); border-color: var(--white); }
+    .issue-row.selected .issue-checkbox::after { opacity: 1; }
+    .issue-checkbox { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--dim); background: transparent; flex-shrink: 0; margin-top: 2px; position: relative; }
+    .issue-checkbox::after { content: ''; position: absolute; inset: 2px; border-radius: 1px; background: var(--bg); opacity: 0; }
+    .issue-content { flex: 1; min-width: 0; }
+    .issue-title { font-size: 12px; font-weight: 400; color: var(--text); line-height: 1.4; margin-bottom: 5px; }
+    .issue-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+    .badge { font-size: 8.5px; letter-spacing: 0.08em; padding: 2px 6px; border-radius: 3px; text-transform: uppercase; }
+    .badge.bug { background: rgba(224,88,88,0.12); color: #e07070; border: 1px solid rgba(224,88,88,0.25); }
+    .badge.ux { background: rgba(90,172,255,0.1); color: #7dc0ff; border: 1px solid rgba(90,172,255,0.2); }
+    .badge.feature { background: rgba(212,164,78,0.1); color: #d4a44e; border: 1px solid rgba(212,164,78,0.2); }
+    .badge.sprint { background: rgba(62,207,106,0.08); color: #3ecf6a; border: 1px solid rgba(62,207,106,0.18); }
+    .badge.high { background: rgba(224,88,88,0.08); color: #c05050; border: 1px solid rgba(224,88,88,0.15); }
+    .badge.effort { background: var(--bg3); color: var(--sub); border: 1px solid var(--border2); }
+    .issue-number { font-size: 10px; color: var(--muted); flex-shrink: 0; margin-top: 2px; }
+    .empty-state { text-align: center; padding: 50px 16px; color: var(--muted); }
+    .empty-state p { font-size: 12px; line-height: 2; }
+    .loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 48px; color: var(--muted); font-size: 12px; }
+    .spinner { width: 14px; height: 14px; border: 1.5px solid var(--border2); border-top-color: var(--muted); border-radius: 50%; animation: spin 0.75s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Reports panel (center) ── */
+    .reports-panel { display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid var(--border); background: var(--bg); }
+    .reports-header { padding: 16px 22px 0; flex-shrink: 0; }
+    .reports-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+    .report-tab { flex: 1; text-align: center; font-size: 10px; letter-spacing: 0.08em; padding: 6px 6px; border-radius: 4px; background: var(--bg2); border: 1px solid var(--border2); color: var(--muted); cursor: pointer; text-transform: uppercase; transition: all 0.12s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .report-tab:hover { color: var(--sub); border-color: var(--muted); }
+    .report-tab.active { border-color: var(--white); color: var(--white); background: var(--bg3); }
+    .report-history { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .history-item { font-size: 10px; padding: 4px 10px; border-radius: 4px; background: var(--bg2); border: 1px solid var(--border2); color: var(--muted); cursor: pointer; transition: all 0.12s; white-space: nowrap; }
+    .history-item:hover { border-color: var(--muted); color: var(--sub); }
+    .history-item.active { border-color: var(--green); color: var(--green); }
+    .history-item .size { opacity: 0.5; margin-left: 4px; }
+    .report-viewer { flex: 1; overflow-y: auto; padding: 0 22px 22px; }
+
+    /* ── Markdown styles ── */
+    .md-content { font-size: 13px; line-height: 1.7; color: var(--text); }
+    .md-content h1 { font-size: 18px; font-weight: 600; color: var(--white); margin: 24px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    .md-content h2 { font-size: 15px; font-weight: 500; color: var(--white); margin: 20px 0 10px; }
+    .md-content h3 { font-size: 13px; font-weight: 500; color: var(--sub); margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .md-content p { margin: 8px 0; }
+    .md-content a { color: var(--blue); text-decoration: none; }
+    .md-content a:hover { text-decoration: underline; }
+    .md-content strong { color: var(--white); font-weight: 500; }
+    .md-content em { color: var(--sub); }
+    .md-content ul, .md-content ol { padding-left: 20px; margin: 8px 0; }
+    .md-content li { margin: 4px 0; }
+    .md-content code { background: var(--bg2); border: 1px solid var(--border); padding: 1px 5px; border-radius: 3px; font-size: 12px; color: var(--green); }
+    .md-content pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; margin: 10px 0; overflow-x: auto; }
+    .md-content pre code { background: none; border: none; padding: 0; font-size: 12px; color: var(--text); }
+    .md-content .table-wrap { overflow-x: auto; margin: 10px 0; }
+    .md-content table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 400px; }
+    .md-content th { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border2); color: var(--sub); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .md-content td { padding: 7px 10px; border-bottom: 1px solid var(--border); color: var(--text); }
+    .md-content tr:hover td { background: var(--bg2); }
+    .md-content blockquote { border-left: 2px solid var(--border2); padding-left: 14px; color: var(--sub); margin: 10px 0; }
+    .md-content hr { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
+    .md-content details { background: var(--bg1); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; margin: 8px 0; }
+    .md-content summary { cursor: pointer; color: var(--sub); font-weight: 500; }
+    .md-content summary:hover { color: var(--text); }
+    .md-content input[type="checkbox"] { margin-right: 6px; accent-color: var(--green); }
+    .report-empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+    .report-empty p { font-size: 12px; line-height: 2; }
+
+    /* ── Actions panel (right) ── */
+    .actions-panel { display: flex; flex-direction: column; overflow-y: auto; padding: 16px; gap: 8px; background: var(--bg); }
+    .selection-bar { background: var(--bg2); border: 1px solid var(--border2); border-radius: 6px; padding: 9px 12px; display: flex; align-items: center; justify-content: space-between; min-height: 38px; }
+    .selection-label { font-size: 10px; color: var(--sub); letter-spacing: 0.08em; }
+    .selection-issues { font-size: 11px; color: var(--green); letter-spacing: 0.04em; font-weight: 500; }
+    .btn-clear { background: none; border: none; color: var(--muted); cursor: pointer; font-family: var(--font); font-size: 12px; padding: 2px 4px; }
+    .btn-clear:hover { color: var(--text); }
+    .action-card { background: var(--bg1); border: 1px solid var(--border); border-radius: 7px; padding: 14px; transition: border-color 0.15s; }
+    .action-card:hover { border-color: var(--border2); }
+    .action-header { display: flex; align-items: center; margin-bottom: 5px; }
+    .action-icon { font-size: 14px; margin-right: 8px; }
+    .action-name { font-size: 12px; font-weight: 500; color: var(--white); letter-spacing: 0.03em; }
+    .action-desc { font-size: 11px; color: var(--sub); line-height: 1.5; margin-bottom: 10px; }
+    .cmd-preview { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 7px 10px; font-size: 10px; color: var(--sub); line-height: 1.5; margin-bottom: 8px; word-break: break-all; }
+    .cmd-preview .hl { color: var(--text); }
+    .cmd-preview .dim { color: var(--muted); }
+    .action-btns { display: flex; gap: 6px; }
+    .btn-copy { flex: 1; background: var(--bg2); border: 1px solid var(--border2); border-radius: 5px; padding: 7px; color: var(--sub); font-family: var(--font); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; justify-content: center; gap: 4px; }
+    .btn-copy:hover { border-color: var(--muted); color: var(--text); }
+    .btn-copy.copied { border-color: var(--green); color: var(--green); }
+    .btn-copy:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+    .btn-copy.debug { color: var(--blue); border-color: rgba(90,172,255,0.25); }
+    .btn-copy.debug:hover { border-color: var(--blue); }
+    .btn-run { background: var(--bg2); border: 1px solid var(--border2); border-radius: 5px; padding: 7px 14px; color: var(--text); font-family: var(--font); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .btn-run:hover { border-color: var(--green); color: var(--green); }
+    .btn-run.running { border-color: var(--amber); color: var(--amber); pointer-events: none; }
+    .btn-run.done { border-color: var(--green); color: var(--green); pointer-events: none; }
+    .btn-run:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+    .run-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+    .btn-run.running .run-dot { animation: blink 1s ease-in-out infinite; }
+    @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.25 } }
+    .run-status { margin-top: 7px; padding: 7px 10px; border-radius: 5px; font-size: 11px; color: var(--sub); background: var(--bg); border: 1px solid var(--border); display: none; line-height: 1.4; }
+    .run-status a { color: var(--blue); text-decoration: none; }
+    .run-status a:hover { text-decoration: underline; }
+    .card-debug { border-color: rgba(90,172,255,0.12); }
+    .card-debug:hover { border-color: rgba(90,172,255,0.25); }
+
+    #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(16px); background: var(--bg2); border: 1px solid var(--border2); border-radius: 6px; padding: 9px 18px; font-size: 12px; color: var(--text); pointer-events: none; opacity: 0; transition: all 0.2s; white-space: nowrap; z-index: 100; }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="header-left">
+      <div class="logo-mark">
+        <svg width="30" height="23" viewBox="0 0 100 80" fill="none">
+          <g fill="white" fill-rule="evenodd">
+            <ellipse cx="12" cy="40" rx="8" ry="8"/>
+            <rect x="24" y="18" width="14" height="44" rx="7"/>
+            <rect x="43" y="4" width="14" height="72" rx="7"/>
+            <rect x="62" y="18" width="14" height="44" rx="7"/>
+            <ellipse cx="88" cy="40" rx="8" ry="8"/>
+          </g>
+        </svg>
+      </div>
+      <span class="app-title">Dev Dashboard</span>
+    </div>
+    <div class="header-right">
+      <div class="token-wrap">
+        <div class="token-dot" id="tokenStatus"></div>
+        <input class="token-input" id="tokenInput" type="password" placeholder="GitHub PAT" autocomplete="off" spellcheck="false">
+        <button class="btn-sm" onclick="saveToken()">Save</button>
+        <button class="btn-sm" onclick="loadIssues(); loadReportTab(activeReportTab)">↻</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Issues (left) -->
+    <div class="issues-panel">
+      <div class="panel-header">
+        <span class="panel-title">Issues</span>
+        <span class="issue-count" id="issueCount">—</span>
+      </div>
+      <div class="filter-bar">
+        <span class="filter-chip active" onclick="setFilter('all',this)">All</span>
+        <span class="filter-chip bug" onclick="setFilter('bug',this)">Bugs</span>
+        <span class="filter-chip ux" onclick="setFilter('ux',this)">UX</span>
+        <span class="filter-chip sprint" onclick="setFilter('sprint',this)">⚡ Sprint</span>
+        <span class="filter-chip" onclick="setFilter('high',this)">🔴 High</span>
+      </div>
+      <div class="issues-list" id="issuesList">
+        <div class="empty-state"><p>Entre ton PAT<br>et clique Save.</p></div>
+      </div>
+    </div>
+
+    <!-- Reports (center) -->
+    <div class="reports-panel">
+      <div class="reports-header">
+        <div class="reports-tabs">
+          <span class="report-tab active" onclick="switchReportTab('feedback-report',this)">📋 Feedback</span>
+          <span class="report-tab" onclick="switchReportTab('sprint-report',this)">📊 Sprint</span>
+          <span class="report-tab" onclick="switchReportTab('sprint-plan',this)">🎯 Plans</span>
+        </div>
+        <div class="report-history" id="reportHistory"></div>
+      </div>
+      <div class="report-viewer" id="reportViewer">
+        <div class="report-empty"><p>Sélectionne un rapport<br>ou lance un workflow.</p></div>
+      </div>
+    </div>
+
+    <!-- Actions (right) -->
+    <div class="actions-panel">
+      <div class="selection-bar">
+        <span class="selection-label">Sélection</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="selection-issues" id="selectionDisplay">—</span>
+          <button class="btn-clear" onclick="clearSelection()">✕</button>
+        </div>
+      </div>
+
+      <div class="action-card">
+        <div class="action-header"><span class="action-icon">🔄</span><span class="action-name">Feedback Agent</span></div>
+        <div class="action-desc">Classifie les issues avec Haiku.</div>
+        <div class="action-btns">
+          <button class="btn-copy" onclick="copyCmd('agent')">⎘ Copier</button>
+          <button class="btn-run" id="runAgentBtn" onclick="runAgent()"><span class="run-dot"></span> Lancer</button>
+        </div>
+        <div class="run-status" id="agentStatus"></div>
+      </div>
+
+      <div class="action-card">
+        <div class="action-header"><span class="action-icon">📊</span><span class="action-name">Synthèse Sprint</span></div>
+        <div class="action-desc">Coût / impact / risques → SPRINT.md</div>
+        <div class="action-btns">
+          <button class="btn-copy" onclick="copyCmd('synth')">⎘ Copier</button>
+          <button class="btn-run" id="runSynthBtn" onclick="runWorkflow('sprint-synthesis.yml','runSynthBtn','synthStatus','sprint-report')"><span class="run-dot"></span> Lancer</button>
+        </div>
+        <div class="run-status" id="synthStatus"></div>
+      </div>
+
+      <div class="action-card">
+        <div class="action-header"><span class="action-icon">🎯</span><span class="action-name">Plan détaillé</span></div>
+        <div class="action-desc">Plan Sonnet pour les issues cochées.</div>
+        <div class="cmd-preview" id="planPreview"><span class="dim">← Coche des issues</span></div>
+        <div class="action-btns">
+          <button class="btn-copy" id="planBtn" onclick="copyCmd('plan')" disabled>⎘ Copier</button>
+          <button class="btn-run" id="runPlanBtn" onclick="runPlan()" disabled><span class="run-dot"></span> Lancer</button>
+        </div>
+        <div class="run-status" id="planStatus"></div>
+      </div>
+
+      <div class="action-card card-debug">
+        <div class="action-header"><span class="action-icon">🔧</span><span class="action-name">Debug</span></div>
+        <div class="action-desc">Tauri dev + hot-reload.</div>
+        <div class="action-btns">
+          <button class="btn-copy debug" onclick="copyCmd('debug')">⎘ Copier</button>
+        </div>
+      </div>
+
+      <div style="flex:1"></div>
+      <div style="font-size:9px;color:var(--dim);letter-spacing:0.15em;text-align:center;padding:8px 0;border-top:1px solid var(--border);">NOIR DASHBOARD v0.2</div>
+    </div>
+  </main>
+</div>
+<div id="toast"></div>
+
+<script>
+const REPO_OWNER = 'thomasdugue', FEEDBACK_REPO = 'noir-feedback', MAIN_REPO = 'noirdesktop'
+const PROJECT_DIR = '~/Documents/Thomas/noirdesktop/noir-tauri'
+const ENV_CMD = 'export $(cat scripts/.env.local | xargs)'
+
+let allIssues = [], selected = new Set(), activeFilter = 'all'
+let activeReportTab = 'feedback-report'
+let artifactCache = {} // { name: [{id, created_at, size_in_bytes, run_id}] }
+
+// ── Token ──
+function saveToken() {
+  const v = document.getElementById('tokenInput').value.trim()
+  if (!v) return
+  localStorage.setItem('noir_gh_token', v)
+  setDot(true); loadIssues(); loadReportTab(activeReportTab)
+  showToast('Token sauvegardé ✓')
+}
+function getToken() { return localStorage.getItem('noir_gh_token') || '' }
+function setDot(ok) { document.getElementById('tokenStatus').className = 'token-dot' + (ok ? ' ok' : '') }
+
+// ── GitHub API ──
+function ghFetch(path, opts = {}) {
+  return fetch(`https://api.github.com${path}`, {
+    ...opts,
+    headers: { 'Authorization': `token ${getToken()}`, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(opts.headers||{}) }
+  })
+}
+
+// ── Issues ──
+async function loadIssues() {
+  if (!getToken()) return
+  document.getElementById('issuesList').innerHTML = `<div class="loading"><div class="spinner"></div> Chargement…</div>`
+  try {
+    const res = await ghFetch(`/repos/${REPO_OWNER}/${FEEDBACK_REPO}/issues?state=open&per_page=100`)
+    if (!res.ok) throw new Error(`${res.status}`)
+    allIssues = (await res.json()).filter(i => !i.pull_request)
+    setDot(true); renderIssues()
+    document.getElementById('issueCount').textContent = `${allIssues.length}`
+  } catch (e) {
+    setDot(false)
+    document.getElementById('issuesList').innerHTML = `<div class="empty-state"><p>Erreur: ${e.message}</p></div>`
+  }
+}
+function setFilter(f, el) { activeFilter = f; document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active')); el.classList.add('active'); renderIssues() }
+function getFiltered() {
+  if (activeFilter === 'all') return allIssues
+  if (activeFilter === 'bug') return allIssues.filter(i => i.labels.some(l => l.name === 'category:bug'))
+  if (activeFilter === 'ux') return allIssues.filter(i => i.labels.some(l => l.name === 'category:ux'))
+  if (activeFilter === 'sprint') return allIssues.filter(i => i.labels.some(l => l.name === 'sprint-candidate'))
+  if (activeFilter === 'high') return allIssues.filter(i => i.labels.some(l => l.name === 'priority:high'))
+  return allIssues
+}
+function getLabel(i, p) { return i.labels.find(l => l.name.startsWith(p))?.name.replace(p, '') ?? null }
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+function renderIssues() {
+  const issues = getFiltered(), el = document.getElementById('issuesList')
+  if (!issues.length) { el.innerHTML = `<div class="empty-state"><p>Aucune issue.</p></div>`; return }
+  el.innerHTML = issues.map(i => {
+    const cat = getLabel(i,'category:'), eff = getLabel(i,'effort:'), prio = getLabel(i,'priority:')
+    const sp = i.labels.some(l => l.name === 'sprint-candidate'), sel = selected.has(i.number)
+    const b = [cat?`<span class="badge ${cat}">${cat}</span>`:'', prio==='high'?`<span class="badge high">🔴</span>`:'', sp?`<span class="badge sprint">⚡</span>`:'', eff?`<span class="badge effort">${eff}</span>`:''].filter(Boolean).join('')
+    return `<div class="issue-row ${sel?'selected':''}" onclick="toggleIssue(${i.number},this)"><div class="issue-checkbox"></div><div class="issue-content"><div class="issue-title">${esc(i.title)}</div><div class="issue-meta">${b}</div></div><span class="issue-number">#${i.number}</span></div>`
+  }).join('')
+}
+
+// ── Selection ──
+function toggleIssue(n, el) { selected.has(n) ? (selected.delete(n), el.classList.remove('selected')) : (selected.add(n), el.classList.add('selected')); updateSelectionUI() }
+function clearSelection() { selected.clear(); document.querySelectorAll('.issue-row.selected').forEach(el => el.classList.remove('selected')); updateSelectionUI() }
+function updateSelectionUI() {
+  const nums = [...selected].sort((a,b)=>a-b)
+  document.getElementById('selectionDisplay').textContent = nums.length ? nums.map(n=>`#${n}`).join(', ') : '—'
+  document.getElementById('planPreview').innerHTML = nums.length ? `<span class="hl">--plan</span> ${nums.join(',')}` : `<span class="dim">← Coche des issues</span>`
+  document.getElementById('planBtn').disabled = !nums.length
+  document.getElementById('runPlanBtn').disabled = !nums.length
+}
+
+// ── Reports ──
+function switchReportTab(name, el) {
+  activeReportTab = name
+  document.querySelectorAll('.report-tab').forEach(t => t.classList.remove('active'))
+  el.classList.add('active')
+  loadReportTab(name)
+}
+
+async function loadReportTab(artifactName) {
+  if (!getToken()) return
+  const histEl = document.getElementById('reportHistory')
+  const viewEl = document.getElementById('reportViewer')
+  histEl.innerHTML = '<span style="font-size:10px;color:var(--dim)">Chargement…</span>'
+
+  try {
+    const res = await ghFetch(`/repos/${REPO_OWNER}/${MAIN_REPO}/actions/artifacts?per_page=30&name=${artifactName}`)
+    if (!res.ok) throw new Error(`${res.status}`)
+    const data = await res.json()
+    const artifacts = data.artifacts.filter(a => !a.expired).sort((a,b) => new Date(b.created_at) - new Date(a.created_at))
+    artifactCache[artifactName] = artifacts
+
+    if (!artifacts.length) {
+      histEl.innerHTML = ''
+      viewEl.innerHTML = `<div class="report-empty"><p>Aucun rapport disponible.<br>Lance le workflow pour en générer un.</p></div>`
+      return
+    }
+
+    histEl.innerHTML = artifacts.map((a, idx) => {
+      const d = timeAgo(a.created_at)
+      const kb = Math.round(a.size_in_bytes / 1024)
+      return `<span class="history-item ${idx===0?'active':''}" onclick="loadArtifact(${a.id}, '${artifactName}', this)">${d}<span class="size">${kb}KB</span></span>`
+    }).join('')
+
+    // Auto-load latest
+    await loadArtifact(artifacts[0].id, artifactName, histEl.querySelector('.history-item'))
+  } catch (e) {
+    histEl.innerHTML = ''
+    viewEl.innerHTML = `<div class="report-empty"><p>Erreur: ${e.message}</p></div>`
+  }
+}
+
+async function loadArtifact(artifactId, artifactName, clickedEl) {
+  // Update active state
+  document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'))
+  if (clickedEl) clickedEl.classList.add('active')
+
+  const viewEl = document.getElementById('reportViewer')
+  viewEl.innerHTML = `<div class="loading"><div class="spinner"></div> Téléchargement…</div>`
+
+  try {
+    // Fetch ZIP
+    const res = await ghFetch(`/repos/${REPO_OWNER}/${MAIN_REPO}/actions/artifacts/${artifactId}/zip`)
+    if (!res.ok) throw new Error(`Download failed: ${res.status}`)
+
+    const blob = await res.blob()
+    const zip = await JSZip.loadAsync(blob)
+
+    // Find the .md file
+    let mdContent = ''
+    for (const [filename, file] of Object.entries(zip.files)) {
+      if (filename.endsWith('.md')) {
+        mdContent = await file.async('string')
+        break
+      }
+    }
+
+    if (!mdContent) throw new Error('Pas de fichier .md dans l\'artifact')
+
+    // Render markdown
+    viewEl.innerHTML = `<div class="md-content">${marked.parse(mdContent)}</div>`
+    // Wrap tables for horizontal scroll
+    viewEl.querySelectorAll('.md-content table').forEach(t => {
+      const wrap = document.createElement('div')
+      wrap.className = 'table-wrap'
+      t.parentNode.insertBefore(wrap, t)
+      wrap.appendChild(t)
+    })
+  } catch (e) {
+    viewEl.innerHTML = `<div class="report-empty"><p>Erreur: ${e.message}</p></div>`
+    console.error(e)
+  }
+}
+
+function timeAgo(iso) {
+  const s = Math.floor((Date.now() - new Date(iso)) / 1000)
+  if (s < 60) return 'maintenant'
+  if (s < 3600) return `il y a ${Math.floor(s/60)}min`
+  if (s < 86400) return `il y a ${Math.floor(s/3600)}h`
+  if (s < 604800) return `il y a ${Math.floor(s/86400)}j`
+  return new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })
+}
+
+// ── Workflow dispatch ──
+async function runWorkflow(workflowFile, btnId, statusId, reportTab, inputs = {}) {
+  if (!getToken()) { showToast('Entre ton token'); return }
+  const btn = document.getElementById(btnId), status = document.getElementById(statusId)
+  btn.className = 'btn-run running'; btn.innerHTML = '<span class="run-dot"></span> En cours…'
+  status.style.display = 'block'; status.textContent = 'Déclenchement…'
+  try {
+    const body = { ref: 'main' }
+    if (Object.keys(inputs).length) body.inputs = inputs
+    const res = await ghFetch(`/repos/${REPO_OWNER}/${MAIN_REPO}/actions/workflows/${workflowFile}/dispatches`, { method: 'POST', body: JSON.stringify(body) })
+    if (res.status === 204) {
+      await new Promise(r => setTimeout(r, 2500))
+      const runsRes = await ghFetch(`/repos/${REPO_OWNER}/${MAIN_REPO}/actions/workflows/${workflowFile}/runs?per_page=1`)
+      const runsData = await runsRes.json()
+      const runUrl = runsData.workflow_runs?.[0]?.html_url || `https://github.com/${REPO_OWNER}/${MAIN_REPO}/actions`
+      btn.className = 'btn-run done'; btn.innerHTML = '<span class="run-dot"></span> Lancé ✓'
+      status.innerHTML = `<a href="${runUrl}" target="_blank">Voir le run →</a>`
+      showToast('Workflow lancé ✓')
+      // Auto-refresh reports when done
+      if (reportTab) pollForNewArtifact(workflowFile, reportTab)
+      setTimeout(() => { btn.className = 'btn-run'; btn.innerHTML = '<span class="run-dot"></span> Lancer' }, 8000)
+    } else {
+      const err = await res.json().catch(() => ({ message: `HTTP ${res.status}` }))
+      throw new Error(err.message)
+    }
+  } catch (e) {
+    btn.className = 'btn-run'; btn.innerHTML = '<span class="run-dot"></span> Lancer'
+    status.textContent = `Erreur: ${e.message}`; showToast('Erreur'); console.error(e)
+  }
+}
+
+// Poll for new artifact after workflow completes
+async function pollForNewArtifact(workflowFile, reportTab) {
+  const maxAttempts = 18  // 3 minutes max (18 * 10s)
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 10000))
+    try {
+      const res = await ghFetch(`/repos/${REPO_OWNER}/${MAIN_REPO}/actions/workflows/${workflowFile}/runs?per_page=1`)
+      const data = await res.json()
+      const run = data.workflow_runs?.[0]
+      if (run?.conclusion === 'success') {
+        // Switch to the right tab and reload
+        activeReportTab = reportTab
+        document.querySelectorAll('.report-tab').forEach(t => {
+          t.classList.toggle('active', t.textContent.toLowerCase().includes(reportTab.split('-')[0]))
+        })
+        await loadReportTab(reportTab)
+        showToast('Rapport disponible ✓')
+        return
+      }
+      if (run?.conclusion === 'failure') { showToast('Workflow échoué ✗'); return }
+    } catch { /* continue polling */ }
+  }
+}
+
+function runAgent() { runWorkflow('feedback-agent.yml', 'runAgentBtn', 'agentStatus', 'feedback-report') }
+function runPlan() {
+  const nums = [...selected].sort((a,b)=>a-b).join(',')
+  if (!nums) { showToast('Sélectionne des issues'); return }
+  runWorkflow('sprint-plan.yml', 'runPlanBtn', 'planStatus', 'sprint-plan', { issues: nums })
+}
+
+// ── Copy ──
+const CMDS = {
+  agent: `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/feedback-agent.js`,
+  synth: `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/sprint-planner.js`,
+  debug: `cd ${PROJECT_DIR} && npm run tauri dev`,
+  plan: () => `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/sprint-planner.js --plan ${[...selected].sort((a,b)=>a-b).join(',')}`,
+}
+async function copyCmd(key) {
+  const cmd = typeof CMDS[key]==='function' ? CMDS[key]() : CMDS[key]
+  if (!cmd) return
+  try { await navigator.clipboard.writeText(cmd); const b = event.currentTarget, o = b.innerHTML; b.innerHTML = '✓'; b.classList.add('copied'); setTimeout(() => { b.innerHTML = o; b.classList.remove('copied') }, 1500); showToast('Copié') } catch { showToast('Erreur') }
+}
+
+// ── Toast ──
+let toastT
+function showToast(m) { const e = document.getElementById('toast'); e.textContent = m; e.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => e.classList.remove('show'), 2600) }
+
+// ── Init ──
+;(function() {
+  const t = getToken()
+  if (t) { document.getElementById('tokenInput').value = t; setDot(true); loadIssues(); loadReportTab('feedback-report') }
+})()
+</script>
+</body>
+</html>

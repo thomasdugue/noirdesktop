@@ -48,6 +48,7 @@ impl AudioResampler {
 
         let resample_ratio = source_rate as f64 / target_rate as f64;
 
+        #[cfg(debug_assertions)]
         println!(
             "=== Resampler created ===\n  {} Hz → {} Hz (ratio: {:.4})\n  channels: {}\n  chunk_size_in: {}\n  chunk_size_out: {}",
             source_rate, target_rate, resample_ratio, channels, chunk_size_in, chunk_size_out

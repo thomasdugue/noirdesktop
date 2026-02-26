@@ -57,11 +57,18 @@
       <div class="sidebar-playlists">
         <div class="playlists-header">
           <span class="playlists-title">Playlists</span>
-          <button id="create-playlist-btn" class="btn-icon-small" title="New playlist">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
-            </svg>
-          </button>
+          <div class="playlists-actions">
+            <button id="import-m3u-btn" class="btn-icon-small" title="Import M3U">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </button>
+            <button id="create-playlist-btn" class="btn-icon-small" title="New playlist">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <div id="playlists-list" class="playlists-list">
           <!-- Les playlists seront ajoutées dynamiquement -->
@@ -233,6 +240,12 @@
         <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
       </svg>
       <span>Info</span>
+    </button>
+    <button class="context-menu-item" data-action="edit-metadata">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+      </svg>
+      <span>Edit Metadata</span>
     </button>
     <div class="context-menu-separator"></div>
     <button class="context-menu-item context-menu-item-danger" data-action="remove-from-library">
@@ -471,6 +484,7 @@
         <span class="specs-label">OUT</span>
         <span id="output-specs" class="specs-value">-</span>
       </span>
+      <span id="bit-perfect-badge" class="bit-perfect-badge">BIT PERFECT</span>
     </span>
 
     <!-- 8. Volume : mute + slider -->
