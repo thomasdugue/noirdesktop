@@ -16,6 +16,8 @@ import {
 import { initAutoUpdate } from './auto-update.js';
 // Import EQ
 import { eqInit, openEqPanel, closeEqPanel, toggleEqPanel, getEqPanelOpen, setEqPanelCallbacks, eqUpdateStatusUI, eqUpdatePanelToggleLabel } from './eq.js';
+// Import Fullscreen Player
+import { openFullscreenPlayer, closeFullscreenPlayer, toggleFullscreenPlayer, isFullscreenOpen, updateFullscreenData, setFullscreenPlayState, setFullscreenRms, setNextTrackInfoCallback } from './fullscreen-player.js';
 // === WINDOW DRAG ===
 // Le drag est géré nativement par Tauri 2 via l'attribut data-tauri-drag-region sur le titlebar HTML
 // Ne PAS ajouter de handler JS mousedown → startDragging() car il interfère avec le mécanisme natif
@@ -5057,6 +5059,12 @@ async function playTrack(index) {
   // Met à jour la section "Lecture en cours" de la Home si visible
   updateHomeNowPlayingSection()
 
+  // Met à jour la vue fullscreen si ouverte
+  setFullscreenPlayState(true)
+  syncFsPlayPauseIcon(true)
+  // Petit délai pour laisser la cover se charger avant d'extraire les couleurs
+  setTimeout(() => updateFullscreenData(), 200)
+
   // Enregistre la lecture dans l'historique et invalide le cache Home
   invoke('record_play', {
     path: track.path,
@@ -5101,6 +5109,25 @@ function getNextTrackPath() {
     return albumTracks[0].path
   }
   return null
+}
+
+function getNextTrackInfo() {
+  // Queue priority
+  if (queue.length > 0) {
+    const q = queue[0]
+    return { title: q.title || q.metadata?.title || '', artist: q.artist || q.metadata?.artist || '' }
+  }
+
+  const nextPath = getNextTrackPath()
+  if (!nextPath) return null
+
+  const nextTrack = tracks.find(t => t.path === nextPath)
+  if (!nextTrack) return null
+
+  return {
+    title: nextTrack.metadata?.title || nextTrack.path.split('/').pop().replace(/\.[^.]+$/, ''),
+    artist: nextTrack.metadata?.artist || ''
+  }
 }
 
 function triggerGaplessPreload() {
@@ -5256,20 +5283,86 @@ nextBtn.addEventListener('click', () => {
 })
 
 // === CLICK SUR COVER ART = Navigation vers l'album ===
+// Simple clic = aller à l'album, Double-clic = fullscreen player
+let coverClickTimer = null
 coverArtEl.addEventListener('click', () => {
   // Si on était en train de drag, ne pas naviguer
   if (customDragState.isDragging) return
 
   if (!currentPlayingAlbumKey || currentTrackIndex < 0) return
 
-  const album = albums[currentPlayingAlbumKey]
-  if (!album) {
-    console.log('Album not found for key:', currentPlayingAlbumKey)
-    return
+  // Attendre pour distinguer simple clic vs double-clic
+  if (coverClickTimer) {
+    clearTimeout(coverClickTimer)
+    coverClickTimer = null
+    return // Le dblclick handler s'en charge
   }
 
-  // Navigue vers la page album dédiée
-  navigateToAlbumPage(currentPlayingAlbumKey)
+  coverClickTimer = setTimeout(() => {
+    coverClickTimer = null
+    const album = albums[currentPlayingAlbumKey]
+    if (!album) {
+      console.log('Album not found for key:', currentPlayingAlbumKey)
+      return
+    }
+    navigateToAlbumPage(currentPlayingAlbumKey)
+  }, 250)
+})
+
+coverArtEl.addEventListener('dblclick', () => {
+  if (customDragState.isDragging) return
+  if (currentTrackIndex < 0) return
+  if (coverClickTimer) {
+    clearTimeout(coverClickTimer)
+    coverClickTimer = null
+  }
+  openFullscreenPlayer()
+})
+
+// Sync fullscreen play/pause icon with current state
+function syncFsPlayPauseIcon(playing) {
+  const iconPlay = document.getElementById('fs-icon-play')
+  const iconPause = document.getElementById('fs-icon-pause')
+  if (iconPlay) iconPlay.style.display = playing ? 'none' : ''
+  if (iconPause) iconPause.style.display = playing ? '' : 'none'
+}
+
+// === FULLSCREEN PLAYER INIT ===
+setNextTrackInfoCallback(() => getNextTrackInfo())
+
+document.getElementById('fs-close')?.addEventListener('click', () => {
+  closeFullscreenPlayer()
+})
+
+// Fullscreen controls — prev / play-pause / next
+document.getElementById('fs-prev')?.addEventListener('click', () => playPreviousTrack())
+document.getElementById('fs-next-btn')?.addEventListener('click', () => playNextTrack())
+document.getElementById('fs-play-pause')?.addEventListener('click', () => togglePlay())
+
+// Fullscreen progress bar — seek
+const fsProgressBar = document.getElementById('fs-progress')
+let fsIsSeeking = false
+if (fsProgressBar) {
+  fsProgressBar.addEventListener('input', () => {
+    fsIsSeeking = true
+    const duration = getCurrentTrackDuration()
+    const time = (fsProgressBar.value / 100) * duration
+    document.getElementById('fs-current-time').textContent = formatTime(time)
+  })
+  fsProgressBar.addEventListener('change', () => {
+    // Sync to main progress bar and trigger seek
+    progressBar.value = fsProgressBar.value
+    performSeek()
+    fsIsSeeking = false
+  })
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && isFullscreenOpen()) {
+    e.preventDefault()
+    e.stopPropagation()
+    closeFullscreenPlayer()
+  }
 })
 
 // === DRAG FROM COVER ART = Ajouter le track en cours à une playlist ===
@@ -5514,6 +5607,16 @@ function startPositionInterpolation() {
     progressBar.value = Math.min(percent, 100)
     currentTimeEl.textContent = formatTime(clampedPosition)
     updateProgressBarStyle(percent)
+
+    // Sync fullscreen progress bar & time
+    if (isFullscreenOpen() && !fsIsSeeking) {
+      const fsProg = document.getElementById('fs-progress')
+      const fsCur = document.getElementById('fs-current-time')
+      const fsDur = document.getElementById('fs-duration')
+      if (fsProg) fsProg.value = Math.min(percent, 100)
+      if (fsCur) fsCur.textContent = formatTime(clampedPosition)
+      if (fsDur) fsDur.textContent = formatTime(duration)
+    }
   }
 
   interpolationAnimationId = requestAnimationFrame(interpolate)
@@ -5634,6 +5737,9 @@ function updateAudioSpecs(specs) {
     container.classList.add('bit-perfect')
     console.log(`✓ Bit-perfect: ${specs.source_sample_rate}Hz/${specs.source_bit_depth}bit`)
   }
+
+  // Met à jour les specs dans le fullscreen player
+  updateFullscreenData()
 }
 
 // Reset du moniteur audio specs
@@ -5651,11 +5757,14 @@ function resetAudioSpecs() {
 async function initRustAudioListeners() {
   // Progression de lecture (émis ~10 fois par seconde par Rust)
   await listen('playback_progress', (event) => {
-    const { position, duration } = event.payload
+    const { position, duration, rms } = event.payload
 
     // Met à jour les variables globales
     audioPositionFromRust = position
     audioDurationFromRust = duration
+
+    // Forward RMS energy to fullscreen player visualisation
+    if (rms !== undefined) setFullscreenRms(rms)
 
     // Synchronise l'interpolation avec la position Rust
     syncToRustPosition(position)
@@ -5719,6 +5828,8 @@ async function initRustAudioListeners() {
     playPauseBtn.textContent = '▶'
     // Stoppe la boucle RAF pour économiser le CPU
     stopPositionInterpolation()
+    setFullscreenPlayState(false)
+    syncFsPlayPauseIcon(false)
   })
 
   await listen('playback_resumed', () => {
@@ -5729,6 +5840,8 @@ async function initRustAudioListeners() {
     lastRustTimestamp = performance.now()
     // Redémarre la boucle RAF
     startPositionInterpolation()
+    setFullscreenPlayState(true)
+    syncFsPlayPauseIcon(true)
   })
 
   // Fin de lecture (émis par Rust quand le track est terminé)

@@ -102,6 +102,8 @@ pub struct PlaybackState {
     pub position: Arc<AtomicU64>,  // Position en millisecondes (précision)
     pub volume: Arc<AtomicU64>,    // f32 as bits
     pub is_seeking: Arc<AtomicBool>,
+    /// RMS energy (f64 bits) — written by audio callback, read by frontend for visualisation
+    pub rms_energy: Arc<AtomicU64>,
 }
 
 impl PlaybackState {
@@ -115,6 +117,7 @@ impl PlaybackState {
             position: Arc::new(AtomicU64::new(0)),
             volume: Arc::new(AtomicU64::new(f32::to_bits(1.0) as u64)),
             is_seeking: Arc::new(AtomicBool::new(false)),
+            rms_energy: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -454,6 +457,7 @@ impl AudioEngine {
                                     Arc::clone(&next_consumer),
                                     Arc::clone(&next_streaming_state),
                                     Arc::clone(&gapless_enabled),
+                                    Arc::clone(&state.rms_energy),
                                 );
 
                                 match stream_result {
@@ -681,6 +685,7 @@ impl AudioEngine {
                                             Arc::clone(&next_consumer),
                                             Arc::clone(&next_streaming_state),
                                             Arc::clone(&gapless_enabled),
+                                            Arc::clone(&state.rms_energy),
                                         ) {
                                             Ok(mut s) => {
                                                 if let Err(e) = s.start() {
@@ -805,10 +810,12 @@ impl AudioEngine {
 
                     // Maintenant le seek est vraiment terminé
                     let duration_seconds = state.get_duration_seconds();
+                    let rms = f64::from_bits(state.rms_energy.load(Ordering::Relaxed));
                     if let Some(ref app) = app_handle {
                         let _ = app.emit("playback_progress", PlaybackProgress {
                             position: time_seconds,
                             duration: duration_seconds,
+                            rms,
                         });
                         println!("Engine: Seek complete, emitted progress: pos={:.2}s", time_seconds);
                     }
@@ -948,6 +955,8 @@ impl AudioEngine {
 pub struct PlaybackProgress {
     pub position: f64,
     pub duration: f64,
+    /// RMS energy (0.0-1.0) for audio visualisation
+    pub rms: f64,
 }
 
 /// Erreur de lecture structurée, envoyée au frontend via l'événement `playback_error`

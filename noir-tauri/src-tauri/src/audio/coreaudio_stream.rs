@@ -81,6 +81,8 @@ struct CallbackData {
     next_consumer: Arc<Mutex<Option<HeapCons<f32>>>>,
     next_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>>,
     gapless_enabled: Arc<AtomicBool>,
+    // RMS energy for visualisation (shared with frontend via AtomicU64 as f64 bits)
+    rms_energy: Arc<AtomicU64>,
 }
 
 const EMPTY_CALLBACKS_THRESHOLD: u32 = 3;
@@ -106,6 +108,7 @@ impl CoreAudioStream {
         next_consumer: Arc<Mutex<Option<HeapCons<f32>>>>,
         next_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>>,
         gapless_enabled: Arc<AtomicBool>,
+        rms_energy: Arc<AtomicU64>,
     ) -> Result<Self, String> {
         unsafe {
             // 1. Find the HAL output audio component (allows device selection)
@@ -224,6 +227,7 @@ impl CoreAudioStream {
                 next_consumer,
                 next_streaming_state,
                 gapless_enabled,
+                rms_energy,
             });
 
             // 6. Set up the render callback
@@ -406,6 +410,17 @@ unsafe extern "C" fn render_callback(
         );
     }
 
+    // Compute RMS energy for visualisation (lightweight — just sum of squares)
+    if read > 0 {
+        let mut sum_sq: f64 = 0.0;
+        for i in 0..read {
+            let s = interleaved_buf[i] as f64;
+            sum_sq += s * s;
+        }
+        let rms = (sum_sq / read as f64).sqrt();
+        data.rms_energy.store(rms.to_bits(), Ordering::Relaxed);
+    }
+
     // Write to output buffers with volume applied
     // CoreAudio on macOS typically uses interleaved stereo in a single buffer
     if num_buffers == 1 && data.channels_count == 2 {
@@ -525,9 +540,11 @@ unsafe extern "C" fn render_callback(
         }
 
         if let Some(ref app) = data.app_handle {
+            let rms = f64::from_bits(data.rms_energy.load(Ordering::Relaxed));
             let _ = app.emit("playback_progress", PlaybackProgress {
                 position: clamped_position,
                 duration: data.duration_seconds,
+                rms,
             });
         }
     }
