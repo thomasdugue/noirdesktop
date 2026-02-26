@@ -301,7 +301,11 @@
         <div class="cmd-preview"><span class="hl">node</span> scripts/sprint-planner.js</div>
         <div class="action-btns">
           <button class="btn-copy" onclick="copyCmd('synth')">⎘ Copier</button>
+          <button class="btn-run" id="runSynthBtn" onclick="runWorkflow('sprint-synthesis.yml','runSynthBtn','synthStatus')">
+            <span class="run-dot"></span> Lancer
+          </button>
         </div>
+        <div class="run-status" id="synthStatus"></div>
       </div>
 
       <!-- Plan détaillé -->
@@ -316,7 +320,11 @@
         </div>
         <div class="action-btns">
           <button class="btn-copy" id="planBtn" onclick="copyCmd('plan')" disabled>⎘ Copier</button>
+          <button class="btn-run" id="runPlanBtn" onclick="runPlan()" disabled>
+            <span class="run-dot"></span> Lancer
+          </button>
         </div>
+        <div class="run-status" id="planStatus"></div>
       </div>
 
       <!-- Debug -->
@@ -351,7 +359,7 @@ const FEEDBACK_REPO = 'noir-feedback'
 const MAIN_REPO     = 'noirdesktop'
 const PROJECT_DIR   = '~/Documents/Thomas/noirdesktop/noir-tauri'
 const ENV_CMD       = 'export $(cat scripts/.env.local | xargs)'
-const WORKFLOW_FILE = 'feedback-agent.yml'
+// Workflow files are passed directly to runWorkflow()
 
 let allIssues    = []
 let selected     = new Set()
@@ -475,41 +483,51 @@ function updateSelectionUI() {
   const display = document.getElementById('selectionDisplay')
   const preview = document.getElementById('planPreview')
   const planBtn = document.getElementById('planBtn')
+  const runPlanBtn = document.getElementById('runPlanBtn')
   if (!nums.length) {
     display.textContent = 'aucune'
     preview.innerHTML = `<span class="dim">← Sélectionne des issues d'abord</span>`
     planBtn.disabled = true
+    runPlanBtn.disabled = true
   } else {
     display.textContent = nums.map(n=>`#${n}`).join(', ')
     preview.innerHTML = `<span class="hl">node</span> scripts/sprint-planner.js <span class="hl">--plan</span> ${nums.join(',')}`
     planBtn.disabled = false
+    runPlanBtn.disabled = false
   }
 }
 
-// Run agent via GitHub Actions dispatch
-async function runAgent() {
-  if (!getToken()) { showToast('Entre ton PAT d\'abord'); return }
-  const btn    = document.getElementById('runAgentBtn')
-  const status = document.getElementById('agentStatus')
+// Generic workflow dispatch
+async function runWorkflow(workflowFile, btnId, statusId, inputs = {}) {
+  if (!getToken()) { showToast('Entre ton token d\'abord'); return }
+  const btn    = document.getElementById(btnId)
+  const status = document.getElementById(statusId)
   btn.className = 'btn-run running'
   btn.innerHTML = '<span class="run-dot"></span> En cours…'
   status.style.display = 'block'
   status.textContent   = 'Déclenchement du workflow…'
   try {
+    const body = { ref: 'main' }
+    if (Object.keys(inputs).length) body.inputs = inputs
     const res = await ghFetch(
-      `/repos/${REPO_OWNER}/${MAIN_REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
-      { method: 'POST', body: JSON.stringify({ ref: 'main' }) }
+      `/repos/${REPO_OWNER}/${MAIN_REPO}/actions/workflows/${workflowFile}/dispatches`,
+      { method: 'POST', body: JSON.stringify(body) }
     )
     if (res.status === 204) {
       await new Promise(r => setTimeout(r, 2500))
-      const runsRes  = await ghFetch(`/repos/${REPO_OWNER}/${MAIN_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=1`)
+      const runsRes  = await ghFetch(`/repos/${REPO_OWNER}/${MAIN_REPO}/actions/workflows/${workflowFile}/runs?per_page=1`)
       const runsData = await runsRes.json()
       const runUrl   = runsData.workflow_runs?.[0]?.html_url
         || `https://github.com/${REPO_OWNER}/${MAIN_REPO}/actions`
       btn.className = 'btn-run done'
       btn.innerHTML = '<span class="run-dot"></span> Lancé ✓'
       status.innerHTML = `Workflow lancé — <a href="${runUrl}" target="_blank">voir le run →</a>`
-      showToast('Agent déclenché ✓')
+      showToast('Workflow déclenché ✓')
+      // Reset button after 8s
+      setTimeout(() => {
+        btn.className = 'btn-run'
+        btn.innerHTML = '<span class="run-dot"></span> Lancer'
+      }, 8000)
     } else {
       const err = await res.json().catch(() => ({ message: `HTTP ${res.status}` }))
       throw new Error(err.message)
@@ -521,6 +539,14 @@ async function runAgent() {
     showToast('Erreur — voir console')
     console.error(e)
   }
+}
+
+// Shortcuts
+function runAgent() { runWorkflow('feedback-agent.yml', 'runAgentBtn', 'agentStatus') }
+function runPlan() {
+  const nums = [...selected].sort((a,b)=>a-b).join(',')
+  if (!nums) { showToast('Sélectionne des issues d\'abord'); return }
+  runWorkflow('sprint-plan.yml', 'runPlanBtn', 'planStatus', { issues: nums })
 }
 
 // Copy commands
