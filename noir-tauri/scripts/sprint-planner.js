@@ -67,11 +67,13 @@ Règles : state.js toujours muté (jamais réassigné) · app.js médiateur pour
 
 // ── Utilitaires GitHub ────────────────────────────────────────────────────────
 
-async function fetchIssues(labels = 'sprint-candidate') {
-  const issues = await octokit.paginate(octokit.rest.issues.listForRepo, {
+async function fetchIssues(labels = null) {
+  const opts = {
     owner: REPO_OWNER, repo: REPO_NAME,
-    labels, state: 'open', per_page: 100,
-  })
+    state: 'open', per_page: 100,
+  }
+  if (labels) opts.labels = labels
+  const issues = await octokit.paginate(octokit.rest.issues.listForRepo, opts)
   // Enrichir avec le commentaire de classification de l'agent
   for (const issue of issues) {
     const { data: comments } = await octokit.rest.issues.listComments({
@@ -297,17 +299,33 @@ node scripts/sprint-planner.js --plan ${issues.slice(0,3).map(i=>i.number).join(
 function appendDetailedPlans(planResults) {
   const outPath = join(__dirname, 'SPRINT.md')
   const existing = existsSync(outPath) ? readFileSync(outPath, 'utf-8') : ''
+  const date = new Date().toLocaleDateString('fr-FR', { weekday:'long', year:'numeric', month:'long', day:'numeric' })
 
-  const section = `\n---\n\n## 🛠 Plans d'implémentation détaillés\n\n${planResults.map(({issue, plan}) => formatDetailedPlan(issue, plan)).join('\n')}`
+  const plansContent = planResults.map(({issue, plan}) => formatDetailedPlan(issue, plan)).join('\n')
 
-  // Remplacer section existante ou ajouter
-  const marker = '## 🛠 Plans d\'implémentation détaillés'
-  const updated = existing.includes(marker)
-    ? existing.slice(0, existing.indexOf('\n---\n\n' + marker)) + section
-    : existing.trimEnd() + '\n' + section
+  let updated
+  if (!existing.trim()) {
+    // Pas de SPRINT.md existant — créer un document complet
+    updated = `# 🛠 Plans d'implémentation détaillés
+> ${date} · ${planResults.length} issues · \`sprint-planner.js --plan\`
+
+---
+
+${plansContent}
+
+---
+*Généré par sprint-planner.js — ${new Date().toISOString()}*
+`
+  } else {
+    const section = `\n---\n\n## 🛠 Plans d'implémentation détaillés\n\n${plansContent}`
+    const marker = '## 🛠 Plans d\'implémentation détaillés'
+    updated = existing.includes(marker)
+      ? existing.slice(0, existing.indexOf('\n---\n\n' + marker)) + section
+      : existing.trimEnd() + '\n' + section
+  }
 
   writeFileSync(outPath, updated, 'utf-8')
-  console.log(`\n📄 Plans détaillés ajoutés dans SPRINT.md`)
+  console.log(`\n📄 Plans détaillés écrits dans SPRINT.md`)
   return outPath
 }
 
@@ -318,6 +336,7 @@ async function main() {
     // ── MODE 2 : Plans détaillés pour issues spécifiques ──
     console.log(`🛠  Mode plan détaillé — issues : #${planIssues.join(', #')}`)
 
+    // En mode plan, récupérer TOUTES les issues (pas seulement sprint-candidate)
     const allIssues = await fetchIssues()
     const targets   = allIssues.filter(i => planIssues.includes(i.number))
 
@@ -345,7 +364,7 @@ async function main() {
     console.log('📊 Mode synthèse — analyse coût / impact / risques')
     console.log(`   Repo : ${FEEDBACK_REPO}`)
 
-    const issues = await fetchIssues()
+    const issues = await fetchIssues('sprint-candidate')
     if (issues.length === 0) {
       console.log('⚠️  Aucune sprint candidate. Lance d\'abord feedback-agent.js')
       return
