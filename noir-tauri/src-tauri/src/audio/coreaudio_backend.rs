@@ -453,9 +453,58 @@ impl CoreAudioBackend {
         }
     }
 
-    /// Enable Hog Mode (exclusive access)
+    /// Read which PID currently owns Hog Mode on a device
+    /// Returns -1 if no process owns it, or the PID of the owning process
+    fn get_hog_mode_pid(device_id: AudioObjectID) -> Result<i32> {
+        unsafe {
+            let property_address = AudioObjectPropertyAddress {
+                mSelector: kAudioDevicePropertyHogMode,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain,
+            };
+
+            let mut pid: i32 = -1;
+            let mut size = std::mem::size_of::<i32>() as u32;
+
+            let status = AudioObjectGetPropertyData(
+                device_id,
+                &property_address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut pid as *mut _ as *mut c_void,
+            );
+
+            if status != 0 {
+                return Err(AudioBackendError::Other(format!(
+                    "Failed to read Hog Mode PID: CoreAudio error {}",
+                    status
+                )));
+            }
+
+            Ok(pid)
+        }
+    }
+
+    /// Enable Hog Mode (exclusive access) with verification
     fn enable_hog_mode_internal(device_id: AudioObjectID) -> Result<()> {
         println!("[CoreAudio] Enabling Hog Mode for device {}...", device_id);
+
+        // Check if another process already holds Hog Mode
+        let current_hog_pid = Self::get_hog_mode_pid(device_id).unwrap_or(-1);
+        let our_pid = std::process::id() as i32;
+
+        if current_hog_pid == our_pid {
+            println!("[CoreAudio] Hog Mode already owned by us (PID: {})", our_pid);
+            return Ok(());
+        }
+
+        if current_hog_pid != -1 {
+            println!(
+                "[CoreAudio] Warning: Hog Mode already held by PID {} — attempting to take over",
+                current_hog_pid
+            );
+        }
 
         unsafe {
             let property_address = AudioObjectPropertyAddress {
@@ -464,26 +513,37 @@ impl CoreAudioBackend {
                 mElement: kAudioObjectPropertyElementMain,
             };
 
-            // Get our process ID
-            let pid: i32 = std::process::id() as i32;
-
             let status = AudioObjectSetPropertyData(
                 device_id,
                 &property_address,
                 0,
                 std::ptr::null(),
                 std::mem::size_of::<i32>() as u32,
-                &pid as *const _ as *const c_void,
+                &our_pid as *const _ as *const c_void,
             );
 
             if status != 0 {
+                let msg = if current_hog_pid != -1 {
+                    format!(
+                        "Device locked by another application (PID {}). Close it first.",
+                        current_hog_pid
+                    )
+                } else {
+                    format!("CoreAudio error {}", status)
+                };
+                return Err(AudioBackendError::ExclusiveModeFailed(msg));
+            }
+
+            // Verify hog mode was actually acquired by reading back
+            let verify_pid = Self::get_hog_mode_pid(device_id).unwrap_or(-1);
+            if verify_pid != our_pid {
                 return Err(AudioBackendError::ExclusiveModeFailed(format!(
-                    "Failed to enable Hog Mode: CoreAudio error {}",
-                    status
+                    "Hog Mode set returned OK but verification failed (expected PID {}, got {})",
+                    our_pid, verify_pid
                 )));
             }
 
-            println!("[CoreAudio] Hog Mode enabled successfully (PID: {})", pid);
+            println!("[CoreAudio] Hog Mode enabled and verified (PID: {})", our_pid);
             Ok(())
         }
     }
@@ -776,6 +836,32 @@ impl AudioBackend for CoreAudioBackend {
 
         self.exclusive_mode = mode;
         Ok(())
+    }
+
+    fn hog_mode_status(&self) -> Result<HogModeStatus> {
+        let device_id = self.get_active_device_id()?;
+        let device_name = Self::get_device_name(device_id)
+            .unwrap_or_else(|_| format!("Device {}", device_id));
+        let hog_pid = Self::get_hog_mode_pid(device_id).unwrap_or(-1);
+        let our_pid = std::process::id() as i32;
+        let owned_by_us = hog_pid == our_pid;
+
+        let message = if self.exclusive_mode == ExclusiveMode::Exclusive && owned_by_us {
+            format!("Exclusive mode active on {}", device_name)
+        } else if hog_pid != -1 && !owned_by_us {
+            format!("Device locked by another process (PID {})", hog_pid)
+        } else {
+            "Shared mode".to_string()
+        };
+
+        Ok(HogModeStatus {
+            enabled: self.exclusive_mode == ExclusiveMode::Exclusive,
+            device_name,
+            device_id: device_id.to_string(),
+            owner_pid: hog_pid,
+            owned_by_us,
+            message,
+        })
     }
 
     fn set_device_event_callback(&mut self, callback: Option<DeviceEventCallback>) {

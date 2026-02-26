@@ -1271,25 +1271,49 @@ export async function selectAudioDevice(deviceId, deviceName) {
   }
 }
 
-// Charge l'état du mode exclusif
+// Charge l'état du mode exclusif avec status détaillé
 export async function loadExclusiveMode() {
   console.log('[AUDIO-OUTPUT] Loading exclusive mode state...')
   try {
-    const isExclusive = await invoke('is_exclusive_mode')
-    console.log('[AUDIO-OUTPUT] Exclusive mode is:', isExclusive)
-    dom.exclusiveModeCheckbox.checked = isExclusive
-    updateHogModeStatus(isExclusive)
+    const status = await invoke('hog_mode_status')
+    console.log('[AUDIO-OUTPUT] Hog Mode status:', status)
+    dom.exclusiveModeCheckbox.checked = status.enabled
+    updateHogModeStatus(status)
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error loading exclusive mode:', e)
+    // Fallback à l'ancien check simple
+    try {
+      const isExclusive = await invoke('is_exclusive_mode')
+      dom.exclusiveModeCheckbox.checked = isExclusive
+      updateHogModeStatus(isExclusive)
+    } catch (_) {}
   }
 }
 
 // Met à jour l'affichage du statut Hog Mode
-export function updateHogModeStatus(isActive) {
+// Accepte un objet HogModeStatus ou un booléen (rétro-compatibilité)
+export function updateHogModeStatus(statusOrBool) {
   const statusEl = document.getElementById('hog-mode-status')
-  if (statusEl) {
-    statusEl.textContent = isActive ? 'Active' : 'Disabled'
-    statusEl.classList.toggle('active', isActive)
+  if (!statusEl) return
+
+  if (typeof statusOrBool === 'boolean') {
+    statusEl.textContent = statusOrBool ? 'Active' : 'Disabled'
+    statusEl.classList.toggle('active', statusOrBool)
+    return
+  }
+
+  const status = statusOrBool
+  if (status.enabled && status.owned_by_us) {
+    statusEl.textContent = status.device_name ? `Active · ${status.device_name}` : 'Active'
+    statusEl.classList.add('active')
+    statusEl.classList.remove('conflict')
+  } else if (status.owner_pid !== -1 && !status.owned_by_us) {
+    statusEl.textContent = `Locked (PID ${status.owner_pid})`
+    statusEl.classList.remove('active')
+    statusEl.classList.add('conflict')
+  } else {
+    statusEl.textContent = 'Disabled'
+    statusEl.classList.remove('active', 'conflict')
   }
 }
 
@@ -1540,11 +1564,15 @@ export function initPlayback() {
       // Met à jour le statut visuel (player + settings synchronisés)
       app.updateHogModeUI(newState)
 
+      // Récupère le status détaillé après le changement
+      let status = null
+      try { status = await invoke('hog_mode_status') } catch (_) {}
+
       if (newState) {
+        const deviceLabel = status?.device_name || ''
         // Le Hog Mode nécessite de relancer la lecture pour prendre effet
         if (playback.audioIsPlaying && playback.currentTrackIndex >= 0) {
-          showToast('Exclusive mode enabled - Restarting playback...')
-          // Relance le track actuel pour que le Hog Mode prenne effet
+          showToast(`Exclusive mode on ${deviceLabel} — Restarting playback...`)
           const currentTrack = library.tracks[playback.currentTrackIndex]
           if (currentTrack) {
             console.log('[AUDIO-OUTPUT] Restarting playback for Hog Mode...')
@@ -1556,17 +1584,26 @@ export function initPlayback() {
             }
           }
         } else {
-          showToast('Exclusive mode enabled (bit-perfect)')
+          showToast(`Exclusive mode enabled${deviceLabel ? ` · ${deviceLabel}` : ''} (bit-perfect)`)
         }
       } else {
-        showToast('Exclusive mode disabled')
+        showToast('Exclusive mode disabled — shared audio restored')
       }
+
+      // Met à jour le statut détaillé
+      if (status) updateHogModeStatus(status)
     } catch (e) {
       console.error('[AUDIO-OUTPUT] Error changing exclusive mode:', e)
       // Revert le checkbox et le statut
       dom.exclusiveModeCheckbox.checked = !newState
       app.updateHogModeUI(!newState)
-      showToast('Error changing mode')
+      // Message d'erreur descriptif
+      const errMsg = typeof e === 'string' ? e : (e.message || 'Unknown error')
+      if (errMsg.includes('locked') || errMsg.includes('PID')) {
+        showToast('Device locked by another app — close it first')
+      } else {
+        showToast('Exclusive mode failed — check that no other app uses the DAC')
+      }
     }
   })
 

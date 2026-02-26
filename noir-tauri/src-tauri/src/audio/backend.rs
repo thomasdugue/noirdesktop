@@ -101,6 +101,9 @@ pub trait AudioBackend: Send + Sync {
     /// **Important**: Must be called BEFORE creating the audio stream.
     fn set_exclusive_mode(&mut self, mode: ExclusiveMode) -> Result<()>;
 
+    /// Get detailed Hog Mode status (device, PID owner, conflict info)
+    fn hog_mode_status(&self) -> Result<HogModeStatus>;
+
     // === Device Events ===
 
     /// Register a callback for device change events
