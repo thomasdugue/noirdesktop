@@ -40,8 +40,13 @@ import {
   playTrack, playAlbum, togglePlay, playNextTrack, playPreviousTrack,
   resetPlayerUI, getCurrentTrackDuration, triggerGaplessPreload,
   loadAudioDevices, updateVolumeIcon, updateHogModeStatus,
-  updateRepeatButtonUI, initPlayback
+  updateRepeatButtonUI, initPlayback, getNextTrackInfo, getCurrentTrackPath,
+  performSeek
 } from './playback.js'
+import {
+  toggleFullscreenPlayer, closeFullscreenPlayer, isFullscreenOpen,
+  setNextTrackInfoCallback, setCurrentTrackPathCallback
+} from './fullscreen-player.js'
 import {
   addToQueue, playNext, removeFromQueue, clearQueue,
   toggleQueuePanel, updateQueueDisplay, updateQueueIndicators,
@@ -169,6 +174,10 @@ app.updateNowPlayingHighlight = updateNowPlayingHighlight
 app.closeAlbumDetail = closeAlbumDetail
 app.invalidateDiscoveryMixCache = invalidateDiscoveryMixCache
 app.getVirtualScrollState = getVirtualScrollState
+
+// Fullscreen player
+app.toggleFullscreenPlayer = toggleFullscreenPlayer
+app.closeFullscreenPlayer = closeFullscreenPlayer
 
 // addAlbumToQueue — ajoute tous les tracks d'un album à la queue
 app.addAlbumToQueue = function addAlbumToQueue(albumKey) {
@@ -757,6 +766,49 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   })
   setTimeout(eqInit, 500)
+
+  // === FULLSCREEN PLAYER ===
+  // Register callbacks for fullscreen (avoids circular imports)
+  setNextTrackInfoCallback(getNextTrackInfo)
+  setCurrentTrackPathCallback(getCurrentTrackPath)
+
+  // Cover double-click opens fullscreen
+  const coverArt = document.getElementById('cover-art')
+  if (coverArt) {
+    coverArt.addEventListener('dblclick', () => toggleFullscreenPlayer())
+  }
+
+  // Fullscreen close button
+  const fsClose = document.getElementById('fs-close')
+  if (fsClose) fsClose.addEventListener('click', () => closeFullscreenPlayer())
+
+  // Fullscreen controls
+  const fsPrev = document.getElementById('fs-prev')
+  if (fsPrev) fsPrev.addEventListener('click', () => playPreviousTrack())
+
+  const fsPlayPause = document.getElementById('fs-play-pause')
+  if (fsPlayPause) fsPlayPause.addEventListener('click', () => togglePlay())
+
+  const fsNextBtn = document.getElementById('fs-next-btn')
+  if (fsNextBtn) fsNextBtn.addEventListener('click', () => playNextTrack())
+
+  // Fullscreen progress bar seek
+  const fsProgress = document.getElementById('fs-progress')
+  if (fsProgress) {
+    fsProgress.addEventListener('input', () => {
+      // Mirror value to main progress bar then seek
+      const mainProgress = document.getElementById('progress')
+      if (mainProgress) mainProgress.value = fsProgress.value
+      performSeek()
+    })
+  }
+
+  // Escape closes fullscreen
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isFullscreenOpen()) {
+      closeFullscreenPlayer()
+    }
+  })
 
   // Auto-resume après délai
   setTimeout(handleAutoResume, 3000)

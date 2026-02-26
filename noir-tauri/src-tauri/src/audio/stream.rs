@@ -83,6 +83,7 @@ pub fn create_audio_stream(
     next_consumer: Arc<Mutex<Option<HeapCons<f32>>>>,
     next_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>>,
     gapless_enabled: Arc<AtomicBool>,
+    rms_energy: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<Box<dyn AudioOutputStream>, String> {
     use super::coreaudio_stream::CoreAudioStream;
     CoreAudioStream::new(
@@ -99,6 +100,7 @@ pub fn create_audio_stream(
         next_consumer,
         next_streaming_state,
         gapless_enabled,
+        rms_energy,
     ).map(|s| Box::new(s) as Box<dyn AudioOutputStream>)
 }
 

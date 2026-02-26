@@ -6,6 +6,17 @@ import { invoke, listen } from './state.js'
 import { app } from './app.js'
 import { formatTime, formatQuality, showToast, isValidImageSrc, escapeHtml, getCodecFromPath } from './utils.js'
 import { isDragging } from './drag.js'
+import { isFullscreenOpen, updateFullscreenData, setFullscreenPlayState, setFullscreenRms } from './fullscreen-player.js'
+
+// === FULLSCREEN PLAY/PAUSE ICON SYNC ===
+
+function syncFsPlayPauseIcon(playing) {
+  const btn = document.getElementById('fs-play-pause')
+  if (!btn) return
+  btn.innerHTML = playing
+    ? '<svg width="28" height="28" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
+    : '<svg width="28" height="28" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>'
+}
 
 // === CONSTANTES ===
 const MAX_INTERPOLATION_DELTA = 0.15  // Max 150ms d'interpolation (évite les sauts)
@@ -130,6 +141,11 @@ export async function playTrack(index) {
   // Met à jour la section "Lecture en cours" de la Home si visible
   app.updateHomeNowPlayingSection()
 
+  // Met à jour la vue fullscreen si ouverte
+  setFullscreenPlayState(true)
+  syncFsPlayPauseIcon(true)
+  setTimeout(() => updateFullscreenData(), 200)
+
   // Enregistre la lecture dans l'historique et invalide le cache Home
   invoke('record_play', {
     path: track.path,
@@ -174,6 +190,24 @@ export function getNextTrackPath() {
     return albumTracks[0].path
   }
   return null
+}
+
+// Returns info about the next track (for fullscreen "up next" display)
+export function getNextTrackInfo() {
+  const nextPath = getNextTrackPath()
+  if (!nextPath) return null
+  const track = library.tracks.find(t => t.path === nextPath)
+  if (!track) return null
+  return {
+    title: track.metadata?.title || track.name || 'Unknown',
+    artist: track.metadata?.artist || ''
+  }
+}
+
+// Returns current track path (for fullscreen color extraction)
+export function getCurrentTrackPath() {
+  if (playback.currentTrackIndex < 0) return null
+  return library.tracks[playback.currentTrackIndex]?.path || null
 }
 
 export function triggerGaplessPreload() {
@@ -528,6 +562,16 @@ export function startPositionInterpolation() {
     dom.progressBar.value = Math.min(percent, 100)
     dom.currentTimeEl.textContent = formatTime(clampedPosition)
     updateProgressBarStyle(percent)
+
+    // Sync fullscreen progress bar & time
+    if (isFullscreenOpen()) {
+      const fsProg = document.getElementById('fs-progress')
+      const fsCur = document.getElementById('fs-current-time')
+      const fsDur = document.getElementById('fs-duration')
+      if (fsProg) fsProg.value = Math.min(percent, 100)
+      if (fsCur) fsCur.textContent = formatTime(clampedPosition)
+      if (fsDur) fsDur.textContent = formatTime(duration)
+    }
   }
 
   playback.interpolationAnimationId = requestAnimationFrame(interpolate)
@@ -789,6 +833,9 @@ export function updateAudioSpecs(specs) {
     console.log(`✓ Bit-perfect: ${specs.source_sample_rate}Hz/${specs.source_bit_depth}bit`)
     startBitPerfectAnimation()
   }
+
+  // Sync fullscreen specs display
+  if (isFullscreenOpen()) updateFullscreenData()
 }
 
 // Reset du moniteur audio specs
@@ -847,11 +894,14 @@ export async function updateCoverArt(track) {
 export async function initRustAudioListeners() {
   // Progression de lecture (émis ~10 fois par seconde par Rust)
   await listen('playback_progress', (event) => {
-    const { position, duration } = event.payload
+    const { position, duration, rms } = event.payload
 
     // Met à jour les variables globales
     playback.audioPositionFromRust = position
     playback.audioDurationFromRust = duration
+
+    // Forward RMS energy to fullscreen player visualisation
+    if (rms !== undefined) setFullscreenRms(rms)
 
     // Synchronise l'interpolation avec la position Rust
     syncToRustPosition(position)
@@ -915,6 +965,8 @@ export async function initRustAudioListeners() {
     dom.playPauseBtn.textContent = '▶'
     // Stoppe la boucle RAF pour économiser le CPU
     stopPositionInterpolation()
+    setFullscreenPlayState(false)
+    syncFsPlayPauseIcon(false)
   })
 
   await listen('playback_resumed', () => {
@@ -925,6 +977,8 @@ export async function initRustAudioListeners() {
     playback.lastRustTimestamp = performance.now()
     // Redémarre la boucle RAF
     startPositionInterpolation()
+    setFullscreenPlayState(true)
+    syncFsPlayPauseIcon(true)
   })
 
   // Fin de lecture (émis par Rust quand le track est terminé)

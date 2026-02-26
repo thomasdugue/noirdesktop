@@ -2283,6 +2283,20 @@ fn get_cover_bytes_internal(path: &str) -> Option<Vec<u8>> {
     None
 }
 
+// Retourne la pochette en base64 data URI (pour extraction de couleurs côté JS)
+#[tauri::command]
+fn get_cover_base64(path: &str) -> Option<String> {
+    let bytes = get_cover_bytes_internal(path)?;
+    let b64 = general_purpose::STANDARD.encode(&bytes);
+    // Detect mime from magic bytes
+    let mime = if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
+    Some(format!("data:{};base64,{}", mime, b64))
+}
+
 // Génère un thumbnail 150x150 en JPEG (plus rapide que WebP)
 fn generate_thumbnail(source_data: &[u8], thumb_path: &Path) -> Result<(), String> {
     // 1. Décoder l'image source
@@ -3479,6 +3493,7 @@ pub fn run() {
             load_all_metadata_cache,
             get_added_dates,
             get_cover,
+            get_cover_base64,
             get_cover_thumbnail,
             generate_thumbnails_batch,
             fetch_internet_cover,
