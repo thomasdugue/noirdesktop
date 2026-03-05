@@ -8,13 +8,7 @@
 </head>
 <body>
   <!-- Zone de drag pour déplacer la fenêtre (barre de titre macOS) -->
-  <div class="titlebar" data-tauri-drag-region>
-    <button class="titlebar-settings-btn" id="btn-settings" title="Settings">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-      </svg>
-    </button>
-  </div>
+  <div class="titlebar" data-tauri-drag-region></div>
 
   <!-- Conteneur principal -->
   <div class="app">
@@ -23,6 +17,18 @@
       <!-- Handle pour resize la sidebar -->
       <div class="sidebar-resize-handle" id="sidebar-resize-handle"></div>
       <div class="sidebar-header">
+        <svg class="app-logo" viewBox="0 0 343 232" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="31.5" cy="117.5" r="31.5" fill="white"/>
+          <path d="M69 117C62.2 94.6 42 86 33 86C33.5 103.833 32.6 141.8 33 149C57 149 67 126.5 69 117Z" fill="white"/>
+          <circle cx="311.5" cy="117.5" r="31.5" transform="rotate(-180 311.5 117.5)" fill="white"/>
+          <path d="M274 118C280.8 140.4 301 149 310 149C309.5 131.167 310.4 93.2 310 86C286 86 276 108.5 274 118Z" fill="white"/>
+          <rect x="69" y="48" width="64" height="138" rx="32" fill="white"/>
+          <rect x="137" width="69" height="232" rx="32" fill="white"/>
+          <rect x="210" y="48" width="64" height="138" rx="32" fill="white"/>
+          <circle cx="171.5" cy="117.5" r="38.5" fill="black"/>
+          <path d="M70 116.854C75.2991 106.115 111.333 91.9599 132 116.854C116.315 139.112 76.359 131.985 70 116.854Z" fill="black"/>
+          <path d="M211 116.854C216.299 106.115 252.333 91.9599 273 116.854C257.315 139.112 217.359 131.985 211 116.854Z" fill="black"/>
+        </svg>
         <h2>Noir</h2>
       </div>
 
@@ -173,6 +179,16 @@
           <div id="search-results-panel" class="search-results-panel hidden">
             <div class="search-results-content"></div>
           </div>
+        </div>
+        <div class="search-bar-actions">
+          <button id="feedback-btn" class="feedback-header-btn" title="Give Feedback">
+            Give feedback <span class="beta-badge">BETA</span>
+          </button>
+          <button class="titlebar-settings-btn" id="btn-settings" title="Settings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -361,6 +377,21 @@
         </button>
       </div>
 
+      <!-- Section NETWORK LIBRARY -->
+      <div class="settings-section">
+        <div class="settings-section-title">Network Library</div>
+        <div id="settings-network-sources" class="settings-path-list">
+          <!-- Network sources populated dynamically -->
+        </div>
+        <button id="settings-add-network" class="settings-btn-add">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="7" width="20" height="10" rx="2"/><line x1="6" y1="12" x2="6.01" y2="12"/>
+            <line x1="10" y1="12" x2="10.01" y2="12"/>
+          </svg>
+          Add network folder (NAS)
+        </button>
+      </div>
+
       <!-- Section LECTURE -->
       <div class="settings-section">
         <div class="settings-section-title">Playback</div>
@@ -424,56 +455,47 @@
         </div>
       </div>
 
-      <!-- Footer version -->
+      <!-- Footer version + Quitter -->
       <div class="settings-footer">
         <span class="settings-version" id="settings-version-label">Noir v0.1.0</span>
+        <button id="settings-quit-btn" class="settings-quit-btn" title="Quitter Noir">
+          Quitter Noir
+        </button>
       </div>
     </div>
   </aside>
 
   <!-- Lecteur (fixé en bas, pleine largeur) -->
   <div id="player" class="player hidden">
-    <!-- 1. Zone gauche : cover + infos piste -->
-    <div class="player-left">
-      <div id="cover-art" class="cover-art cover-art-clickable" title="Go to album">
-        <div class="cover-placeholder">♪</div>
+    <!-- Col 1 (span 2 rows) : Cover art -->
+    <div id="cover-art" class="cover-art cover-art-clickable" title="Fullscreen">
+      <div class="cover-placeholder">♪</div>
+      <div class="cover-hover-overlay">
+        <button id="cover-fs-btn" class="cover-fs-btn" title="Fullscreen">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
+          </svg>
+        </button>
       </div>
-      <div class="now-playing">
-        <span id="track-name">-</span>
-        <span class="track-meta">
-          <span id="track-folder" class="track-folder">-</span>
-        </span>
+    </div>
+
+    <!-- Col 2 row 1 : Titre -->
+    <div class="player-track-title">
+      <span id="track-name">-</span>
+    </div>
+
+    <!-- Col 3 row 1 : Contrôles -->
+    <div class="player-controls-row">
+      <button id="shuffle" class="btn-mode" title="Shuffle">⤮</button>
+      <div class="player-controls">
+        <button id="prev" class="btn-control btn-nav">⏮</button>
+        <button id="play-pause" class="btn-control btn-play">▶</button>
+        <button id="next" class="btn-control btn-nav">⏭</button>
       </div>
+      <button id="repeat" class="btn-mode" title="Repeat">⟳</button>
     </div>
 
-    <!-- 2. Queue button -->
-    <button id="queue-btn" class="btn-mode btn-queue" title="Queue">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
-      </svg>
-    </button>
-
-    <!-- 3. Progress bar (prend l'espace flexible) -->
-    <div class="progress-container">
-      <span id="current-time">0:00</span>
-      <input type="range" id="progress" class="progress-bar" value="0" min="0" max="100">
-      <span id="duration">0:00</span>
-    </div>
-
-    <!-- 4. Shuffle -->
-    <button id="shuffle" class="btn-mode" title="Shuffle">⤮</button>
-
-    <!-- 5. Contrôles de lecture -->
-    <div class="player-controls">
-      <button id="prev" class="btn-control btn-nav">⏮</button>
-      <button id="play-pause" class="btn-control btn-play">▶</button>
-      <button id="next" class="btn-control btn-nav">⏭</button>
-    </div>
-
-    <!-- 6. Repeat -->
-    <button id="repeat" class="btn-mode" title="Repeat">⟳</button>
-
-    <!-- 7. SRC OUT specs -->
+    <!-- Col 4 row 1 : Audio specs -->
     <span id="audio-specs" class="audio-specs">
       <span class="specs-source">
         <span class="specs-label">SRC</span>
@@ -487,18 +509,44 @@
       <span id="bit-perfect-badge" class="bit-perfect-badge">BIT PERFECT</span>
     </span>
 
-    <!-- 8. Volume : mute + slider -->
-    <div class="volume-container">
-      <button id="volume-btn" class="btn-volume" title="Volume">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <path id="volume-icon-path" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-        </svg>
-      </button>
-      <input type="range" id="volume" class="volume-bar" value="100" min="0" max="100">
+    <!-- Col 2 row 2 : Artiste + boutons panel -->
+    <div class="player-track-meta">
+      <button id="track-folder" class="track-folder artist-link" title="Go to artist">-</button>
+      <div class="player-panel-btns">
+        <button id="btn-lyrics" class="btn-mode btn-lyrics" title="Lyrics">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 3c-4.97 0-9 2.69-9 6 0 1.93 1.13 3.66 2.94 4.85L5 17l3.5-1.5c1.1.33 2.26.5 3.5.5 4.97 0 9-2.69 9-6s-4.03-6-9-6zm-1 9H7v-2h4v2zm6 0h-4v-2h4v2zm0-4H7V6h10v2z"/>
+          </svg>
+        </button>
+        <button id="queue-btn" class="btn-mode btn-queue" title="Queue">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
-    <!-- 9. Sélecteur de sortie audio -->
-    <div class="audio-output-container">
+    <!-- Col 3 row 2 : Progress (classe progress-container préservée pour SMB buffering) -->
+    <div class="progress-container player-progress">
+      <span id="current-time">0:00</span>
+      <input type="range" id="progress" class="progress-bar" value="0" min="0" max="100">
+      <span id="duration">0:00</span>
+    </div>
+
+    <!-- Col 4 row 2 : Volume + sortie audio -->
+    <div class="player-vol-row">
+      <!-- Volume : mute + slider -->
+      <div class="volume-container">
+        <button id="volume-btn" class="btn-volume" title="Volume">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path id="volume-icon-path" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+          </svg>
+        </button>
+        <input type="range" id="volume" class="volume-bar" value="100" min="0" max="100">
+      </div>
+
+      <!-- Sélecteur de sortie audio -->
+      <div class="audio-output-container">
       <button id="audio-output-btn" class="btn-audio-output" title="Audio output">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
           <path d="M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-5 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm0 16c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
@@ -560,7 +608,8 @@
         </div>
       </div>
     </div>
-  </div>
+    </div><!-- /.player-vol-row -->
+  </div><!-- /#player -->
 
   <!-- Panel Equalizer (side panel droit) -->
   <aside id="eq-panel" class="eq-panel">
@@ -610,6 +659,22 @@
     </div>
   </aside>
 
+  <!-- Panel Lyrics (side panel droit) -->
+  <aside id="lyrics-panel" class="lyrics-panel">
+    <div class="lyrics-header">
+      <h3>Lyrics</h3>
+      <div id="lyrics-source" class="lyrics-source"></div>
+      <button id="close-lyrics" class="btn-close-panel" title="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <div id="lyrics-content" class="lyrics-content">
+      <div id="lyrics-lines"></div>
+    </div>
+  </aside>
+
   <!-- Modale création/renommage playlist -->
   <div id="playlist-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
@@ -636,6 +701,92 @@
     </div>
   </div>
 
+  <!-- Modal feedback -->
+  <div id="feedback-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content feedback-modal-content">
+      <div class="feedback-modal-header">
+        <h3>Beta Feedback</h3>
+        <button id="feedback-close" class="feedback-close-btn" title="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Type: Bug / Feature / UX / Other -->
+      <div class="feedback-type-row">
+        <span class="feedback-type-label">TYPE</span>
+        <label class="feedback-radio">
+          <input type="radio" name="fb-type" id="fb-type-bug" value="bug" checked>
+          <span class="feedback-radio-label">Bug</span>
+        </label>
+        <label class="feedback-radio">
+          <input type="radio" name="fb-type" id="fb-type-feature" value="feature">
+          <span class="feedback-radio-label">Feature</span>
+        </label>
+        <label class="feedback-radio">
+          <input type="radio" name="fb-type" id="fb-type-ux" value="ux">
+          <span class="feedback-radio-label">UX</span>
+        </label>
+        <label class="feedback-radio">
+          <input type="radio" name="fb-type" id="fb-type-other" value="other">
+          <span class="feedback-radio-label">Other</span>
+        </label>
+      </div>
+
+      <!-- Summary -->
+      <div class="feedback-field">
+        <div class="feedback-field-header">
+          <label for="feedback-title">SUMMARY <span class="feedback-required">*</span></label>
+          <span id="feedback-title-counter" class="feedback-counter">0/80</span>
+        </div>
+        <input type="text" id="feedback-title" class="modal-input" placeholder="One-line summary..." maxlength="80">
+      </div>
+
+      <!-- Description -->
+      <div class="feedback-field">
+        <label for="feedback-description">DESCRIPTION <span class="feedback-required">*</span></label>
+        <textarea id="feedback-description" class="modal-input feedback-textarea" placeholder="Steps to reproduce, expected vs actual behavior, etc.&#10;&#10;Tip: Cmd+Enter to send" rows="4"></textarea>
+      </div>
+
+      <!-- Email (optional) -->
+      <div class="feedback-field">
+        <label for="feedback-email">EMAIL <span class="feedback-optional">optional — so I can follow up</span></label>
+        <input type="email" id="feedback-email" class="modal-input" placeholder="you@example.com">
+      </div>
+
+      <!-- Severity -->
+      <div id="feedback-severity-row" class="feedback-severity-row">
+        <label>SEVERITY</label>
+        <div class="feedback-severity-options">
+          <label class="feedback-radio">
+            <input type="radio" name="fb-severity" id="fb-sev-blocker" value="blocker">
+            <span class="feedback-radio-label">Blocker</span>
+          </label>
+          <label class="feedback-radio">
+            <input type="radio" name="fb-severity" id="fb-sev-high" value="high" checked>
+            <span class="feedback-radio-label">High</span>
+          </label>
+          <label class="feedback-radio">
+            <input type="radio" name="fb-severity" id="fb-sev-medium" value="medium">
+            <span class="feedback-radio-label">Medium</span>
+          </label>
+          <label class="feedback-radio">
+            <input type="radio" name="fb-severity" id="fb-sev-low" value="low">
+            <span class="feedback-radio-label">Low</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Buttons -->
+      <div class="modal-buttons">
+        <button id="feedback-cancel" class="btn-modal-secondary">Cancel</button>
+        <button id="feedback-submit" class="btn-modal-primary">Send →</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast de notification -->
   <div id="toast" class="toast"></div>
 
@@ -645,6 +796,13 @@
 
     <!-- Overlay d'infos par-dessus le canvas -->
     <div class="fs-overlay">
+      <!-- Bouton lyrics fullscreen -->
+      <button id="fs-lyrics-btn" class="fs-lyrics-btn" title="Lyrics">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 3c-4.97 0-9 2.69-9 6 0 1.93 1.13 3.66 2.94 4.85L5 17l3.5-1.5c1.1.33 2.26.5 3.5.5 4.97 0 9-2.69 9-6s-4.03-6-9-6zm-1 9H7v-2h4v2zm6 0h-4v-2h4v2zm0-4H7V6h10v2z"/>
+        </svg>
+      </button>
+
       <!-- Bouton fermer -->
       <button id="fs-close" class="fs-close" title="Close fullscreen">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -699,6 +857,11 @@
         <span id="fs-next-track" class="fs-next-track">-</span>
       </div>
     </div>
+  </div>
+
+  <!-- Overlay lyrics en plein écran (dans fullscreen-player) -->
+  <div id="fs-lyrics-overlay" class="fs-lyrics-overlay hidden">
+    <div id="fs-lyrics-lines" class="fs-lyrics-lines"></div>
   </div>
 
   <script src="renderer.js" type="module"></script>

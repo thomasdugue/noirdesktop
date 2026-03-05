@@ -98,6 +98,7 @@ export function toggleQueuePanel() {
     if (ui.isTrackInfoPanelOpen) closeTrackInfoPanel()
     if (ui.isSettingsPanelOpen) app.closeSettings()
     if (app.getEqPanelOpen()) app.closeEqPanel()
+    app.closeLyricsPanel?.()
   }
   ui.isQueuePanelOpen = !ui.isQueuePanelOpen
   const panel = document.getElementById('queue-panel')
@@ -694,6 +695,7 @@ export async function showTrackInfoPanel(track) {
   if (ui.isQueuePanelOpen) toggleQueuePanel()
   if (ui.isSettingsPanelOpen) app.closeSettings()
   if (app.getEqPanelOpen()) app.closeEqPanel()
+  app.closeLyricsPanel?.()
 
   ui.trackInfoCurrentTrack = track
   ui.isTrackInfoPanelOpen = true
@@ -1337,6 +1339,7 @@ export function closeAllPanels() {
   if (ui.isTrackInfoPanelOpen) closeTrackInfoPanel()
   if (ui.isSettingsPanelOpen) app.closeSettings()
   if (app.getEqPanelOpen()) app.closeEqPanel()
+  app.closeLyricsPanel?.()
 }
 
 // ============================================================================

@@ -17,11 +17,24 @@ import { showToast } from './utils.js'
 // Auto-update
 import { initAutoUpdate } from './auto-update.js'
 
+// Feedback
+import { initFeedbackButton } from './feedback.js'
+
+// Network / NAS
+import { initNetworkUI, populateNetworkSources } from './network.js'
+
 // EQ
 import {
   eqInit, openEqPanel, closeEqPanel, toggleEqPanel,
   getEqPanelOpen, setEqPanelCallbacks
 } from './eq.js'
+
+// Lyrics
+import {
+  toggleLyricsPanel, closeLyricsPanel, isLyricsPanelOpen,
+  toggleFullscreenLyrics, closeFullscreenLyrics,
+  loadLyricsForTrack, syncLyricsToTime
+} from './lyrics.js'
 
 // Modules extraits
 import { initCustomDragSystem, prepareCustomDrag, prepareAlbumDrag } from './drag.js'
@@ -32,7 +45,7 @@ import {
 import {
   initCoverObserver, selectFolder, groupTracksIntoAlbumsAndArtists,
   buildTrackLookup, loadCoverAsync, loadThumbnailAsync, loadArtistImageAsync,
-  observeCoverLoading, startBackgroundScan, invalidateHomeCache,
+  observeCoverLoading, observeArtistLoading, startBackgroundScan, invalidateHomeCache,
   updateIndexationStats, initScanListeners, initLibrary, removeTracksFromLibrary,
   invalidateDiscoveryMixCache as libInvalidateDiscoveryMixCache
 } from './library.js'
@@ -60,7 +73,7 @@ import {
   loadPlaylists, updatePlaylistsSidebar, addTrackToPlaylist,
   showAddToPlaylistMenu, showAddToPlaylistMenuMulti,
   displayPlaylistView, showPlaylistModal, initPlaylists,
-  exportPlaylistM3u, importPlaylistM3u
+  exportPlaylistM3u, importPlaylistM3u, createPlaylistFromAlbum
 } from './playlists.js'
 import {
   initShortcuts, activeShortcuts, formatShortcutDisplay,
@@ -104,11 +117,15 @@ app.loadThumbnailAsync = loadThumbnailAsync
 app.loadCoverAsync = loadCoverAsync
 app.loadArtistImageAsync = loadArtistImageAsync
 app.observeCoverLoading = observeCoverLoading
+app.observeArtistLoading = observeArtistLoading
 app.initCoverObserver = initCoverObserver
 app.startBackgroundScan = startBackgroundScan
 app.updateIndexationStats = updateIndexationStats
 app.removeTracksFromLibrary = removeTracksFromLibrary
 app.selectFolder = selectFolder
+
+// Network / NAS
+app.populateNetworkSources = populateNetworkSources
 
 // Playback
 app.playTrack = playTrack
@@ -153,6 +170,7 @@ app.toggleFavorite = toggleFavorite
 app.getFavoriteButtonHtml = getFavoriteButtonHtml
 app.loadPlaylists = loadPlaylists
 app.updatePlaylistsSidebar = updatePlaylistsSidebar
+app.createPlaylistFromAlbum = createPlaylistFromAlbum
 app.addTrackToPlaylist = addTrackToPlaylist
 app.showAddToPlaylistMenu = showAddToPlaylistMenu
 app.showAddToPlaylistMenuMulti = showAddToPlaylistMenuMulti
@@ -179,6 +197,13 @@ app.getVirtualScrollState = getVirtualScrollState
 app.toggleFullscreenPlayer = toggleFullscreenPlayer
 app.closeFullscreenPlayer = closeFullscreenPlayer
 
+// Lyrics
+app.closeLyricsPanel = closeLyricsPanel
+app.isLyricsPanelOpen = isLyricsPanelOpen
+app.loadLyricsForTrack = loadLyricsForTrack
+app.syncLyricsToTime = syncLyricsToTime
+app.closeFullscreenLyrics = closeFullscreenLyrics
+
 // addAlbumToQueue — ajoute tous les tracks d'un album à la queue
 app.addAlbumToQueue = function addAlbumToQueue(albumKey) {
   const album = library.albums[albumKey]
@@ -201,12 +226,14 @@ function openSettings() {
   if (ui.isQueuePanelOpen) toggleQueuePanel()
   if (ui.isTrackInfoPanelOpen) closeTrackInfoPanel()
   if (getEqPanelOpen()) closeEqPanel()
+  closeLyricsPanel()
 
   ui.isSettingsPanelOpen = true
   panel.classList.add('open')
 
   populateSettingsAudioDevices()
   populateSettingsLibraryPaths()
+  populateNetworkSources()
   populateSettingsValues()
   populateShortcutsList()
 }
@@ -447,6 +474,19 @@ function initSettingsPanel() {
     closeBtn.addEventListener('click', closeSettings)
   }
 
+  // Quitter Noir — ferme proprement l'app (sur macOS la croix rouge cache seulement)
+  const quitBtn = document.getElementById('settings-quit-btn')
+  if (quitBtn) {
+    quitBtn.addEventListener('click', async () => {
+      try {
+        await invoke('quit_app')
+      } catch (e) {
+        // Fallback si la commande échoue
+        console.error('[QUIT] quit_app failed:', e)
+      }
+    })
+  }
+
   const audioSelect = document.getElementById('settings-audio-device')
   if (audioSelect) {
     audioSelect.addEventListener('change', async () => {
@@ -685,6 +725,10 @@ async function init() {
     console.log('[INIT] Displaying current view:', ui.currentView)
     displayCurrentView()
 
+    // Rebuild la sidebar playlists maintenant que library.tracks est peuplé
+    // (le premier appel de updatePlaylistsSidebar à DOMContentLoaded était trop tôt)
+    if (app.updatePlaylistsSidebar) app.updatePlaylistsSidebar()
+
     updateIndexationStats(cachedStats)
 
     console.log(`[INIT] Instant startup complete: ${cachedTracks.length} tracks loaded from cache`)
@@ -753,6 +797,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // Auto-update
   initAutoUpdate()
 
+  // Feedback button
+  initFeedbackButton()
+
+  // Network / NAS UI
+  initNetworkUI()
+
   // EQ avec callbacks pour fermer les autres panels
   setEqPanelCallbacks({
     closeOtherPanels: () => {
@@ -763,6 +813,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (ui.isQueuePanelOpen) toggleQueuePanel()
       if (ui.isTrackInfoPanelOpen) closeTrackInfoPanel()
       if (ui.isSettingsPanelOpen) closeSettings()
+      closeLyricsPanel()
     }
   })
   setTimeout(eqInit, 500)
@@ -772,11 +823,22 @@ document.addEventListener('DOMContentLoaded', () => {
   setNextTrackInfoCallback(getNextTrackInfo)
   setCurrentTrackPathCallback(getCurrentTrackPath)
 
-  // Cover double-click opens fullscreen
-  const coverArt = document.getElementById('cover-art')
-  if (coverArt) {
-    coverArt.addEventListener('dblclick', () => toggleFullscreenPlayer())
-  }
+  // === LYRICS ===
+  document.getElementById('btn-lyrics')?.addEventListener('click', toggleLyricsPanel)
+  document.getElementById('close-lyrics')?.addEventListener('click', closeLyricsPanel)
+  document.getElementById('fs-lyrics-btn')?.addEventListener('click', toggleFullscreenLyrics)
+
+  // Cover click → fullscreen (single click, via overlay button)
+  document.getElementById('cover-fs-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    toggleFullscreenPlayer()
+  })
+
+  // Artist link → navigate to artist page
+  document.getElementById('track-folder')?.addEventListener('click', () => {
+    const artistName = document.getElementById('track-folder')?.textContent?.trim()
+    if (artistName && artistName !== '-') app.navigateToArtistPage?.(artistName)
+  })
 
   // Fullscreen close button
   const fsClose = document.getElementById('fs-close')

@@ -41,6 +41,12 @@ export const playback = {
   // Audio device
   currentAudioDeviceId: null,
   devicePollingInterval: null,
+  // Contexte de lecture : détermine le comportement en fin de track/album
+  // 'album'   → joué depuis une vue album/artiste → s'arrête en fin d'album (pas de saut inter-album)
+  // 'library' → joué depuis la vue liste complète → lecture séquentielle globale
+  // 'playlist'→ joué depuis une playlist → suit la queue uniquement
+  // null      → indéterminé → comportement conservateur (s'arrête en fin d'album)
+  playbackContext: null,
 };
 
 // === LIBRARY DATA ===
@@ -69,6 +75,7 @@ export const ui = {
   isTrackInfoPanelOpen: false,
   isEqPanelOpen: false,
   isSettingsPanelOpen: false,
+  isLyricsPanelOpen: false,
   trackInfoCurrentTrack: null,
   // Navigation
   navigationHistory: [],
@@ -78,6 +85,10 @@ export const ui = {
   // Indexation
   isIndexing: false,
   isIndexationExpanded: false,
+  // Ordre visuel de la vue tracks (paths triés/filtrés — cohérent avec l'affichage)
+  // Mis à jour par views.js à chaque rendu/sort/filtre de la vue tracks.
+  // Utilisé par playback.js pour la navigation séquentielle en contexte 'library'.
+  tracksViewOrder: [],
 };
 
 // === QUEUE ===
@@ -107,7 +118,7 @@ export const caches = {
   },
 };
 
-export const HOME_CACHE_TTL = 30000;  // 30 secondes
+export const HOME_CACHE_TTL = 5 * 60 * 1000;  // 5 minutes (était 30s — beaucoup trop court)
 
 // === FAVORITES ===
 export const favorites = {
