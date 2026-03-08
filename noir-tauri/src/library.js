@@ -23,6 +23,9 @@ export function initCoverObserver() {
         const img = card.querySelector('.album-cover-img, .carousel-cover-img')
         const placeholder = card.querySelector('.album-cover-placeholder, .carousel-cover-placeholder')
         const coverPath = card.dataset.coverPath
+        // Récupère les métadonnées stockées lors de observeCoverLoading
+        const artist = card.dataset.coverArtist || null
+        const album = card.dataset.coverAlbum || null
 
         if (coverPath && img && !img.src) {
           const cached = caches.coverCache.get(coverPath)
@@ -31,7 +34,8 @@ export function initCoverObserver() {
             img.style.display = 'block'
             if (placeholder) placeholder.style.display = 'none'
           } else {
-            loadThumbnailAsync(coverPath, img).then(() => {
+            // Passe artist/album pour activer le fallback Internet si pas de cover embarquée
+            loadThumbnailAsync(coverPath, img, artist, album).then(() => {
               if (img.style.display === 'block' && placeholder) {
                 placeholder.style.display = 'none'
               }
@@ -49,10 +53,67 @@ export function initCoverObserver() {
   })
 }
 
-export function observeCoverLoading(card, coverPath) {
+// artist et album sont optionnels mais nécessaires pour le fallback Internet
+// (fetch_internet_cover via MusicBrainz + CoverArtArchive)
+export function observeCoverLoading(card, coverPath, artist = null, album = null) {
   if (!coverObserver) initCoverObserver()
   card.dataset.coverPath = coverPath
+  if (artist) card.dataset.coverArtist = artist
+  if (album) card.dataset.coverAlbum = album
   coverObserver.observe(card)
+}
+
+// === LAZY LOADING DES IMAGES D'ARTISTES (IntersectionObserver) ===
+let artistObserver = null
+
+function initArtistObserver() {
+  artistObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const card = entry.target
+        const img = card.querySelector('.album-cover-img')
+        const placeholder = card.querySelector('.album-cover-placeholder')
+        const artistName = card.dataset.artistName
+        const fallbackAlbum = card.dataset.artistFallbackAlbum || null
+        const fallbackCoverPath = card.dataset.artistFallbackCoverPath || null
+
+        if (artistName && img && !img.src) {
+          // Vérifie le cache mémoire d'abord (pas de re-fetch inutile)
+          const cacheKey = `artist:${artistName}`
+          const cached = artistImageCache.get(cacheKey)
+          if (isValidImageSrc(cached)) {
+            img.src = cached
+            img.style.display = 'block'
+            if (placeholder) placeholder.style.display = 'none'
+          } else {
+            loadArtistImageAsync(artistName, img, fallbackAlbum, fallbackCoverPath).then(() => {
+              if (img.isConnected && img.style.display === 'block' && placeholder) {
+                placeholder.style.display = 'none'
+              }
+            })
+          }
+        }
+
+        artistObserver.unobserve(card)
+      }
+    })
+  }, {
+    root: document.querySelector('.albums-view'),
+    rootMargin: '100px',
+    threshold: 0.1
+  })
+}
+
+// Enregistre un card artiste pour lazy loading.
+// artistName : requis pour fetch_artist_image (Deezer / MusicBrainz)
+// fallbackAlbum : clé d'album (string) utilisée comme fallback si pas de photo artiste
+// fallbackCoverPath : chemin fichier audio local (pochette embarquée en dernier recours)
+export function observeArtistLoading(card, artistName, fallbackAlbum = null, fallbackCoverPath = null) {
+  if (!artistObserver) initArtistObserver()
+  card.dataset.artistName = artistName
+  if (fallbackAlbum) card.dataset.artistFallbackAlbum = fallbackAlbum
+  if (fallbackCoverPath) card.dataset.artistFallbackCoverPath = fallbackCoverPath
+  artistObserver.observe(card)
 }
 
 // === SÉLECTION DE DOSSIER ===
@@ -697,10 +758,12 @@ export async function initScanListeners() {
     updateIndexationStats(stats)
     showToast(`Indexing complete - ${stats.total_tracks} files`)
 
-    const shouldReload = new_tracks > 0 || removed_tracks > 0 || (library.tracks.length === 0 && stats.total_tracks > 0)
+    const shouldReload = new_tracks > 0 || removed_tracks > 0 ||
+                         (library.tracks.length === 0 && stats.total_tracks > 0)
     if (shouldReload) {
-      console.log(`Reloading library: new=${new_tracks}, removed=${removed_tracks}, local=${library.tracks.length}, scanned=${stats.total_tracks}`)
+      console.log(`Reloading library: new=${new_tracks}, removed=${removed_tracks}, total=${stats.total_tracks}`)
       invalidateDiscoveryMixCache()
+      caches.homeDataCache.isValid = false
       reloadLibraryFromCache()
     }
   })
@@ -829,9 +892,28 @@ export function initLibrary() {
 
   const refreshBtn = indexationEls.refreshCollapsed
   if (refreshBtn) {
-    refreshBtn.addEventListener('click', (e) => {
+    refreshBtn.addEventListener('click', async (e) => {
       e.stopPropagation()
-      startBackgroundScan()
+      // Scan local + sync toutes les sources SMB actives
+      await startBackgroundScan()
+      try {
+        const sources = await invoke('get_network_sources')
+        const activeSources = (sources || []).filter(s => s.enabled)
+        if (activeSources.length === 0) {
+          console.log('[Library] ⟳ Aucune source réseau active trouvée')
+        }
+        for (const source of activeSources) {
+          console.log('[Library] ⟳ Sync SMB →', source.name)
+          try {
+            await invoke('scan_network_source_cmd', { sourceId: source.id })
+            console.log('[Library] ⟳ Sync SMB terminé →', source.name)
+          } catch (smbErr) {
+            console.warn('[Library] SMB sync failed for', source.name, smbErr)
+          }
+        }
+      } catch (err) {
+        console.warn('[Library] Could not fetch network sources for sync:', err)
+      }
     })
   }
 

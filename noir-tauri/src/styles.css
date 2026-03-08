@@ -1473,6 +1473,7 @@ body.sidebar-resizing * {
 /* === ZONE PRINCIPALE === */
 .main-content {
   flex: 1;
+  min-width: 0; /* Permet au flex item de rétrécir en dessous de la taille de son contenu */
   display: flex;
   flex-direction: column;
   position: relative;
@@ -2199,6 +2200,7 @@ body.sidebar-resizing * {
 .artist-loose-tracks-section {
   margin-top: 32px;
   width: 100%;
+  grid-column: 1 / -1;
 }
 
 .artist-loose-tracks-title {
@@ -2551,18 +2553,13 @@ body.sidebar-resizing * {
 /* === PAGE HOME === */
 .home-container {
   padding: 20px clamp(16px, 4vw, 30px); /* Padding fluide */
-  /* Largeur = 100vw - sidebar (280px) - padding albums-view (48px) */
-  max-width: calc(100vw - 280px - 48px);
+  /* width: 100% s'adapte automatiquement au parent (albums-view content area),
+     quelle que soit la largeur du sidebar. Pas de max-width hardcodé. */
   width: 100%;
   box-sizing: border-box;
-  overflow-x: hidden; /* Empêche le débordement horizontal */
-}
-
-/* Quand sidebar est collapsed (< 900px) */
-@media (max-width: 900px) {
-  .home-container {
-    max-width: calc(100vw - 60px - 32px); /* sidebar 60px + padding réduit */
-  }
+  /* Pas de overflow — le carousel doit déborder au-delà de ce container
+     pour atteindre le padding de .albums-view. C'est .albums-view (overflow-x:clip)
+     qui gère le clipping final au bord de la fenêtre. */
 }
 
 .home-section {
@@ -2778,51 +2775,25 @@ body.sidebar-resizing * {
   /* Border vert supprimé - clean look */
 }
 
-/* Grille "Écouté récemment" - Mobile-first responsive */
+/* Grille "Écouté récemment" — 3 colonnes fixes, 2 lignes max (6 items) */
 .home-recent-grid {
   display: grid;
-  grid-template-columns: 1fr; /* Base: 1 colonne (mobile) */
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
-  width: 100%;
-  max-width: 100%; /* Ne peut pas dépasser le parent */
-  box-sizing: border-box;
-}
-
-
-/* >= 480px : 2 colonnes */
-@media (min-width: 480px) {
-  .home-recent-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-/* >= 768px : 3 colonnes */
-@media (min-width: 768px) {
-  .home-recent-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
-}
-
-/* >= 1024px : 3 colonnes max (6 tuiles = 3x2) */
-@media (min-width: 1024px) {
-  .home-recent-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
+  overflow: hidden;
 }
 
 .recent-track-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px;
+  gap: 12px;
+  padding: 10px 12px;
   background: #151515;
   border-radius: 6px;
   cursor: pointer;
   transition: background 0.2s;
   overflow: hidden;
   min-width: 0;
-  max-width: 100%; /* Ne peut pas dépasser la cellule de grille */
-  box-sizing: border-box;
 }
 
 .recent-track-item:hover {
@@ -2830,8 +2801,8 @@ body.sidebar-resizing * {
 }
 
 .recent-track-cover {
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: 4px;
   overflow: hidden;
   flex-shrink: 0;
@@ -2891,44 +2862,54 @@ body.sidebar-resizing * {
   text-overflow: ellipsis;
 }
 
-/* Carrousel horizontal - fluide */
+/* Carrousel horizontal — déborde au-delà de .home-container jusqu'au bord fenêtre.
+   Débordement = padding-droit .home-container + padding-droit .albums-view
+   Clipping final par .albums-view (overflow-x: clip) */
 .home-carousel {
   display: flex;
-  gap: clamp(12px, 2vw, 20px); /* Gap fluide */
+  gap: clamp(12px, 2vw, 20px);
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: clip; /* clip (pas hidden) — ne crée pas de scroll container Y → les events wheel verticaux remontent au parent */
   padding-bottom: 16px;
-  padding-right: 24px; /* Respiration pour le dernier item au bord droit */
+  padding-right: 24px; /* Respiration pour le dernier item au bord fenêtre */
   scroll-snap-type: x mandatory;
   -webkit-overflow-scrolling: touch;
-  /* Dépasse dans le padding droit de .albums-view pour atteindre le bord fenêtre */
-  width: calc(100% + 24px);
-  max-width: calc(100% + 24px);
+  /* Largeur = 100% + padding-droit .home-container + padding .albums-view */
+  width: calc(100% + clamp(16px, 4vw, 30px) + 24px);
+  max-width: calc(100% + clamp(16px, 4vw, 30px) + 24px);
   box-sizing: border-box;
 }
 
-/* Scrollbar stylée pour le carrousel - visible uniquement au scroll */
+/* Scrollbar carrousel — cachée par défaut, visible au hover */
 .home-carousel::-webkit-scrollbar {
-  height: 8px;
+  height: 6px;
 }
 
 .home-carousel::-webkit-scrollbar-track {
   background: transparent;
-  border-radius: 4px;
+  border-radius: 3px;
+  margin: 0 4px;
 }
 
 .home-carousel::-webkit-scrollbar-thumb {
   background: transparent;
-  border-radius: 4px;
-  transition: background 0.3s;
+  border-radius: 3px;
+}
+
+.home-carousel:hover::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .home-carousel:hover::-webkit-scrollbar-thumb {
-  background: #333;
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .home-carousel:hover::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.home-carousel:hover::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.45);
 }
 
 .carousel-item {
@@ -3176,17 +3157,23 @@ body.sidebar-resizing * {
   position: relative;
 }
 
-/* Col 2 row 1 : titre */
+/* Col 2 row 1 : titre (2 lignes max) */
 .player-track-title {
   grid-column: 2;
   grid-row: 1;
   align-self: end;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  min-width: 0;
   font-size: 13px;
   color: #fff;
   font-weight: 500;
+}
+
+.player-track-title #track-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.3;
 }
 
 /* Col 3 row 1 : contrôles */
@@ -3198,6 +3185,7 @@ body.sidebar-resizing * {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  transform: translateY(3px);
 }
 
 /* Col 4 row 1 : audio specs */
@@ -3206,6 +3194,7 @@ body.sidebar-resizing * {
   grid-row: 1;
   align-self: end;
   justify-self: end;
+  transform: translateY(3px);
 }
 
 /* Col 2 row 2 : artiste + boutons panel */
@@ -3224,7 +3213,7 @@ body.sidebar-resizing * {
 .player .progress-container {
   grid-column: 3;
   grid-row: 2;
-  align-self: start;
+  align-self: center;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3234,7 +3223,7 @@ body.sidebar-resizing * {
 .player-vol-row {
   grid-column: 4;
   grid-row: 2;
-  align-self: start;
+  align-self: center;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3267,29 +3256,47 @@ body.sidebar-resizing * {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
 }
 
 .player-vol-row .volume-bar {
-  width: 80px;
+  flex: 1;
+  min-width: 50px;
 }
 
-/* Boutons lyrics + queue groupés */
-.player-panel-btns {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+/* Boutons lyrics + queue dans la progress bar */
+.player-progress .btn-lyrics,
+.player-progress .btn-queue {
   flex-shrink: 0;
-}
-
-.player-panel-btns .btn-mode {
   width: 26px;
   height: 26px;
 }
 
-.player-panel-btns .btn-mode svg {
+.player-progress .btn-lyrics svg,
+.player-progress .btn-queue svg {
   width: 14px;
   height: 14px;
+}
+
+/* Contraste uniforme : toutes les icônes inactives identiques */
+.player-progress .btn-lyrics,
+.player-progress .btn-queue {
+  color: #555;
+  opacity: 1;
+}
+
+.player-progress .btn-lyrics:hover,
+.player-progress .btn-queue:hover {
+  color: #888;
+}
+
+.player-progress .btn-lyrics.active {
+  color: #C0C5CE;
+}
+
+.player-progress .btn-queue.active {
+  color: #fff;
 }
 
 /* Artiste cliquable */
@@ -3979,6 +3986,66 @@ body.player-visible .app {
   margin-left: 6px;
 }
 
+.airplay-discovery-hint {
+  padding: 10px 16px;
+  font-size: 11px;
+  color: #555;
+  border-top: 1px solid #1e1e1e;
+  line-height: 1.5;
+}
+
+.airplay-discovery-hint strong {
+  color: #666;
+}
+
+/* === Bit-Perfect Indicators (silver, matching player style) === */
+.rate-match {
+  color: #C0C5CE;
+  font-weight: 600;
+  text-shadow: 0 0 4px rgba(192, 197, 206, 0.25);
+}
+
+.device-bp-badge {
+  display: inline-block;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #C0C5CE;
+  text-shadow: 0 0 6px rgba(192, 197, 206, 0.35);
+  background: rgba(192, 197, 206, 0.08);
+  border: 1px solid rgba(192, 197, 206, 0.2);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+  position: relative;
+  overflow: hidden;
+}
+
+.device-bp-badge::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255,255,255,0) 30%,
+    rgba(255,255,255,0.5) 50%,
+    rgba(255,255,255,0) 70%,
+    transparent 100%
+  );
+  background-size: 300% 100%;
+  animation: device-bp-shine 8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes device-bp-shine {
+  0%, 100% { background-position: 200% 0; }
+  50%      { background-position: -100% 0; }
+}
+
 .audio-output-footer {
   padding: 14px 16px;
   border-top: 1px solid #333;
@@ -4350,7 +4417,7 @@ body.player-visible .app {
   position: fixed;
   top: 38px;
   right: 0;
-  bottom: 102px;
+  bottom: 96px;
   width: 320px;
   background: #111;
   border-left: 1px solid #1a1a1a;
@@ -4600,7 +4667,7 @@ body:not(.player-visible) .eq-panel {
   position: fixed;
   top: 38px;
   right: 0;
-  bottom: 102px;
+  bottom: 96px;
   width: 320px;
   background: #0d0d0d;
   border-left: 1px solid #1a1a1a;
@@ -5024,7 +5091,7 @@ body:not(.player-visible) .queue-panel {
   position: fixed;
   top: 38px;
   right: 0;
-  bottom: 102px;
+  bottom: 96px;
   width: 380px;
   background: linear-gradient(180deg, #0a0a0a 0%, #0d0d0d 100%);
   border-left: 1px solid #1a1a1a;
@@ -5705,7 +5772,7 @@ body:not(.player-visible) .track-info-panel {
   position: fixed;
   top: 38px;
   right: 0;
-  bottom: 102px;
+  bottom: 96px;
   width: 360px;
   background: #111;
   border-left: 1px solid #222;
@@ -6157,6 +6224,7 @@ body:not(.player-visible) .track-info-panel {
 .playlist-cover-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
   gap: 1px;
   border-radius: 3px;
   overflow: hidden;
@@ -6187,12 +6255,16 @@ body:not(.player-visible) .track-info-panel {
 .playlist-cover-grid-lg .playlist-cover-note-icon {
   font-size: 28px;
 }
-/* 1 cover : image pleine résolution (une seule colonne) */
+/* 1 cover : image pleine résolution (une seule colonne, une seule rangée) */
 .playlist-cover-single {
   grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
 }
-/* 2 covers : côte à côte — déjà géré par le layout 2 colonnes par défaut */
-/* 3-4 covers : grille 2×2 standard — aucune surcharge nécessaire */
+/* 2 covers : côte à côte (1 seule rangée, pleine hauteur) */
+.playlist-cover-duo {
+  grid-template-rows: 1fr;
+}
+/* 3-4 covers : grille 2×2 standard — grid-template-rows: 1fr 1fr sur .playlist-cover-grid */
 
 /* Cellule cover — div avec background-image (plus de <img>, élimine le white outline) */
 .playlist-cover-cell {
@@ -6833,21 +6905,21 @@ body:not(.player-visible) .track-info-panel {
   overflow: hidden;
 }
 
-/* NOTE: .home-recent-grid responsive est défini avec min-width dans la section HOME */
-
 @media (max-width: 900px) {
   /* Queue panel pleine largeur */
   .queue-panel {
     width: 100%;
   }
 
-  /* Sidebar collapse en icônes */
+  /* Sidebar collapse en icônes — 48px = juste assez pour les icônes */
   .sidebar {
-    width: 60px;
+    width: 48px;
+    min-width: 48px;
+    max-width: 48px;
   }
 
   .sidebar-header {
-    padding: 16px 0;
+    padding: 12px 0;
     justify-content: center;
     gap: 0;
   }
@@ -6857,17 +6929,17 @@ body:not(.player-visible) .track-info-panel {
   }
 
   .app-logo {
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
   }
 
   .sidebar-nav {
-    padding: 8px 6px;
+    padding: 6px 4px;
   }
 
   .nav-item {
     justify-content: center;
-    padding: 12px;
+    padding: 10px;
   }
 
   .nav-item svg {
@@ -6912,6 +6984,95 @@ body:not(.player-visible) .track-info-panel {
     display: none;
   }
 
+  /* Sidebar resize handle disabled in compact mode */
+  .sidebar-resize-handle {
+    display: none;
+  }
+
+  /* Playlists section — icon-only mode, pas de boutons créer/importer */
+  .playlists-header {
+    justify-content: center;
+    padding: 8px 4px 4px;
+  }
+
+  .playlists-title {
+    display: none;
+  }
+
+  .playlists-actions {
+    display: none;
+  }
+
+  .playlist-item {
+    justify-content: center;
+    padding: 8px 0;
+  }
+
+  .playlist-item-name,
+  .playlist-item-count {
+    display: none;
+  }
+
+  /* Playlist icon centré (svg pour favoris, grid pour thumbnails) */
+  .playlist-item svg,
+  .playlist-item .playlist-cover-grid-sm {
+    margin: 0 auto;
+  }
+
+  /* Tooltip au hover sur playlist items */
+  .playlist-item {
+    position: relative;
+  }
+
+  .playlist-item::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    left: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    background: #222;
+    color: #fff;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+    margin-left: 8px;
+    z-index: 100;
+  }
+
+  .playlist-item:hover::after {
+    opacity: 1;
+  }
+
+  /* Indexation module — compact mode */
+  .indexation-module {
+    padding: 0;
+  }
+
+  .indexation-header {
+    justify-content: center;
+    padding: 8px 4px;
+  }
+
+  .indexation-title {
+    display: none;
+  }
+
+  .indexation-progress-mini {
+    display: none !important;
+  }
+
+  .btn-toggle-indexation {
+    display: none;
+  }
+
+  .indexation-content {
+    display: none !important;
+  }
+
   /* Grille albums : taille réduite (140px) */
   .albums-grid-container {
     grid-template-columns: repeat(auto-fill, 140px);
@@ -6941,16 +7102,20 @@ body:not(.player-visible) .track-info-panel {
     display: none;
   }
 
-  /* Player : réduit la colonne titre, cache volume slider */
+  /* Player medium : cache audio-specs + volume slider, simplifie la grille */
   .player {
     grid-template-columns: auto 160px 1fr auto;
+  }
+
+  .player #audio-specs {
+    display: none;
   }
 
   #track-name {
     font-size: 13px;
   }
 
-  /* Cache le volume slider (garde le bouton) */
+  /* Cache le volume slider (garde le bouton mute + output) */
   .player-vol-row .volume-bar {
     display: none;
   }
@@ -6962,6 +7127,11 @@ body:not(.player-visible) .track-info-panel {
   }
   .beta-badge {
     font-size: 9px;
+  }
+
+  /* Recently Played : 2 colonnes en mode tablette */
+  .home-recent-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
@@ -7020,9 +7190,10 @@ body:not(.player-visible) .track-info-panel {
 
   #track-name {
     font-size: 12px;
+    -webkit-line-clamp: 1;
   }
 
-  /* Cache la progress bar */
+  /* Cache la progress bar mais garde les icônes lyrics/queue */
   .player-progress,
   .player .progress-container {
     display: none;
@@ -7086,6 +7257,11 @@ body:not(.player-visible) .track-info-panel {
   .settings-panel {
     width: 100%;
     max-width: 100%;
+  }
+
+  /* Recently Played : 1 colonne en mobile */
+  .home-recent-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -7332,7 +7508,13 @@ body:not(.player-visible) .track-info-panel {
   width: 100%;
   max-width: 420px;
   margin-bottom: 20px;
-  pointer-events: inherit; /* Hérite du parent : none quand fermé, all quand ouvert */
+  pointer-events: none;
+}
+
+/* Enable pointer events only when fullscreen player is visible */
+.fullscreen-player.visible .fs-controls,
+.fullscreen-player.visible .fs-lyrics-btn {
+  pointer-events: all;
 }
 
 .fs-progress-row {
@@ -7555,12 +7737,16 @@ body:not(.player-visible) .track-info-panel {
    FULLSCREEN LYRICS OVERLAY
    ============================================ */
 
+.fs-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
 .fs-lyrics-btn {
-  position: absolute;
-  top: 20px;
-  left: 20px;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   background: rgba(255, 255, 255, 0.08);
   border: none;
   border-radius: 50%;
@@ -7571,6 +7757,7 @@ body:not(.player-visible) .track-info-panel {
   justify-content: center;
   transition: background 0.2s, color 0.2s;
   z-index: 10010;
+  pointer-events: all;
 }
 
 .fs-lyrics-btn:hover {
@@ -7614,11 +7801,13 @@ body:not(.player-visible) .track-info-panel {
 .fs-lyrics-lines .lyric-line {
   padding: 10px 0;
   font-size: 18px;
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.5);
+  transition: color 0.3s, font-size 0.3s;
 }
 
 .fs-lyrics-lines .lyric-line.active {
   color: #fff;
   font-size: 22px;
   font-weight: 600;
+  text-shadow: 0 0 20px rgba(255, 255, 255, 0.25);
 }

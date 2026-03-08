@@ -5,7 +5,7 @@
 // === IMPORTS ===
 
 // State centralisé & Tauri API
-import { library, playback, ui, queue, caches, dom } from './state.js'
+import { library, playback, ui, queue, caches, dom, favorites } from './state.js'
 import { invoke } from './state.js'
 
 // Médiateur cross-module
@@ -32,7 +32,7 @@ import {
 // Lyrics
 import {
   toggleLyricsPanel, closeLyricsPanel, isLyricsPanelOpen,
-  toggleFullscreenLyrics, closeFullscreenLyrics,
+  toggleFullscreenLyrics, closeFullscreenLyrics, isFullscreenLyricsOpen,
   loadLyricsForTrack, syncLyricsToTime
 } from './lyrics.js'
 
@@ -200,6 +200,7 @@ app.closeFullscreenPlayer = closeFullscreenPlayer
 // Lyrics
 app.closeLyricsPanel = closeLyricsPanel
 app.isLyricsPanelOpen = isLyricsPanelOpen
+app.isFullscreenLyricsOpen = isFullscreenLyricsOpen
 app.loadLyricsForTrack = loadLyricsForTrack
 app.syncLyricsToTime = syncLyricsToTime
 app.closeFullscreenLyrics = closeFullscreenLyrics
@@ -298,7 +299,7 @@ async function populateSettingsAudioDevices() {
     }
   } catch (e) {
     console.error('[SETTINGS] Error loading audio devices:', e)
-    select.innerHTML = '<option value="">Erreur de chargement</option>'
+    select.innerHTML = '<option value="">Loading error</option>'
   }
 }
 
@@ -320,7 +321,7 @@ async function populateSettingsLibraryPaths() {
       item.className = 'settings-path-item'
       item.innerHTML = `
         <span class="settings-path-text" title="${p}">${p}</span>
-        <button class="settings-path-remove" title="Retirer ce dossier" data-path="${p}">
+        <button class="settings-path-remove" title="Remove this folder" data-path="${p}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
           </svg>
@@ -371,7 +372,7 @@ function populateShortcutsList() {
     const keyBtn = document.createElement('button')
     keyBtn.className = 'settings-shortcut-key'
     keyBtn.textContent = formatShortcutDisplay(binding)
-    keyBtn.title = 'Cliquer pour modifier'
+    keyBtn.title = 'Click to edit'
     keyBtn.dataset.action = action
     keyBtn.addEventListener('click', () => startShortcutCapture(action, keyBtn))
 
@@ -392,7 +393,7 @@ function startShortcutCapture(action, buttonEl) {
 
   shortcutCaptureAction = action
   buttonEl.classList.add('capturing')
-  buttonEl.textContent = 'Appuyez...'
+  buttonEl.textContent = 'Press key...'
 
   const captureHandler = (e) => {
     e.preventDefault()
@@ -592,15 +593,24 @@ function initSidebarResize() {
   let startX = 0
   let startWidth = 0
 
-  const savedWidth = localStorage.getItem('sidebarWidth')
-  if (savedWidth) {
-    const width = parseInt(savedWidth, 10)
-    if (width >= 180 && width <= 400) {
-      sidebar.style.width = `${width}px`
+  // Responsive : clear inline width when collapsed breakpoint is active
+  const collapseMq = window.matchMedia('(max-width: 900px)')
+  function handleSidebarBreakpoint(e) {
+    if (e.matches) {
+      sidebar.style.width = ''  // Clear inline → media query 60px takes over
+    } else {
+      const saved = localStorage.getItem('sidebarWidth')
+      if (saved) {
+        const w = parseInt(saved, 10)
+        if (w >= 180 && w <= 400) sidebar.style.width = `${w}px`
+      }
     }
   }
+  collapseMq.addEventListener('change', handleSidebarBreakpoint)
+  handleSidebarBreakpoint(collapseMq)
 
   resizeHandle.addEventListener('mousedown', (e) => {
+    if (collapseMq.matches) return  // Don't allow resize when collapsed
     isResizing = true
     startX = e.clientX
     startWidth = sidebar.offsetWidth
@@ -657,7 +667,7 @@ async function handleAutoResume() {
         playback.currentTrackIndex = trackIndex
         const track = library.tracks[trackIndex]
         const meta = track.metadata || {}
-        document.getElementById('track-name').textContent = meta.title || track.name || 'Titre inconnu'
+        document.getElementById('track-name').textContent = meta.title || track.name || 'Unknown Title'
         document.getElementById('track-folder').textContent = meta.artist || 'Unknown Artist'
         const player = document.getElementById('player')
         if (player) player.classList.remove('hidden')
@@ -721,13 +731,36 @@ async function init() {
     console.log('[INIT] Albums count:', Object.keys(library.albums).length)
     console.log('[INIT] Artists count:', Object.keys(library.artists).length)
 
-    dom.welcomeDiv.classList.add('hidden')
+    if (dom.welcomeDiv) dom.welcomeDiv.classList.add('hidden')
+
+    // Nettoyer les favoris stale (JS synchrone, instantané)
+    const trackPathsSet = new Set(library.tracks.map(t => t.path))
+    const stalePaths = [...favorites.tracks].filter(p => !trackPathsSet.has(p))
+    if (stalePaths.length > 0) {
+      console.log(`[INIT] Cleaning ${stalePaths.length} stale favorites`)
+      for (const stalePath of stalePaths) {
+        favorites.tracks.delete(stalePath)
+      }
+    }
+
+    // Afficher les vues IMMÉDIATEMENT (pas de blocage)
     console.log('[INIT] Displaying current view:', ui.currentView)
     displayCurrentView()
 
     // Rebuild la sidebar playlists maintenant que library.tracks est peuplé
-    // (le premier appel de updatePlaylistsSidebar à DOMContentLoaded était trop tôt)
     if (app.updatePlaylistsSidebar) app.updatePlaylistsSidebar()
+
+    // Persister le nettoyage côté Rust EN ARRIÈRE-PLAN (non-bloquant)
+    if (stalePaths.length > 0) {
+      ;(async () => {
+        for (const p of stalePaths) {
+          try { await invoke('toggle_favorite', { trackPath: p }) } catch (_) {}
+        }
+        await loadPlaylists()
+        if (app.updatePlaylistsSidebar) app.updatePlaylistsSidebar()
+        console.log(`[INIT] Stale favorites persisted to Rust`)
+      })()
+    }
 
     updateIndexationStats(cachedStats)
 
@@ -759,7 +792,7 @@ initLibrary()
 initScanListeners()
 
 // Lance l'init principale
-init()
+init().catch(err => console.error('[INIT] FATAL:', err))
 
 // Sauvegarde du cache
 window.addEventListener('beforeunload', () => {

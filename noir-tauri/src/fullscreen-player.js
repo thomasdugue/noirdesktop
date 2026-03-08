@@ -5,6 +5,7 @@
 //   Phase 2 : Signal wave — particules ressortent en onde, amplitude = RMS audio
 
 import { invoke } from './state.js'
+import { app } from './app.js'
 
 // ============================================================
 //  COLOR EXTRACTION — Couleurs dominantes depuis la cover
@@ -158,6 +159,9 @@ export function openFullscreenPlayer() {
 export function closeFullscreenPlayer() {
   const el = document.getElementById('fullscreen-player')
   if (!el) return
+
+  // Fermer le lyrics overlay s'il est ouvert
+  app.closeFullscreenLyrics?.()
 
   el.classList.remove('visible')
   el.classList.add('hidden')

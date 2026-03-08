@@ -56,6 +56,14 @@ biquad = "0.4"
 # FFT pour visualisations (optionnel, pour plus tard)
 # rustfft = "6.1"
 
+# === NETWORK / NAS (SMB Library Sync) ===
+# SMB2/3 client (wrapper libsmbclient) pour accès NAS
+pavao = "0.2"
+# mDNS/Bonjour discovery pour auto-détection NAS sur le réseau local
+mdns-sd = "0.11"
+# UUIDs pour identifiants de sources réseau
+uuid = { version = "1", features = ["v4"] }
+
 # === RELEASE PROFILE (Anti-reverse-engineering + Performance) ===
 [profile.release]
 opt-level = 3
@@ -71,4 +79,8 @@ coreaudio-rs = "0.11"
 coreaudio-sys = "0.2"
 # Core Foundation bindings for CFString conversion
 core-foundation = "0.9"
+# macOS Keychain pour stockage sécurisé des credentials SMB
+security-framework = "2"
+# MPRemoteCommandCenter pour intercepter les media keys même quand Apple Music tourne
+souvlaki = { version = "0.7", default-features = false }
 

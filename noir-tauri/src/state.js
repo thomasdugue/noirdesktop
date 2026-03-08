@@ -41,6 +41,9 @@ export const playback = {
   // Audio device
   currentAudioDeviceId: null,
   devicePollingInterval: null,
+  // Source audio specs (mis à jour par playback_audio_specs)
+  currentSourceSampleRate: null,
+  currentSourceBitDepth: null,
   // Contexte de lecture : détermine le comportement en fin de track/album
   // 'album'   → joué depuis une vue album/artiste → s'arrête en fin d'album (pas de saut inter-album)
   // 'library' → joué depuis la vue liste complète → lecture séquentielle globale

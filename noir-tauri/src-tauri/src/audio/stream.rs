@@ -84,6 +84,10 @@ pub fn create_audio_stream(
     next_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>>,
     gapless_enabled: Arc<AtomicBool>,
     rms_energy: Arc<std::sync::atomic::AtomicU64>,
+    // Chemins courant + suivant pour que le callback gapless mette à jour current_path
+    // → empêche le seek post-transition de re-probe l'ancien fichier
+    current_path: Arc<Mutex<Option<String>>>,
+    next_path: Arc<Mutex<Option<String>>>,
 ) -> Result<Box<dyn AudioOutputStream>, String> {
     use super::coreaudio_stream::CoreAudioStream;
     CoreAudioStream::new(
@@ -101,6 +105,8 @@ pub fn create_audio_stream(
         next_streaming_state,
         gapless_enabled,
         rms_energy,
+        current_path,
+        next_path,
     ).map(|s| Box::new(s) as Box<dyn AudioOutputStream>)
 }
 

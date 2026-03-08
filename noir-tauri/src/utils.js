@@ -233,7 +233,7 @@ export function destroyParticleCanvas(container) {
 
 // === LOADING OVERLAY ===
 
-export function showLoading(message = 'Chargement...') {
+export function showLoading(message = 'Loading...') {
   let loader = document.getElementById('loading-overlay')
   if (!loader) {
     loader = document.createElement('div')

@@ -141,21 +141,9 @@ async function initGlobalShortcuts() {
       }
     }
 
-    // F7 / F8 / F9 — touches fonction Mac (mode "function keys" activé)
-    // En complément des Media* keys, pour couvrir les deux modes clavier macOS
-    const macFnKeys = [
-      { key: 'F7', action: () => app.playPreviousTrack(), label: 'Previous' },
-      { key: 'F8', action: () => app.togglePlay(),        label: 'Play/Pause' },
-      { key: 'F9', action: () => app.playNextTrack(),     label: 'Next' },
-    ]
-    for (const { key, action, label } of macFnKeys) {
-      try {
-        await register(key, action)
-        console.log(`[SHORTCUTS] ${key} registered for ${label}`)
-      } catch (e) {
-        console.warn(`[SHORTCUTS] ${key} not available for ${label}:`, e)
-      }
-    }
+    // Note : F7/F8/F9 intentionnellement absents — conflictent avec Apple Music
+    // en mode "media keys" macOS. Les touches MediaPreviousTrack/MediaPlayPause/MediaNextTrack
+    // ci-dessus couvrent le cas "function keys" désactivé.
 
     globalShortcutsRegistered = true
     console.log('[SHORTCUTS] Global shortcuts initialized successfully')
@@ -247,6 +235,7 @@ const DEFAULT_SHORTCUTS = {
   repeat:         { key: 'r', shift: false, meta: false, ctrl: false, alt: false, label: 'Repeat mode' },
   shuffle:        { key: 's', shift: false, meta: false, ctrl: false, alt: false, label: 'Shuffle' },
   favorite:       { key: 'l', shift: false, meta: false, ctrl: false, alt: false, label: 'Add to favorites' },
+  search:         { key: 'f', shift: false, meta: true, ctrl: false, alt: false, label: 'Search' },
 }
 
 // Map action -> callback (all cross-module calls go through app mediator)
@@ -264,6 +253,7 @@ const SHORTCUT_ACTIONS = {
   repeat:         () => cycleRepeatMode(),
   shuffle:        () => toggleShuffleMode(),
   favorite:       () => toggleFavoriteFromKeyboard(),
+  search:         () => { document.querySelector('.search-input')?.focus() },
 }
 
 // Active shortcuts (defaults merged with localStorage overrides)

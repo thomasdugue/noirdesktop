@@ -83,6 +83,13 @@ struct CallbackData {
     gapless_enabled: Arc<AtomicBool>,
     // RMS energy for visualisation (shared with frontend via AtomicU64 as f64 bits)
     rms_energy: Arc<AtomicU64>,
+    // Chemin du fichier courant (partagé avec audio_engine pour le seek-restart).
+    // Mis à jour lors d'une transition gapless afin que le seek post-transition
+    // re-probe le BON fichier (le nouveau track) et non l'ancien.
+    current_path: Arc<Mutex<Option<String>>>,
+    // Chemin du prochain track préchargé (copié depuis audio_engine::next_path).
+    // Lors de la transition gapless, son contenu est déplacé dans current_path.
+    next_path: Arc<Mutex<Option<String>>>,
 }
 
 const EMPTY_CALLBACKS_THRESHOLD: u32 = 3;
@@ -109,6 +116,8 @@ impl CoreAudioStream {
         next_streaming_state: Arc<Mutex<Option<Arc<StreamingState>>>>,
         gapless_enabled: Arc<AtomicBool>,
         rms_energy: Arc<AtomicU64>,
+        current_path: Arc<Mutex<Option<String>>>,
+        next_path: Arc<Mutex<Option<String>>>,
     ) -> Result<Self, String> {
         unsafe {
             // 1. Find the HAL output audio component (allows device selection)
@@ -145,8 +154,13 @@ impl CoreAudioStream {
                     mem::size_of::<AudioObjectID>() as u32,
                 );
                 if status != 0 {
-                    println!("[CoreAudioStream] WARNING: Failed to set device {}: error {}", dev_id, status);
-                    // Don't fail - fall back to default device
+                    println!("[CoreAudioStream] ERROR: Failed to set output device {}: CoreAudio error {}", dev_id, status);
+                    // Fail explicitly — silent fallback to system default causes the user
+                    // to hear audio on the wrong device (e.g. built-in instead of AirPlay).
+                    return Err(format!(
+                        "Failed to set output device {}: CoreAudio error {}. Device may be disconnected or not ready.",
+                        dev_id, status
+                    ));
                 } else {
                     println!("[CoreAudioStream] Output device set successfully");
                 }
@@ -228,6 +242,8 @@ impl CoreAudioStream {
                 next_streaming_state,
                 gapless_enabled,
                 rms_energy,
+                current_path,
+                next_path,
             });
 
             // 6. Set up the render callback
@@ -495,6 +511,13 @@ unsafe extern "C" fn render_callback(
                 // Swap consumer and streaming state
                 data.consumer = new_consumer;
                 data.streaming_state = new_state;
+
+                // ── Mise à jour du chemin courant ────────────────────────────────
+                // CRITIQUE : current_path doit pointer sur le NOUVEAU fichier dès maintenant.
+                // Sans ça, un seek après transition gapless ferait re-probe l'ANCIEN fichier :
+                // mauvaise durée sur la progress bar + "out-of-range" si on cherche
+                // au-delà de la durée de l'ancien track.
+                *data.current_path.lock() = data.next_path.lock().take();
 
                 // Reset playback tracking for the new track
                 data.playback_samples = 0;

@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "noir-tauri",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "export $(grep -v '^#' scripts/.env.local | grep -E 'NOIR_GITHUB' | xargs) 2>/dev/null; npm run tauri dev"
+      ],
+      "port": 1420
+    }
+  ]
+}

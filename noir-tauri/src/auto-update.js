@@ -23,7 +23,7 @@ async function checkForUpdates(showNoUpdateToast = false) {
       const versionEl = document.getElementById('settings-update-version')
       if (versionEl) versionEl.textContent = `Update available: v${update.version}`
       if (availableRow) availableRow.style.display = 'flex'
-      if (statusEl) statusEl.textContent = `Version actuelle : ${await getAppVersion()}`
+      if (statusEl) statusEl.textContent = `Current version: ${await getAppVersion()}`
       showToast(`Update v${update.version} available`)
     } else {
       pendingUpdate = null
@@ -33,7 +33,7 @@ async function checkForUpdates(showNoUpdateToast = false) {
     }
   } catch (e) {
     console.log('[UPDATE] Check failed (expected if no server):', e)
-    if (statusEl) statusEl.textContent = `Version actuelle : ${await getAppVersion()}`
+    if (statusEl) statusEl.textContent = `Current version: ${await getAppVersion()}`
     if (showNoUpdateToast) showToast('Unable to check for updates')
   }
 }
@@ -66,7 +66,7 @@ async function updateVersionDisplay() {
   const el = document.getElementById('settings-version-label')
   if (el) el.textContent = `Noir v${version}`
   const statusEl = document.getElementById('settings-update-status')
-  if (statusEl) statusEl.textContent = `Version actuelle : ${version}`
+  if (statusEl) statusEl.textContent = `Current version: ${version}`
 }
 
 export function initAutoUpdate() {

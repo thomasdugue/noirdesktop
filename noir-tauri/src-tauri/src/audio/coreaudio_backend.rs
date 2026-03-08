@@ -8,7 +8,7 @@
 //!
 //! This file is only compiled on macOS via #[cfg(target_os = "macos")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::time::Duration;
 
@@ -41,6 +41,10 @@ pub struct CoreAudioBackend {
     last_device_id: AudioObjectID,
     /// Whether the device was locked by hog mode (to prevent device switching)
     hog_locked_device: bool,
+    /// AirPlay devices seen during this session (preserved even after CoreAudio disconnects them)
+    airplay_session_devices: HashMap<String, DeviceInfo>,
+    /// AirPlay device IDs that are in the cache but no longer active in CoreAudio
+    stale_airplay_ids: HashSet<String>,
 }
 
 impl CoreAudioBackend {
@@ -58,6 +62,8 @@ impl CoreAudioBackend {
             event_callback: None,
             last_device_id: default_device,
             hog_locked_device: false,
+            airplay_session_devices: HashMap::new(),
+            stale_airplay_ids: HashSet::new(),
         };
 
         // Cache device info on startup
@@ -165,6 +171,39 @@ impl CoreAudioBackend {
         }
     }
 
+    /// Set the macOS system default output device
+    ///
+    /// This updates the system-wide default so other apps and the system UI
+    /// reflect the same device that Noir is using.
+    fn set_system_default_device(device_id: AudioObjectID) -> Result<()> {
+        unsafe {
+            let property_address = AudioObjectPropertyAddress {
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain,
+            };
+
+            let status = AudioObjectSetPropertyData(
+                kAudioObjectSystemObject,
+                &property_address,
+                0,
+                std::ptr::null(),
+                std::mem::size_of::<AudioObjectID>() as u32,
+                &device_id as *const _ as *const c_void,
+            );
+
+            if status != 0 {
+                return Err(AudioBackendError::DeviceNotFound(format!(
+                    "Failed to set system default device: CoreAudio error {}",
+                    status
+                )));
+            }
+
+            println!("[CoreAudio] System default output device set to ID {}", device_id);
+            Ok(())
+        }
+    }
+
     /// Get all output devices
     fn get_all_output_devices() -> Result<Vec<AudioObjectID>> {
         unsafe {
@@ -210,10 +249,28 @@ impl CoreAudioBackend {
                 )));
             }
 
-            // Filter to output devices only
+            // Filter to output devices only.
+            // AirPlay and Bluetooth devices may report 0 streams when inactive
+            // (streams open only when selected as system default or active output),
+            // so we include them explicitly via transport type check.
+            // However, Bluetooth input-only devices (e.g. HFP/SCO microphone profiles)
+            // must be excluded — they have input streams but no output streams.
             let output_devices: Vec<AudioObjectID> = devices
                 .into_iter()
-                .filter(|&id| Self::device_has_output_streams(id))
+                .filter(|&id| {
+                    if Self::device_has_output_streams(id) {
+                        return true;
+                    }
+                    let tt = Self::get_device_transport_type(id);
+                    if tt == 0x61697270u32 { // AirPlay ('airp')
+                        return true;
+                    }
+                    if tt == 0x626C7565u32 { // Bluetooth ('blue')
+                        // Only include if it's NOT an input-only device (mic)
+                        return !Self::device_has_input_streams(id);
+                    }
+                    false
+                })
                 .collect();
 
             Ok(output_devices)
@@ -243,6 +300,48 @@ impl CoreAudioBackend {
             }
 
             // Allocate buffer for AudioBufferList
+            let mut buffer = vec![0u8; size as usize];
+            let buffer_list = buffer.as_mut_ptr() as *mut AudioBufferList;
+
+            let status = AudioObjectGetPropertyData(
+                device_id,
+                &property_address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                buffer_list as *mut c_void,
+            );
+
+            if status != 0 {
+                return false;
+            }
+
+            (*buffer_list).mNumberBuffers > 0
+        }
+    }
+
+    /// Check if a device has input streams (microphone)
+    fn device_has_input_streams(device_id: AudioObjectID) -> bool {
+        unsafe {
+            let property_address = AudioObjectPropertyAddress {
+                mSelector: kAudioDevicePropertyStreamConfiguration,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: kAudioObjectPropertyElementMain,
+            };
+
+            let mut size: u32 = 0;
+            let status = AudioObjectGetPropertyDataSize(
+                device_id,
+                &property_address,
+                0,
+                std::ptr::null(),
+                &mut size,
+            );
+
+            if status != 0 || size == 0 {
+                return false;
+            }
+
             let mut buffer = vec![0u8; size as usize];
             let buffer_list = buffer.as_mut_ptr() as *mut AudioBufferList;
 
@@ -633,6 +732,30 @@ impl CoreAudioBackend {
         }
     }
 
+    /// Get the CoreAudio transport type for a device
+    /// Returns 0 on failure (safe default — not AirPlay)
+    fn get_device_transport_type(device_id: AudioObjectID) -> u32 {
+        // kAudioDevicePropertyTransportType = 'trns' = 0x74726E73
+        let property_address = AudioObjectPropertyAddress {
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+        let mut transport_type: u32 = 0u32;
+        let mut data_size = std::mem::size_of::<u32>() as u32;
+        unsafe {
+            AudioObjectGetPropertyData(
+                device_id,
+                &property_address,
+                0,
+                std::ptr::null(),
+                &mut data_size,
+                &mut transport_type as *mut u32 as *mut c_void,
+            );
+        }
+        transport_type
+    }
+
     /// Find the best supported sample rate for a given source rate
     /// Prioritizes: exact match > higher rate > highest available
     fn find_best_supported_rate(source_rate: u32, supported_rates: &[u32]) -> u32 {
@@ -666,12 +789,17 @@ impl CoreAudioBackend {
         let default_id = Self::get_default_output_device().ok();
 
         self.device_cache.clear();
+        self.stale_airplay_ids.clear();
 
         for device_id in device_ids {
             let name = Self::get_device_name(device_id).unwrap_or_else(|_| "Unknown".to_string());
             let current_rate = Self::get_device_sample_rate(device_id).unwrap_or(44100);
             let supported_rates = Self::get_supported_sample_rates(device_id).unwrap_or_default();
             let max_channels = Self::get_max_channels(device_id);
+
+            let transport_type = Self::get_device_transport_type(device_id);
+            // kAudioDeviceTransportTypeAirPlay = 'airp' = 0x61697270
+            let is_airplay = transport_type == 0x61697270u32;
 
             let info = DeviceInfo {
                 id: device_id.to_string(),
@@ -682,9 +810,29 @@ impl CoreAudioBackend {
                 current_sample_rate: current_rate,
                 max_channels,
                 supports_exclusive: true, // All macOS devices support Hog Mode
+                transport_type,
+                is_airplay,
             };
 
+            // Save wireless devices (AirPlay + Bluetooth) to session cache so they
+            // persist in Noir's list even when CoreAudio deactivates them.
+            // kAudioDeviceTransportTypeBluetooth = 'blue' = 0x626C7565
+            let is_bluetooth = transport_type == 0x626C7565u32;
+            if is_airplay || is_bluetooth {
+                self.airplay_session_devices.insert(device_id.to_string(), info.clone());
+            }
+
             self.device_cache.insert(device_id.to_string(), info);
+        }
+
+        // Re-inject session-cached AirPlay devices that are no longer active in CoreAudio.
+        // This keeps them visible in Noir's device list for the entire session.
+        for (id, mut cached_info) in self.airplay_session_devices.clone() {
+            if !self.device_cache.contains_key(&id) {
+                cached_info.is_default = false; // No longer the system default
+                self.device_cache.insert(id.clone(), cached_info);
+                self.stale_airplay_ids.insert(id);
+            }
         }
 
         Ok(())
@@ -738,17 +886,67 @@ impl AudioBackend for CoreAudioBackend {
             }
         }
 
+        // Check if the TARGET device is AirPlay
+        let target_is_airplay = self.device_cache
+            .get(device_id)
+            .map(|info| info.is_airplay)
+            .unwrap_or(false);
+
+        // Check if the PREVIOUS device was AirPlay (or if system default is currently AirPlay)
+        let previous_is_airplay = self.device_cache
+            .get(&self.last_device_id.to_string())
+            .map(|info| info.is_airplay)
+            .unwrap_or(false);
+
         // Release exclusive mode on old device if needed
         if self.exclusive_mode == ExclusiveMode::Exclusive {
             let _ = Self::disable_hog_mode_internal(self.last_device_id);
+            // If switching to AirPlay (which can't use hog mode), reset exclusive state now.
+            // This prevents stale exclusive_mode=Exclusive state after the switch.
+            if target_is_airplay {
+                self.exclusive_mode = ExclusiveMode::Shared;
+                println!("[CoreAudio] Exclusive mode auto-disabled for AirPlay switch");
+            }
         }
 
         // Set manual device (stops following system default)
         self.manual_device_id = Some(id);
         self.last_device_id = id;
-        self.hog_locked_device = false; // User chose manually, not hog-locked
+        self.hog_locked_device = false;
 
-        println!("[CoreAudio] Manually switched to device: {}", device_id);
+        // === System default strategy ===
+        //
+        // AirPlay devices only work while they are the macOS system default.
+        // Once they lose default status, macOS deactivates the session and
+        // the device disappears from CoreAudio — it cannot be reactivated
+        // from the HAL level.
+        //
+        // Strategy:
+        // - Switching TO AirPlay: set system default to AirPlay (activates it)
+        // - Switching FROM AirPlay to non-AirPlay: do NOT change system default.
+        //   Keep AirPlay as system default to preserve the session. The non-AirPlay
+        //   device uses explicit AudioUnit assignment (get_device_id returns Some(id)).
+        // - Switching between non-AirPlay devices: set system default normally
+        //   (volume keys sync, menu bar indicator, etc.)
+
+        if target_is_airplay {
+            // Switching TO AirPlay: must be system default for routing to work
+            let _ = Self::set_system_default_device(id);
+            // Give AirPlay time to activate its network session before the AudioUnit
+            // tries to use it. Without this delay, the stream may start before AirPlay
+            // is ready and audio falls through to the old device.
+            std::thread::sleep(Duration::from_millis(800));
+            println!("[CoreAudio] Switched to AirPlay device {} (set as system default, 800ms activation wait)", device_id);
+        } else if previous_is_airplay {
+            // Switching FROM AirPlay: keep AirPlay as system default to preserve session.
+            // Audio will route to the new device via explicit AudioUnit assignment.
+            println!("[CoreAudio] Switched from AirPlay to device {} (keeping AirPlay as system default to preserve session)", device_id);
+        } else {
+            // Non-AirPlay to non-AirPlay: sync system default for volume keys etc.
+            let _ = Self::set_system_default_device(id);
+            println!("[CoreAudio] Switched to device {} (system default synced)", device_id);
+        }
+
         Ok(())
     }
 
@@ -813,6 +1011,20 @@ impl AudioBackend for CoreAudioBackend {
     fn set_exclusive_mode(&mut self, mode: ExclusiveMode) -> Result<()> {
         let device_id = self.get_active_device_id()?;
 
+        // Block exclusive mode on AirPlay — hog mode is incompatible with wireless streaming.
+        // The JS UI also blocks this, but this Rust guard prevents race conditions or direct
+        // Tauri invocations from enabling hog mode on AirPlay devices.
+        if mode == ExclusiveMode::Exclusive {
+            let id_str = device_id.to_string();
+            if let Some(info) = self.device_cache.get(&id_str) {
+                if info.is_airplay {
+                    return Err(AudioBackendError::Other(
+                        "Exclusive mode is not supported on AirPlay devices".to_string()
+                    ));
+                }
+            }
+        }
+
         if mode == self.exclusive_mode {
             return Ok(());
         }
@@ -873,10 +1085,25 @@ impl AudioBackend for CoreAudioBackend {
     fn get_device_id(&self) -> Option<u32> {
         // Si un device manuel a été sélectionné, l'utiliser
         if let Some(manual_id) = self.manual_device_id {
+            let id_str = manual_id.to_string();
             let device_name = self.device_cache
-                .get(&manual_id.to_string())
+                .get(&id_str)
                 .map(|info| info.name.as_str())
                 .unwrap_or("Unknown");
+
+            // AirPlay devices don't support explicit AudioUnit device assignment
+            // (AudioUnitSetProperty(kAudioOutputUnitProperty_CurrentDevice) fails).
+            // Instead, we return None to let the AudioUnit use the system default,
+            // which set_output_device() has already pointed to this AirPlay device.
+            let is_airplay = self.device_cache
+                .get(&id_str)
+                .map(|info| info.is_airplay)
+                .unwrap_or(false);
+            if is_airplay {
+                println!("[CoreAudio] AirPlay device {} (ID: {}) — using system default routing", device_name, manual_id);
+                return None;
+            }
+
             println!("[CoreAudio] Using manually selected device: {} (ID: {})", device_name, manual_id);
             return Some(manual_id);
         }
@@ -906,6 +1133,25 @@ impl AudioBackend for CoreAudioBackend {
         let _ = self.refresh_device_cache();
 
         let device_id = self.get_active_device_id()?;
+        let id_str = device_id.to_string();
+
+        // AirPlay devices: do NOT change sample rate or enable hog mode.
+        // macOS handles resampling for AirPlay internally (always 44100Hz AAC).
+        // Touching the device's sample rate can kill the AirPlay session,
+        // especially right after a stale reconnect.
+        let is_airplay = self.device_cache
+            .get(&id_str)
+            .map(|info| info.is_airplay)
+            .unwrap_or(false);
+
+        if is_airplay {
+            let current_rate = Self::get_device_sample_rate(device_id).unwrap_or(44100);
+            println!(
+                "[CoreAudio] AirPlay device {} — using native rate {}Hz (no sample rate change)",
+                device_id, current_rate
+            );
+            return Ok(current_rate);
+        }
 
         println!(
             "[CoreAudio] Preparing for streaming at {} Hz on device {}...",
@@ -917,7 +1163,6 @@ impl AudioBackend for CoreAudioBackend {
         let current_rate = Self::get_device_sample_rate(device_id)?;
 
         // Check if the requested rate is supported
-        let id_str = device_id.to_string();
         let supported_rates = self.device_cache
             .get(&id_str)
             .map(|info| info.supported_sample_rates.clone())
@@ -981,6 +1226,10 @@ impl AudioBackend for CoreAudioBackend {
 
     fn name(&self) -> &'static str {
         "CoreAudio"
+    }
+
+    fn system_default_device_id(&self) -> Option<String> {
+        Self::get_default_output_device().ok().map(|id| id.to_string())
     }
 }
 

@@ -173,7 +173,7 @@ export function updateQueueDisplay() {
         <span class="queue-item-title">${track.metadata?.title || track.name}</span>
         <span class="queue-item-artist">${track.metadata?.artist || 'Unknown Artist'}</span>
       </div>
-      <button class="queue-item-remove" title="Retirer">✕</button>
+      <button class="queue-item-remove" title="Remove">✕</button>
     </div>
   `).join('')
 }
@@ -383,14 +383,14 @@ export function showAlbumContextMenu(e, albumKey) {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="M16 16l-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
       </svg>
-      <span>Ajouter à la file d'attente</span>
+      <span>Add to queue</span>
     </button>
     <div class="context-menu-separator"></div>
     <button class="context-menu-item" data-action="create-playlist-from-album">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 5v14"/><path d="M5 12h14"/>
       </svg>
-      <span>Créer une playlist avec cet album</span>
+      <span>Create playlist from this album</span>
     </button>
   `
 
@@ -521,7 +521,7 @@ function updateContextMenuLabels(menu, count) {
 
   const editBtn = menu.querySelector('[data-action="edit-metadata"] span')
 
-  if (playBtn) playBtn.textContent = isMulti ? `Lire ${count} titres` : 'Lire'
+  if (playBtn) playBtn.textContent = isMulti ? `Play ${count} tracks` : 'Play'
   if (queueBtn) queueBtn.textContent = isMulti ? `Add ${count} to queue` : 'Add to queue'
   if (playlistBtn) playlistBtn.textContent = isMulti ? `Add ${count} to playlist` : 'Add to playlist'
   if (removeBtn) removeBtn.textContent = isMulti ? `Remove ${count} tracks` : 'Remove from library'
@@ -613,8 +613,8 @@ function handleContextMenuAction(action) {
       const tracks = [...contextMenu.tracks]
       const count = tracks.length
       const msg = count > 1
-        ? `Supprimer ${count} tracks de la bibliothèque ? Cette action est permanente.`
-        : `Supprimer « ${tracks[0]?.metadata?.title || tracks[0]?.name || 'cette track'} » de la bibliothèque ? Cette action est permanente.`
+        ? `Remove ${count} tracks from library? This action is permanent.`
+        : `Remove "${tracks[0]?.metadata?.title || tracks[0]?.name || 'this track'}" from library? This action is permanent.`
       if (confirm(msg)) {
         app.removeTracksFromLibrary(tracks)
       }
@@ -852,7 +852,7 @@ export async function showTrackInfoPanel(track) {
           <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
           <path d="M21 3v5h-5"/>
         </svg>
-        Rafraîchir les métadonnées
+        Refresh metadata
       </button>
       <button class="track-info-edit-btn" id="track-info-edit-btn" title="Edit Metadata">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -904,7 +904,7 @@ export async function showTrackInfoPanel(track) {
   if (refreshBtn) {
     refreshBtn.addEventListener('click', async () => {
       refreshBtn.disabled = true
-      refreshBtn.textContent = 'Actualisation...'
+      refreshBtn.textContent = 'Refreshing...'
       try {
         const newMeta = await invoke('refresh_metadata', { path: track.path })
         // Update track in memory

@@ -68,6 +68,10 @@ export async function playTrack(index) {
     return
   }
 
+  // New track: reset saved position so device switch seek doesn't jump to old track position
+  _lastGoodPosition = 0
+  _seekCancelToken = null
+
   // Met à jour l'affichage avec les métadonnées
   const title = track.metadata?.title || track.name || 'Titre inconnu'
   const artist = track.metadata?.artist || track.folder || 'Unknown Artist'
@@ -927,6 +931,10 @@ export function updateAudioSpecs(specs) {
 
   if (!container || !sourceEl || !outputEl) return
 
+  // Stocker les specs source pour le calcul bit-perfect des devices
+  playback.currentSourceSampleRate = specs.source_sample_rate
+  playback.currentSourceBitDepth = specs.source_bit_depth
+
   // Formater les valeurs SOURCE
   sourceEl.textContent = `${formatSampleRate(specs.source_sample_rate)}/${specs.source_bit_depth}bit`
 
@@ -952,11 +960,17 @@ export function updateAudioSpecs(specs) {
 
   // Sync fullscreen specs display
   if (isFullscreenOpen()) updateFullscreenData()
+
+  // Mettre à jour les indicateurs bit-perfect sur les devices audio si le menu est visible
+  updateDeviceBitPerfectIndicators()
 }
 
 // Reset du moniteur audio specs
 export function resetAudioSpecs() {
   stopBitPerfectAnimation()
+  playback.currentSourceSampleRate = null
+  playback.currentSourceBitDepth = null
+
   const container = document.getElementById('audio-specs')
   const sourceEl = document.getElementById('source-specs')
   const outputEl = document.getElementById('output-specs')
@@ -964,6 +978,9 @@ export function resetAudioSpecs() {
   if (container) container.classList.remove('bit-perfect', 'mismatch', 'resampled')
   if (sourceEl) sourceEl.textContent = '-'
   if (outputEl) outputEl.textContent = '-'
+
+  // Effacer les indicateurs bit-perfect
+  updateDeviceBitPerfectIndicators()
 }
 
 // === COVER ART ===
@@ -1021,6 +1038,8 @@ export async function initRustAudioListeners() {
     // Met à jour les variables globales
     playback.audioPositionFromRust = position
     playback.audioDurationFromRust = duration
+    // Track last good position for device switches (not reset by playback_started)
+    if (position > 0) _lastGoodPosition = position
 
     // Forward RMS energy to fullscreen player visualisation
     if (rms !== undefined) setFullscreenRms(rms)
@@ -1055,8 +1074,8 @@ export async function initRustAudioListeners() {
       triggerGaplessPreload()
     }
 
-    // Sync lyrics to current position
-    if (app.isLyricsPanelOpen?.()) app.syncLyricsToTime?.(position)
+    // Sync lyrics to current position (side panel or fullscreen overlay)
+    if (app.isLyricsPanelOpen?.() || app.isFullscreenLyricsOpen?.()) app.syncLyricsToTime?.(position)
   })
 
   // Seeking en cours (émis par Rust quand un seek démarre)
@@ -1357,8 +1376,35 @@ function startDevicePolling() {
 // Détecte quand macOS change le périphérique de sortie par défaut
 // (casque branché, changement dans Préférences Système, etc.)
 // et met à jour Noir en conséquence.
+//
+// IMPORTANT: On compare le systemDefault avec sa valeur PRÉCÉDENTE (lastKnownSystemDefault),
+// pas avec currentAudioDeviceId. Cela permet à Noir de choisir un device différent du
+// système (ex: rester sur AirPlay pendant que macOS revient aux speakers) sans déclencher
+// un revert. Le sync ne se déclenche que sur un vrai changement externe.
 
 let _systemDeviceSyncInterval = null
+let _lastKnownSystemDefault = null
+
+// Device on which audio_play was last successfully called.
+// Distinct from playback.currentAudioDeviceId (which reflects the UI selection,
+// updated by loadAudioDevices even before audio_play is called).
+// The sync uses this to decide if a restart is actually needed.
+let _audioStreamDeviceId = null
+
+export function setAudioStreamDeviceId(id) {
+  _audioStreamDeviceId = id
+}
+
+// Last confirmed playback position from the Rust progress handler.
+// Updated continuously while audio plays; reset to 0 only when a NEW track is selected.
+// Unlike playback.audioPositionFromRust, this is NOT reset by playback_started events,
+// so it survives the position-reset that happens when audio_play is called on a new device.
+let _lastGoodPosition = 0
+
+// Cancellation token for pending seeks after device switch.
+// When a second device switch happens before the 300ms seek fires, the old seek
+// is silently skipped, preventing it from seeking on the newly-opened stream.
+let _seekCancelToken = null
 
 function startSystemDeviceSync() {
   if (_systemDeviceSyncInterval) return // Déjà démarré
@@ -1367,17 +1413,28 @@ function startSystemDeviceSync() {
       const systemDefaultId = await invoke('get_system_default_device_id')
       if (!systemDefaultId) return
 
-      // Comparer avec le device actuellement utilisé par Noir
-      if (systemDefaultId !== playback.currentAudioDeviceId) {
-        console.log('[AUDIO-OUTPUT] System default changed externally:', systemDefaultId, '← was:', playback.currentAudioDeviceId)
+      // Premier cycle : initialiser sans déclencher de sync
+      if (_lastKnownSystemDefault === null) {
+        _lastKnownSystemDefault = systemDefaultId
+        return
+      }
 
-        // Récupérer les infos du nouveau device pour le nom
-        const devices = await invoke('refresh_audio_devices')
-        const newDevice = devices.find(d => d.id === systemDefaultId)
-        if (newDevice) {
-          // Déléguer à selectAudioDevice pour redémarrer le stream audio sur le bon device
-          console.log('[AUDIO-OUTPUT] Synced to system default:', newDevice.name)
-          await selectAudioDevice(systemDefaultId, newDevice.name)
+      // Sync uniquement si le système a changé depuis le dernier cycle
+      if (systemDefaultId !== _lastKnownSystemDefault) {
+        console.log('[AUDIO-OUTPUT] System default changed externally:', _lastKnownSystemDefault, '→', systemDefaultId)
+        _lastKnownSystemDefault = systemDefaultId
+
+        // Restart only if audio stream is not already on the new system default.
+        // Use _audioStreamDeviceId (last device passed to audio_play), NOT
+        // playback.currentAudioDeviceId which can be updated by loadAudioDevices
+        // before audio_play is actually called, causing a false "already on device" match.
+        if (systemDefaultId !== _audioStreamDeviceId) {
+          const devices = await invoke('refresh_audio_devices')
+          const newDevice = devices.find(d => d.id === systemDefaultId)
+          if (newDevice) {
+            console.log('[AUDIO-OUTPUT] Synced to system default:', newDevice.name)
+            await selectAudioDevice(systemDefaultId, newDevice.name)
+          }
         }
       }
     } catch (_) {
@@ -1412,22 +1469,51 @@ export async function loadAudioDevices() {
       item.className = `audio-output-item${device.id === playback.currentAudioDeviceId ? ' active' : ''}`
       item.dataset.deviceId = device.id
 
+      // Stocker les supported_sample_rates dans le dataset pour bit-perfect checks
+      if (device.supported_sample_rates?.length) {
+        item.dataset.supportedRates = JSON.stringify(device.supported_sample_rates)
+      }
+
       // Formate le sample rate
       const sampleRate = device.current_sample_rate
         ? `${(device.current_sample_rate / 1000).toFixed(1).replace('.0', '')} kHz`
         : ''
 
-      // Formate les sample rates supportés
-      const supportedRates = device.supported_sample_rates && device.supported_sample_rates.length > 0
-        ? device.supported_sample_rates.map(r => `${r/1000}k`).join(', ')
+      // Formate les sample rates supportés :
+      // - Si une track joue : masquer les rates < source, highlight argent du rate exact
+      // - Si le device supporte le rate source → badge "BIT PERFECT" argenté
+      const srcRate = playback.currentSourceSampleRate
+      const canBitPerfect = srcRate && !device.is_airplay && device.supported_sample_rates?.includes(srcRate)
+
+      let supportedRatesHtml = ''
+      if (device.supported_sample_rates && device.supported_sample_rates.length > 0) {
+        // Filtrer : si une track joue, ne montrer que les rates >= source rate
+        const ratesToShow = srcRate
+          ? device.supported_sample_rates.filter(r => r >= srcRate)
+          : device.supported_sample_rates
+        if (ratesToShow.length > 0) {
+          const ratesFormatted = ratesToShow.map(r => {
+            const label = `${r/1000}k`
+            if (srcRate && r === srcRate && !device.is_airplay) {
+              return `<span class="rate-match">${label}</span>`
+            }
+            return label
+          }).join(', ')
+          supportedRatesHtml = ` • ${ratesFormatted}`
+        }
+      }
+
+      // Badge bit perfect argenté (style identique au player)
+      const bpBadge = canBitPerfect
+        ? '<span class="device-bp-badge">BIT PERFECT</span>'
         : ''
 
       // Badge transport type (AirPlay uniquement pour l'instant)
       const transportBadge = device.is_airplay
-        ? '<span class="device-transport-badge airplay-badge" title="AirPlay — non bit-perfect, hog mode indisponible">AirPlay</span>'
+        ? '<span class="device-transport-badge airplay-badge" title="AirPlay — non bit-perfect, hog mode unavailable">AirPlay</span>'
         : ''
       const airplayWarning = device.is_airplay
-        ? '<span class="airplay-warning">⚠ latence +2s · non bit-perfect</span>'
+        ? '<span class="airplay-warning">⚠ +2s latency · non bit-perfect</span>'
         : ''
 
       // Stocke is_airplay dans le dataset pour selectAudioDevice
@@ -1437,19 +1523,36 @@ export async function loadAudioDevices() {
         <div class="audio-output-item-info">
           <div class="audio-output-item-name">${device.name}${transportBadge}</div>
           <div class="audio-output-item-details">
-            ${sampleRate}${supportedRates ? ` • Supporte: ${supportedRates}` : ''}${airplayWarning}
+            ${sampleRate}${supportedRatesHtml}${airplayWarning}${bpBadge}
           </div>
         </div>
-        ${device.is_default ? '<span class="audio-output-item-default">Default</span>' : ''}
       `
 
       item.addEventListener('click', () => selectAudioDevice(device.id, device.name))
       dom.audioOutputList.appendChild(item)
     }
+
+    // Hint AirPlay si aucun device AirPlay n'est visible dans la liste
+    const hasAirPlay = devices.some(d => d.is_airplay)
+    if (!hasAirPlay) {
+      const hint = document.createElement('div')
+      hint.className = 'airplay-discovery-hint'
+      hint.innerHTML = 'To use AirPlay, first select it in <strong>macOS Sound Settings</strong>'
+      dom.audioOutputList.appendChild(hint)
+    }
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error loading devices:', e)
     console.error('[AUDIO-OUTPUT] Error details:', JSON.stringify(e, null, 2))
     dom.audioOutputList.innerHTML = `<div style="padding: 16px; color: #ff6b6b;">Error: ${escapeHtml(e?.message || e || 'Audio engine not initialized')}</div>`
+  }
+}
+
+// Met à jour les indicateurs bit-perfect quand la track change
+// Re-render la liste pour filtrer les rates et afficher les badges
+function updateDeviceBitPerfectIndicators() {
+  // Si le menu est visible, recharger pour mettre à jour les rates filtrés + badges
+  if (dom.audioOutputMenu && !dom.audioOutputMenu.classList.contains('hidden')) {
+    loadAudioDevices()
   }
 }
 
@@ -1475,6 +1578,14 @@ export async function selectAudioDevice(deviceId, deviceName) {
     await invoke('set_audio_device', { deviceId })
     console.log('[AUDIO-OUTPUT] Device preference changed successfully')
 
+    // Read back the ACTUAL system default after the switch.
+    // When switching FROM AirPlay, Rust intentionally keeps AirPlay as system default
+    // (to preserve the session). So the actual system default may differ from deviceId.
+    // We must track the actual value to prevent the sync polling from misinterpreting
+    // the preserved AirPlay default as an "external" change.
+    const actualDefault = await invoke('get_system_default_device_id').catch(() => null)
+    _lastKnownSystemDefault = actualDefault || deviceId
+
     const previousDeviceId = playback.currentAudioDeviceId
     playback.currentAudioDeviceId = deviceId
 
@@ -1494,7 +1605,7 @@ export async function selectAudioDevice(deviceId, deviceName) {
       if (isExclusive) {
         await invoke('set_exclusive_mode', { enabled: false }).catch(() => {})
         await loadExclusiveMode()
-        showToast('Mode exclusif désactivé (incompatible AirPlay)', 3000)
+        showToast('Exclusive mode disabled (incompatible with AirPlay)', 3000)
       }
     }
 
@@ -1505,14 +1616,22 @@ export async function selectAudioDevice(deviceId, deviceName) {
     if (playback.currentTrackIndex >= 0 && library.tracks[playback.currentTrackIndex]) {
       const currentTrack = library.tracks[playback.currentTrackIndex]
       console.log('[AUDIO-OUTPUT] Restarting playback on new device...', { wasPlaying, audioIsPlaying: playback.audioIsPlaying, isPausedFromRust: playback.isPausedFromRust })
-      showToast(isAirplay ? `AirPlay: ${deviceName} — latence +2s · non bit-perfect` : `Output: ${deviceName}`, isAirplay ? 4000 : undefined)
+      showToast(isAirplay ? `AirPlay: ${deviceName} — +2s latency · non bit-perfect` : `Output: ${deviceName}`, isAirplay ? 4000 : undefined)
 
-      // Sauvegarde la position actuelle (utilise le slider comme référence fiable)
+      // Sauvegarde la position avant tout changement de stream.
+      // _lastGoodPosition est mis à jour par le handler playback_progress et n'est PAS
+      // réinitialisé par playback_started — il survit donc aux restarts de stream sur
+      // des devices intermédiaires (ex: AirPlay échoue → position ne revient pas à 0).
       const progressSlider = document.getElementById('progress')
-      let currentPosition = playback.audioPositionFromRust
-      if (progressSlider && playback.audioDurationFromRust > 0) {
-        currentPosition = (parseFloat(progressSlider.value) / 100) * playback.audioDurationFromRust
-      }
+      const sliderPos = progressSlider && playback.audioDurationFromRust > 0
+        ? (parseFloat(progressSlider.value) / 100) * playback.audioDurationFromRust
+        : 0
+      const savedPosition = _lastGoodPosition > 0 ? _lastGoodPosition : sliderPos
+
+      // Token d'annulation : si un deuxième switch de device arrive avant le seek (+300ms),
+      // l'ancien seek est silencieusement ignoré (évite un seek sur le mauvais stream).
+      const seekToken = {}
+      _seekCancelToken = seekToken
 
       try {
         // Stoppe d'abord pour libérer le stream
@@ -1521,15 +1640,30 @@ export async function selectAudioDevice(deviceId, deviceName) {
         // Court délai pour laisser le temps au stream de se fermer
         await new Promise(resolve => setTimeout(resolve, 100))
 
-        // Relance la lecture
-        await invoke('audio_play', { path: currentTrack.path })
+        // Attempt playback on new device
+        try {
+          await invoke('audio_play', { path: currentTrack.path })
+        } catch (playError) {
+          // If AirPlay, retry once after 1.5s — device may need more time to activate
+          // (network negotiation, receiver waking from sleep, etc.)
+          if (isAirplay) {
+            console.log('[AUDIO-OUTPUT] AirPlay play failed, retrying in 1.5s...', playError)
+            await new Promise(resolve => setTimeout(resolve, 1500))
+            await invoke('audio_play', { path: currentTrack.path })
+          } else {
+            throw playError // Non-AirPlay: propagate immediately
+          }
+        }
+        // Track which device the stream is now on (used by startSystemDeviceSync)
+        _audioStreamDeviceId = deviceId
 
         // Seek à la position précédente après un court délai
-        if (currentPosition > 1) {
+        if (savedPosition > 1) {
           setTimeout(async () => {
+            if (_seekCancelToken !== seekToken) return // Annulé par un switch ultérieur
             try {
-              await invoke('audio_seek', { time: currentPosition })
-              console.log('[AUDIO-OUTPUT] Seeked to previous position:', currentPosition.toFixed(2))
+              await invoke('audio_seek', { time: savedPosition })
+              console.log('[AUDIO-OUTPUT] Seeked to previous position:', savedPosition.toFixed(2))
             } catch (e) {
               console.error('[AUDIO-OUTPUT] Error seeking:', e)
             }
@@ -1554,11 +1688,13 @@ export async function selectAudioDevice(deviceId, deviceName) {
         showToast('Error changing output')
       }
     } else {
-      showToast(isAirplay ? `AirPlay: ${deviceName} — latence +2s · non bit-perfect` : `Audio output: ${deviceName}`, isAirplay ? 4000 : undefined)
+      showToast(isAirplay ? `AirPlay: ${deviceName} — +2s latency · non bit-perfect` : `Audio output: ${deviceName}`, isAirplay ? 4000 : undefined)
     }
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error changing device:', e)
-    showToast('Error changing audio output')
+    // Show the actual error message from Rust if available (e.g. AirPlay disconnected instructions)
+    const msg = typeof e === 'string' ? e : e?.message || 'Error changing audio output'
+    showToast(msg, 5000)
   }
 }
 
@@ -1842,7 +1978,7 @@ export function initPlayback() {
       const currentItem = dom.audioOutputList?.querySelector(`[data-device-id="${playback.currentAudioDeviceId}"]`)
       if (currentItem?.dataset.isAirplay === 'true') {
         dom.exclusiveModeCheckbox.checked = false
-        showToast('Mode exclusif indisponible sur AirPlay', 3000)
+        showToast('Exclusive mode unavailable on AirPlay', 3000)
         return
       }
     }

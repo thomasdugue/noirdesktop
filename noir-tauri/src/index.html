@@ -458,8 +458,8 @@
       <!-- Footer version + Quitter -->
       <div class="settings-footer">
         <span class="settings-version" id="settings-version-label">Noir v0.1.0</span>
-        <button id="settings-quit-btn" class="settings-quit-btn" title="Quitter Noir">
-          Quitter Noir
+        <button id="settings-quit-btn" class="settings-quit-btn" title="Quit Noir">
+          Quit Noir
         </button>
       </div>
     </div>
@@ -479,7 +479,7 @@
       </div>
     </div>
 
-    <!-- Col 2 row 1 : Titre -->
+    <!-- Col 2 row 1 : Titre (2 lignes max) -->
     <div class="player-track-title">
       <span id="track-name">-</span>
     </div>
@@ -509,25 +509,23 @@
       <span id="bit-perfect-badge" class="bit-perfect-badge">BIT PERFECT</span>
     </span>
 
-    <!-- Col 2 row 2 : Artiste + boutons panel -->
+    <!-- Col 2 row 2 : Artiste -->
     <div class="player-track-meta">
       <button id="track-folder" class="track-folder artist-link" title="Go to artist">-</button>
-      <div class="player-panel-btns">
-        <button id="btn-lyrics" class="btn-mode btn-lyrics" title="Lyrics">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 3c-4.97 0-9 2.69-9 6 0 1.93 1.13 3.66 2.94 4.85L5 17l3.5-1.5c1.1.33 2.26.5 3.5.5 4.97 0 9-2.69 9-6s-4.03-6-9-6zm-1 9H7v-2h4v2zm6 0h-4v-2h4v2zm0-4H7V6h10v2z"/>
-          </svg>
-        </button>
-        <button id="queue-btn" class="btn-mode btn-queue" title="Queue">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
-          </svg>
-        </button>
-      </div>
     </div>
 
-    <!-- Col 3 row 2 : Progress (classe progress-container préservée pour SMB buffering) -->
+    <!-- Col 3 row 2 : Lyrics + Queue + Progress -->
     <div class="progress-container player-progress">
+      <button id="btn-lyrics" class="btn-mode btn-lyrics" title="Lyrics">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M21 2H9v13.56A3.96 3.96 0 0 0 7 15c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V6h8v7.56A3.96 3.96 0 0 0 17 13c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V2z"/>
+        </svg>
+      </button>
+      <button id="queue-btn" class="btn-mode btn-queue" title="Queue">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
+        </svg>
+      </button>
       <span id="current-time">0:00</span>
       <input type="range" id="progress" class="progress-bar" value="0" min="0" max="100">
       <span id="duration">0:00</span>
@@ -796,13 +794,6 @@
 
     <!-- Overlay d'infos par-dessus le canvas -->
     <div class="fs-overlay">
-      <!-- Bouton lyrics fullscreen -->
-      <button id="fs-lyrics-btn" class="fs-lyrics-btn" title="Lyrics">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 3c-4.97 0-9 2.69-9 6 0 1.93 1.13 3.66 2.94 4.85L5 17l3.5-1.5c1.1.33 2.26.5 3.5.5 4.97 0 9-2.69 9-6s-4.03-6-9-6zm-1 9H7v-2h4v2zm6 0h-4v-2h4v2zm0-4H7V6h10v2z"/>
-        </svg>
-      </button>
-
       <!-- Bouton fermer -->
       <button id="fs-close" class="fs-close" title="Close fullscreen">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -814,7 +805,14 @@
       <div class="fs-info">
         <img id="fs-cover" class="fs-cover" alt="" />
         <div class="fs-meta">
-          <h1 id="fs-title" class="fs-title">-</h1>
+          <div class="fs-title-row">
+            <h1 id="fs-title" class="fs-title">-</h1>
+            <button id="fs-lyrics-btn" class="fs-lyrics-btn" title="Lyrics">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M21 2H9v13.56A3.96 3.96 0 0 0 7 15c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V6h8v7.56A3.96 3.96 0 0 0 17 13c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V2z"/>
+              </svg>
+            </button>
+          </div>
           <h2 id="fs-artist" class="fs-artist">-</h2>
           <span id="fs-audio-specs" class="audio-specs fs-audio-specs">
             <span class="specs-source">

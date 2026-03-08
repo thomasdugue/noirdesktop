@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use std::sync::{Mutex, Arc};
 use std::sync::atomic::{AtomicU64, AtomicBool};
@@ -9,6 +10,7 @@ use once_cell::sync::Lazy;
 use walkdir::WalkDir;
 use lofty::{Accessor, AudioFile, Probe, TaggedFileExt, MimeType, TagExt};
 use base64::{Engine as _, engine::general_purpose};
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use reqwest::Client;
 use rayon::prelude::*;
@@ -110,10 +112,14 @@ struct PlaylistsData {
 }
 
 // Cache pour les pochettes "not found" sur Internet (évite les requêtes répétées)
+// Stocke un timestamp Unix (secondes) par entrée pour permettre un TTL de 30 jours.
+// Ancienne structure : HashMap<String, bool> → migration automatique via unwrap_or_default.
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct InternetCoverNotFoundCache {
-    entries: HashMap<String, bool>, // album_key -> true si déjà cherché sans succès
+    entries: HashMap<String, u64>, // album_key -> timestamp Unix (secs) du "not found"
 }
+
+const INTERNET_NOT_FOUND_TTL_SECS: u64 = 30 * 24 * 3600; // 30 jours
 
 // === HISTORIQUE D'ÉCOUTE ===
 // Structure pour une entrée d'écoute
@@ -402,7 +408,15 @@ fn load_internet_not_found_cache() -> InternetCoverNotFoundCache {
     let cache_path = get_data_dir().join("internet_not_found_cache.json");
     if cache_path.exists() {
         let content = fs::read_to_string(&cache_path).unwrap_or_default();
-        serde_json::from_str(&content).unwrap_or_default()
+        // unwrap_or_default() assure la migration depuis l'ancien format HashMap<String, bool>
+        let mut cache: InternetCoverNotFoundCache = serde_json::from_str(&content).unwrap_or_default();
+        // Purge les entrées expirées (TTL 30 jours)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        cache.entries.retain(|_, ts| now.saturating_sub(*ts) < INTERNET_NOT_FOUND_TTL_SECS);
+        cache
     } else {
         InternetCoverNotFoundCache::default()
     }
@@ -2517,10 +2531,17 @@ async fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
     // Clé unique pour cet album
     let album_key = format!("{}|||{}", artist.to_lowercase(), album.to_lowercase());
 
-    // Vérifie si déjà marqué comme "not found"
+    // Vérifie si déjà marqué comme "not found" et non expiré
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     if let Ok(cache) = INTERNET_NOT_FOUND_CACHE.lock() {
-        if cache.entries.contains_key(&album_key) {
-            return None;
+        if let Some(&ts) = cache.entries.get(&album_key) {
+            if now_secs.saturating_sub(ts) < INTERNET_NOT_FOUND_TTL_SECS {
+                return None; // Encore dans le TTL → on ne refait pas la recherche
+            }
+            // TTL expiré → l'entrée sera écrasée si toujours not found
         }
     }
 
@@ -2544,9 +2565,13 @@ async fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
         }
     }
 
-    // Marque comme "not found" pour ne pas refaire la recherche
+    // Marque comme "not found" avec timestamp pour le TTL de 30 jours
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     if let Ok(mut cache) = INTERNET_NOT_FOUND_CACHE.lock() {
-        cache.entries.insert(album_key, true);
+        cache.entries.insert(album_key, now);
     }
 
     None
@@ -3087,7 +3112,7 @@ async fn audio_play(path: String) -> Result<(), String> {
                 break;
             }
             if std::time::Instant::now() > deadline {
-                return Err(format!("Timeout: SMB download trop lent pour {}", path));
+                return Err(format!("Timeout: SMB download too slow for {}", path));
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
@@ -3098,7 +3123,7 @@ async fn audio_play(path: String) -> Result<(), String> {
 
         // Vérifier que le download n'a pas échoué immédiatement (0 bytes → fichier introuvable)
         if available == 0 {
-            return Err(format!("Téléchargement SMB échoué pour: {}", path));
+            return Err(format!("SMB download failed for: {}", path));
         }
 
         // 5. Démarrer la lecture depuis le fichier local (peut encore être en cours de DL)
@@ -3116,7 +3141,7 @@ async fn audio_play(path: String) -> Result<(), String> {
 
     // Comportement existant pour fichiers locaux
     if !Path::new(&path).exists() {
-        emit_frontend_error("file_not_found", "Fichier introuvable", &path);
+        emit_frontend_error("file_not_found", "File not found", &path);
         return Err(format!("File not found: {}", path));
     }
     if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
@@ -3643,6 +3668,13 @@ fn get_top_artists(limit: usize) -> Vec<TopArtist> {
 
 // === FEEDBACK ===
 
+/// Token GitHub injecté à la compilation.
+/// Set via : export NOIR_GITHUB_FEEDBACK_TOKEN=ghp_...
+/// Permet de créer des issues sur thomasdugue/noir-feedback sans exposer
+/// le token dans le code source.
+const FEEDBACK_GITHUB_TOKEN: Option<&str> = option_env!("NOIR_GITHUB_FEEDBACK_TOKEN");
+const FEEDBACK_GITHUB_REPO: &str = "thomasdugue/noir-feedback";
+
 #[derive(Deserialize)]
 struct FeedbackContext {
     app_version: String,
@@ -3663,6 +3695,102 @@ struct FeedbackPayload {
     context: FeedbackContext,
 }
 
+/// Formate le corps de l'issue GitHub en Markdown à partir du payload.
+fn format_github_issue_body(payload: &FeedbackPayload) -> String {
+    let type_emoji = match payload.feedback_type.as_str() {
+        "bug"     => "🐛",
+        "feature" => "✨",
+        "ux"      => "🎨",
+        _         => "💬",
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+
+    lines.push(format!("{} **{}**", type_emoji, payload.feedback_type.to_uppercase()));
+
+    if let Some(ref sev) = payload.severity {
+        lines.push(format!("**Severity:** {}", sev));
+    }
+
+    lines.push(String::new());
+    lines.push("---".to_string());
+    lines.push(String::new());
+    lines.push(payload.description.clone());
+
+    if let Some(ref email) = payload.email {
+        if !email.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("**Contact:** {}", email));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("---".to_string());
+    lines.push(String::new());
+    lines.push("**App context:**".to_string());
+    lines.push(format!("- Version: `{}`", payload.context.app_version));
+    lines.push(format!("- View: `{}`", payload.context.current_view));
+    lines.push(format!("- Library: {} tracks", payload.context.library_size));
+    lines.push(format!("- Playing: {}", payload.context.is_playing));
+    lines.push(format!("- Timestamp: {}", payload.context.timestamp));
+
+    lines.join("\n")
+}
+
+/// Crée une GitHub Issue sur noir-feedback via l'API GitHub.
+/// Retourne l'URL de l'issue créée, ou une erreur.
+async fn create_github_feedback_issue(token: &str, payload: &FeedbackPayload) -> Result<String, String> {
+    let type_emoji = match payload.feedback_type.as_str() {
+        "bug"     => "🐛",
+        "feature" => "✨",
+        "ux"      => "🎨",
+        _         => "💬",
+    };
+
+    let issue_title = format!("{} {}", type_emoji, payload.title);
+    let issue_body  = format_github_issue_body(payload);
+
+    // Labels : toujours "beta" + label du type
+    let type_label = match payload.feedback_type.as_str() {
+        "bug"     => "bug",
+        "feature" => "enhancement",
+        "ux"      => "ux",
+        _         => "feedback",
+    };
+    let labels = vec!["beta", type_label];
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("https://api.github.com/repos/{}/issues", FEEDBACK_GITHUB_REPO))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "Noir-Desktop-Feedback/1.0")
+        .json(&serde_json::json!({
+            "title":  issue_title,
+            "body":   issue_body,
+            "labels": labels,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("GitHub API {} — {}", status, text));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+
+    let issue_url = json["html_url"].as_str().unwrap_or("").to_string();
+    println!("[FEEDBACK] GitHub issue created: {}", issue_url);
+    Ok(issue_url)
+}
+
 // === MEDIA CONTROLS COMMANDS ===
 
 /// Met à jour les métadonnées de la track en cours dans MPNowPlayingInfoCenter.
@@ -3679,20 +3807,25 @@ fn update_media_playback_state(is_playing: bool) {
     media_controls::update_playback_state(is_playing);
 }
 
+/// Quitte l'application proprement (utilisé par le bouton "Quitter Noir" dans Settings).
+/// Sur macOS, la croix rouge cache la fenêtre — cette commande permet de vraiment quitter.
 #[tauri::command]
-fn submit_feedback(payload: FeedbackPayload) -> Result<String, String> {
-    // Save feedback to local JSON file in app data dir
+fn quit_app(app_handle: tauri::AppHandle) {
+    app_handle.exit(0);
+}
+
+#[tauri::command]
+async fn submit_feedback(payload: FeedbackPayload) -> Result<String, String> {
+    // === 1. Sauvegarde locale (toujours, en backup) ===
     let data_dir = get_data_dir();
     let feedback_dir = data_dir.join("feedback");
     fs::create_dir_all(&feedback_dir).map_err(|e| e.to_string())?;
 
-    let timestamp = {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        format!("{}", now)
-    };
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
     let filename = format!("feedback_{}.json", timestamp);
     let filepath = feedback_dir.join(&filename);
 
@@ -3709,15 +3842,37 @@ fn submit_feedback(payload: FeedbackPayload) -> Result<String, String> {
             "is_playing": payload.context.is_playing,
             "timestamp": payload.context.timestamp,
         },
-        "saved_at": timestamp,
+        "saved_at": timestamp.to_string(),
     });
 
     let json_string = serde_json::to_string_pretty(&feedback_json).map_err(|e| e.to_string())?;
     fs::write(&filepath, &json_string).map_err(|e| e.to_string())?;
+    println!("[FEEDBACK] Saved locally: {:?}", filepath);
 
-    println!("[FEEDBACK] Saved to {:?}", filepath);
-
-    Ok(format!("Feedback saved: {}", filename))
+    // === 2. Envoi vers GitHub Issues ===
+    // Le token est injecté à la compilation via NOIR_GITHUB_FEEDBACK_TOKEN.
+    // Sans token (mode dev sans env var), le feedback est conservé en local seulement.
+    match FEEDBACK_GITHUB_TOKEN {
+        Some(token) if !token.is_empty() => {
+            match create_github_feedback_issue(token, &payload).await {
+                Ok(issue_url) => {
+                    println!("[FEEDBACK] Issue créée : {}", issue_url);
+                    Ok(issue_url)
+                }
+                Err(e) => {
+                    // L'envoi GitHub a échoué mais la sauvegarde locale a réussi.
+                    // On retourne une erreur pour que le JS affiche un toast d'avertissement.
+                    eprintln!("[FEEDBACK] GitHub issue creation failed: {}", e);
+                    Err(format!("Feedback saved locally but GitHub upload failed: {}", e))
+                }
+            }
+        }
+        _ => {
+            // Pas de token — mode dev ou build sans token configuré.
+            println!("[FEEDBACK] No NOIR_GITHUB_FEEDBACK_TOKEN — saved locally only.");
+            Ok(format!("Feedback saved locally: {}", filename))
+        }
+    }
 }
 
 // =====================================================================
@@ -3934,12 +4089,19 @@ async fn reconnect_network_source(source_id: String) -> Result<(), String> {
             .ok_or_else(|| format!("Network source not found: {}", source_id))?
     };
 
-    // Récupérer le mot de passe depuis le Keychain
+    // Récupérer le mot de passe UNIQUEMENT depuis le cache session (jamais le Keychain ici).
+    // Au démarrage à froid, le cache est vide → on saute silencieusement la reconnexion.
+    // Cela évite la dialog macOS "Autoriser l'accès au trousseau" à chaque lancement.
+    // Le Keychain n'est accédé qu'explicitement, lors d'un scan déclenché par l'utilisateur
+    // (bouton ⟳ → scan_network_source_cmd → retrieve_password → stocke dans le cache).
     let password = if source.credentials.is_guest {
         String::new()
     } else {
-        network::credentials::retrieve_password(&source.id)
-            .unwrap_or_default()
+        if !network::credentials::has_password_in_session(&source.id) {
+            println!("[RECONNECT] Skipping {} — no session credentials (Keychain not accessed at startup)", source.name);
+            return Ok(());
+        }
+        network::credentials::retrieve_password(&source.id).unwrap_or_default()
     };
 
     tokio::task::spawn_blocking(move || {
@@ -4100,6 +4262,21 @@ pub fn run() {
                 }
             }
         })
+        .on_window_event(|window, event| {
+            // Sur macOS : la croix rouge cache la fenêtre au lieu de quitter l'app.
+            // L'app reste dans le dock et peut être rappelée. Pour quitter vraiment :
+            // Settings → "Quitter Noir" ou Cmd+Q (géré par le menu macOS natif).
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                #[cfg(target_os = "macos")]
+                {
+                    window.hide().unwrap_or(());
+                    api.prevent_close();
+                }
+                // Sur Windows/Linux : comportement par défaut (ferme + quitte)
+                #[cfg(not(target_os = "macos"))]
+                let _ = api;
+            }
+        })
         .setup(|app| {
             // Initialise l'Audio Engine avec l'AppHandle pour les événements
             let app_handle = app.handle().clone();
@@ -4222,8 +4399,23 @@ pub fn run() {
             scan_network_source_cmd,
             // Media Controls (MPRemoteCommandCenter / media keys)
             update_media_metadata,
-            update_media_playback_state
+            update_media_playback_state,
+            // Application
+            quit_app
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            // Sur macOS : clic sur l'icône Dock → réaffiche la fenêtre cachée.
+            // Sans ce handler, la fenêtre reste invisible après hide() jusqu'au redémarrage.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+                if !has_visible_windows {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        window.show().unwrap_or(());
+                        window.set_focus().unwrap_or(());
+                    }
+                }
+            }
+        });
 }

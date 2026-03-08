@@ -16,7 +16,15 @@ cd src-tauri && cargo build --release  # Optimized build (LTO + strip)
 for f in src/*.js; do node --check "$f" && echo "OK: $f"; done
 ```
 
-There are no JS tests, no JS linter config, and no bundler. The frontend is served as-is from `src/` (`tauri.conf.json` → `frontendDist: "../src"`).
+There is no JS linter config and no bundler. The frontend is served as-is from `src/` (`tauri.conf.json` → `frontendDist: "../src"`).
+
+```bash
+# JS tests (Jest, 4 test files in src/__tests__/)
+npm test -- --watchAll=false          # Run once
+npm test -- --watchAll=false --testPathPattern=FormatDisplay  # Single test file
+```
+
+Test files: `FormatDisplay.test.js`, `Navigation.test.js`, `PlayerControls.test.js`, `AlbumView.test.js`. Many tests are skipped (require Tauri `invoke` which isn't available in Node test environment).
 
 The `.claude/launch.json` entry (`npm run tauri dev` with `--prefix noirdesktop/noir-tauri`) is used by `preview_start` "Noir Tauri Dev" to start the server in Claude sessions. The native window opens; there is no browser URL to preview.
 
@@ -38,12 +46,12 @@ The JS was refactored (Feb 2026) from a 9 600-line monolith into:
 | `renderer.js` | ~830 | Orchestrator: registers all module functions on `app`, settings panel, sidebar resize, `init()` |
 | `app.js` | ~109 | **Mediator**: ~95 `null` slots filled at init — the only way modules call each other |
 | `state.js` | ~205 | **Centralized mutable state** (see below) |
-| `views.js` | ~3 000 | All view rendering: home, albums/artists grids, album/artist/mix pages, virtual scroll (60-node pool) |
-| `playback.js` | ~1 760 | Audio control via Rust invoke: play/pause/seek/volume, gapless preload, 60fps position interpolation, hog mode status, media keys sync |
-| `panels.js` | ~1 351 | Queue panel, track info panel (+ inline metadata editing), context menus (single/multi/album), bulk edit modal |
-| `playlists.js` | ~1 292 | Playlists CRUD, favorites, add-to-playlist menus |
-| `library.js` | ~870 | Cover loading (thumbnail/full/internet/artist), metadata, library scanning, indexation UI |
-| `network.js` | ~856 | NAS/SMB source management, share browser modal, `browseFolder`, `saveNetworkSource`, connect/disconnect flow |
+| `views.js` | ~3 100 | All view rendering: home, albums/artists grids, album/artist/mix pages, virtual scroll (60-node pool). `transitionView` is async (supports `await renderFn()`) |
+| `playback.js` | ~2 050 | Audio control via Rust invoke: play/pause/seek/volume, gapless preload, 60fps position interpolation, hog mode status, media keys sync |
+| `panels.js` | ~1 354 | Queue panel, track info panel (+ inline metadata editing), context menus (single/multi/album), bulk edit modal |
+| `playlists.js` | ~1 495 | Playlists CRUD, favorites, add-to-playlist menus |
+| `library.js` | ~934 | Cover loading (thumbnail/full/internet/artist), metadata, library scanning, indexation UI |
+| `network.js` | ~882 | NAS/SMB source management, share browser modal, `browseFolder`, `saveNetworkSource`, connect/disconnect flow |
 | `fullscreen-player.js` | ~416 | Fullscreen immersive view: particle system (3 phases), color extraction from cover art |
 | `shortcuts.js` | ~555 | Configurable local shortcuts + global media keys (Cmd+Shift+P/Right/Left fallbacks), persisted to localStorage. F7/F8/F9 intentionnellement absents (conflictent avec Apple Music) |
 | `eq.js` | ~392 | EQ panel UI (8-band parametric), connects to `set_eq_bands` Tauri command |
@@ -51,6 +59,7 @@ The JS was refactored (Feb 2026) from a 9 600-line monolith into:
 | `feedback.js` | ~222 | Floating feedback button + modal (bug/feature/other), saves to local JSON via Tauri `submit_feedback` |
 | `drag.js` | ~182 | Custom drag (mousedown/move/up) — HTML5 drag is broken in Tauri WebView |
 | `utils.js` | ~350 | Pure utilities: `showToast`, `escapeHtml`, `formatTime`, `setManagedTimeout`, `createParticleCanvas` |
+| `lyrics.js` | ~220 | Lyrics panel (lrclib.net, lyrics.ovh fallback) |
 | `auto-update.js` | ~103 | Auto-update check via Tauri updater plugin |
 
 ### State objects (`state.js`)
@@ -115,6 +124,20 @@ function showSomething() {
 // currentModalState holds a reference to the live state object so event-driven
 // callbacks can update the correct state. Always set on modal open, clear on close.
 let currentModalState = null  // module-level in network.js
+
+// transitionView is async — renderFn can return a Promise (e.g. displayHomeView)
+// renderVersion counter cancels obsolete renders when a new transition starts
+await transitionView(async () => {
+  await displayHomeView()  // fetches data from Rust before building DOM
+})
+```
+
+### CSS layout — critical flex constraint
+
+`.main-content` has `min-width: 0` — **do not remove**. Without it, carousels with `width: calc(100% + extra)` inflate the flex item beyond the viewport, breaking grid layouts (e.g. `.home-recent-grid` columns expand to 1492px each instead of ~268px) and preventing horizontal scroll on carousels.
+
+```css
+.main-content { flex: 1; min-width: 0; }  /* min-width: 0 is critical */
 ```
 
 ### Backend — Rust (`src-tauri/src/`)
@@ -188,6 +211,24 @@ network/
 
 **Password cache:** `credentials.rs` keeps `PASSWORD_CACHE: Lazy<Mutex<HashMap<String,String>>>` — Keychain accessed at most once per source per session. `get_cover_smb()` checks this cache and skips the SMB connection if no session password is present (avoids Keychain dialogs at startup).
 
+### Playlist thumbnails — pattern async
+
+`playlists.js` utilise un chargement lazy de covers via attribut `data-cover-path` :
+
+1. `getPlaylistAlbumPaths(playlist)` — retourne ≤4 paths de tracks (1 par album si `library.tracks` est peuplé, sinon paths bruts). **Résilient** : si la lib n'est pas encore chargée, utilise les paths directs sans dédup.
+2. `buildPlaylistThumbHtml(paths, size)` — génère le HTML avec des `<div data-cover-path="...">` (PAS `<img>`) selon le nombre de covers :
+   - 0 → `playlist-cover-empty` (icône ♪)
+   - 1 → `playlist-cover-single` (1 colonne, image pleine)
+   - 2 → 2 divs côte à côte
+   - 3-4 → grille 2×2 (le 4e slot répète le 1er si 3 covers)
+3. `loadPlaylistThumbs(containerEl)` — async, fire-and-forget. Chaîne de fallback :
+   - `thumbnailCache` / `coverCache` (mémoire) → `get_cover_thumbnail` (cache disque, cache-only, instantané si pré-généré) → `get_cover` (extrait depuis le fichier audio, **toujours fiable**)
+   - Injecte `cell.style.backgroundImage = url(...)` et ajoute la classe `has-cover`
+
+**`get_cover_thumbnail` vs `get_cover`** : `get_cover_thumbnail` retourne `null` si le thumbnail n'a pas été pré-généré par le scan en arrière-plan. Ne jamais l'utiliser seul sans fallback — utiliser `get_cover` en second essai.
+
+**Timing sidebar au démarrage** : `initPlaylistListeners()` appelle `loadPlaylists()` → `updatePlaylistsSidebar()` depuis `DOMContentLoaded`. À ce moment, `init()` (async) n'a pas encore peuplé `library.tracks` (plusieurs `await` en attente). Fix : `renderer.js` appelle explicitement `app.updatePlaylistsSidebar()` après `groupTracksIntoAlbumsAndArtists()` + `displayCurrentView()` dans `init()`.
+
 ### External APIs (called from Rust via reqwest)
 
 MusicBrainz + CoverArtArchive (album art), Deezer (artist images + genre enrichment), WikiMedia.
@@ -254,6 +295,7 @@ All persisted to `~/.local/share/noir/` (via `dirs::data_dir()`):
 - **Virtual scroll**: `views.js` maintains a 60-node DOM pool (`POOL_SIZE=60`, `TRACK_ITEM_HEIGHT=48`). Never modify track DOM nodes outside this system.
 - **Gapless preload timing**: `audio_preload_next` must be called ~60s before track end for SMB tracks (10s for local). Timing logic in `playback.js`.
 - **Event delegation**: album/artist grid cards carry `dataset.albumKey` / `dataset.artistKey`. Add interactions via delegation on the grid container, not per-card listeners.
+- **`transitionView` async**: `transitionView(renderFn)` awaits `renderFn()` before fade-in. `displayHomeView` is async (fetches data from Rust). The `renderVersion` counter prevents stale renders when multiple transitions overlap. `scan_complete` listener must check `shouldReload` before triggering `reloadLibraryFromCache()` — unconditional reload causes race conditions with the initial `displayHomeView`.
 - **SMB singleton**: `libsmbclient` is process-level — only one `SmbClient` can exist at a time. All SMB ops share `CONNECTION` mutex. Never instantiate a second `SmbClient` concurrently.
 - **Metadata editing**: `panels.js` → `enterTrackEditMode()` (single track) and `showBulkEditModal()` (N tracks). After save, always call `app.groupTracksIntoAlbumsAndArtists()` to rebuild the artist/album index.
 - **Release profile**: `Cargo.toml` has `opt-level=3`, `lto=true`, `strip=true`, `codegen-units=1`.
@@ -273,6 +315,22 @@ All persisted to `~/.local/share/noir/` (via `dirs::data_dir()`):
 - **SMB réseau :** connexion native gérée par Noir (pas par Finder). Cache local des metadata. Buffering : copie locale avant lecture pour éviter la latence réseau.
 - **Media keys macOS :** souvlaki (`MPRemoteCommandCenter`) utilisé pour que Noir prenne le contrôle des touches multimédia même quand Apple Music tourne. Les global shortcuts Tauri `MediaPlayPause/MediaTrackNext/MediaTrackPrevious` ne suffisent pas — Apple Music les intercepte en priorité. **Ne jamais réajouter F7/F8/F9 comme global shortcuts Tauri.**
 - **Navigation séquentielle en vue tracks :** toujours utiliser `ui.tracksViewOrder` (paths dans l'ordre visuel trié/filtré), jamais `library.tracks[currentTrackIndex ± 1]`. L'ordre de `library.tracks` est l'ordre de scan, qui diffère du tri visuel.
+- **AirPlay / Bluetooth device handling** :
+  - `kAudioDevicePropertyTransportType` identifie les devices : AirPlay (`0x61697270`), Bluetooth (`0x626C7565`), Built-in (`0x626C746E`), USB (`0x75736220`).
+  - `DeviceInfo` porte `transport_type: u32` + `is_airplay: bool`. Le champ `is_airplay` est utilisé côté JS pour le badge UI, toast dédié, et blocage automatique du hog mode (incompatible AirPlay).
+  - AirPlay et Bluetooth peuvent disparaître de `kAudioHardwarePropertyDevices` quand inactifs. Fix : `airplay_session_devices` (cache en session dans `CoreAudioBackend`) + réinjection dans `device_cache` même si CoreAudio les retire. `stale_airplay_ids` identifie les devices cachés non-actifs.
+  - **Stratégie system default (critique pour AirPlay)** : un device AirPlay n'existe dans CoreAudio QUE tant qu'il est le défaut système macOS. Dès qu'il perd ce statut, macOS tue la session et le device disparaît du HAL — impossible de le réactiver via `set_system_default_device` (l'API accepte silencieusement mais ne fait rien). Stratégie dans `set_output_device` :
+    - **→ AirPlay** : `set_system_default_device(airplay_id)` + 800ms d'attente pour activation réseau
+    - **AirPlay →** non-AirPlay : **NE PAS changer le défaut système** (garde AirPlay vivant). Audio route vers le nouveau device via assignement AudioUnit explicite (`get_device_id()` retourne `Some(id)` pour les non-AirPlay)
+    - **non-AirPlay → non-AirPlay** : `set_system_default_device` normalement (sync volume macOS)
+  - **Routing AudioUnit AirPlay** : `get_device_id()` retourne `None` pour les devices AirPlay → l'AudioUnit utilise le défaut système (qui est AirPlay). `AudioUnitSetProperty(kAudioOutputUnitProperty_CurrentDevice)` échoue systématiquement pour AirPlay.
+  - **`prepare_for_streaming` skip AirPlay** : ne change PAS le sample rate d'un device AirPlay (casse la session réseau). Retourne le rate natif (44100Hz). macOS gère le resampling AirPlay en interne.
+  - **Hog mode guard Rust** : `set_exclusive_mode(Exclusive)` refuse si le device actif est AirPlay. Auto-désactivé dans `set_output_device` quand on switch vers AirPlay.
+  - **Erreur AudioUnit stricte** : `coreaudio_stream.rs` retourne une erreur si `AudioUnitSetProperty(kAudioOutputUnitProperty_CurrentDevice)` échoue pour un device non-AirPlay (pas de fallback silencieux sur le mauvais device).
+  - **Retry JS AirPlay** : si `audio_play` échoue sur un device AirPlay, retry automatique après 1.5s (le receiver peut être en cours d'activation).
+  - **Sync polling JS** : après `set_audio_device`, lit le défaut système RÉEL via `get_system_default_device_id()` (qui peut différer du device sélectionné si AirPlay est préservé). `_lastKnownSystemDefault = actualDefault` empêche le polling de confondre la préservation AirPlay avec un changement externe.
+  - **Limitation connue** : quand le défaut système est préservé sur AirPlay et l'audio joue sur built-in, la notification volume macOS affiche "AirPlay" (cosmétique — le volume fonctionne sur le bon device).
+  - `_lastGoodPosition` (JS) : dernière position de lecture confirmée par `playback_progress`. Non réinitialisée par `playback_started` → survit aux restarts de stream pendant les device switches. `_seekCancelToken` empêche les seeks périmés.
 
 ## Règles de travail
 
@@ -308,8 +366,14 @@ Lire la spec correspondante AVANT de travailler sur une feature :
 ## Bugs connus
 
 - **gapless_transition en contexte library** : quand `ui.tracksViewOrder` est vide (vue tracks jamais rendue pendant la session), la gapless transition ne peut pas déterminer l'ordre visuel et laisse `currentTrackIndex` inchangé. Cas marginal (nécessite de jouer depuis tracks view sans jamais l'avoir affichée).
+- **Drag ESC sur homepage** : annuler un drag avec Escape sur la homepage peut laisser le ghost visible si le drag a commencé mais que `customDragState.isDragging` n'est pas encore `true`.
+- **Sidebar playlist thumbnail au 1er démarrage (sans cache)** : si aucun thumbnail n'a jamais été généré (première installation), `loadPlaylistThumbs` appelle `get_cover` qui extrait depuis le fichier audio — légère latence notable.
 
 ## Historique des sessions
 
 - **2026-03-04** : Infrastructure anti-régression — CLAUDE.md enrichi, docs/SPEC-test-suite.md, suite de tests complète : 100 pass / 0 fail / 19 ignored (Rust) + 11 pass / 14 skipped (JS). Modules testés : audio_decode, audio_seek, ring_buffer, metadata, library_scanner, queue, network_source (ignored), tauri_commands (ignored). Frontend : FormatDisplay, Navigation (skip), PlayerControls (skip), AlbumView (skip)
 - **2026-03-04** : Fix #16 (sync audio device bidirectionnel Noir↔Système), fix player disparu (`ui` non importé dans `playback.js`), fix Now Playing race condition (PASSE 2 async), fix #3 library sequential (playbackContext + tracksViewOrder), fix shuffle (track courante exclue avant tirage), fix #4 media keys (souvlaki MPRemoteCommandCenter + suppression F7/F8/F9 conflictuels)
+- **2026-03-04** : Sprint 2 — Fix #22 (dock click restaure la fenêtre : `RunEvent::Reopen` avec `.build().run(callback)` + `use tauri::Manager`), Fix #23 (auto-reconnect NAS au démarrage : `autoReconnectNetworkSources()` dans `network.js`), Fix #17 (drag HTML5 carousel homepage : `-webkit-user-drag: none; pointer-events: none` sur `.carousel-cover-img`), Fix #18 (thumbnails playlist : `<img>` → `<div>` avec `background-image`, layout adaptatif 0-4 covers, fallback `get_cover_thumbnail` → `get_cover`, rebuild sidebar après chargement library, `getPlaylistAlbumPaths` résilient si library vide)
+- **2026-03-05** : AirPlay Level 1 — détection transport type CoreAudio + badge UI + blocage hog mode AirPlay. Session cache pour AirPlay (persist dans la liste même quand CoreAudio les désactive). Stale AirPlay reconnect via `set_system_default_device`. Sync device fix (`_lastKnownSystemDefault` change-tracking + `_audioStreamDeviceId`). Fix Bluetooth DAC invisible (transport type `0x626C7565` ajouté au filtre + session cache). Fix position perdue sur device switch (`_lastGoodPosition` + `_seekCancelToken`). Traduction messages français → anglais dans le panel audio output.
+- **2026-03-06** : AirPlay Level 2 — Fix playback AirPlay qui cassait après le premier switch. Cause racine : `set_system_default_device` ne peut PAS réactiver un device AirPlay stale (API accepte silencieusement sans effet). Solution : stratégie de préservation session AirPlay (ne pas changer le défaut système quand on quitte AirPlay). Routing AirPlay via défaut système (`get_device_id()` → None). `prepare_for_streaming` skip sample rate pour AirPlay. Guard hog mode Rust dans `set_exclusive_mode`. Erreur AudioUnit explicite (non-AirPlay). Retry JS 1.5s pour AirPlay. Auto-reset `exclusive_mode=Shared` quand switch → AirPlay avec hog actif. 800ms d'attente activation AirPlay. Tests T1-T6, T8-T13 passés, T11 limitation cosmétique (notification volume macOS).
+- **2026-03-08** : Fix home page — (1) `transitionView` rendu async avec `renderVersion` pour annuler les renders obsolètes, (2) `displayHomeView` awaitée dans `displayCurrentView`, (3) `scan_complete` conditionnel (ne reload que si `new_tracks > 0 || removed_tracks > 0`), (4) `min-width: 0` sur `.main-content` — cause racine du grid 4496px (carousels `calc(100% + extra)` inflataient le flex item), (5) fallback `thumbnailCache` pour covers Recently Played, (6) media queries responsive `.home-recent-grid` (3 cols → 2 → 1).
