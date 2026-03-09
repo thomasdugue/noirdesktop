@@ -792,10 +792,10 @@ export function displayAlbumPage(albumKey) {
       <span class="track-number">${track.metadata?.track || (idx + 1)}</span>
       ${isMultiArtist
         ? `<div class="track-info">
-            <span class="track-title">${track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'}</span>
-            <span class="track-artist">${trackArtist}</span>
+            <span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>
+            <span class="track-artist">${escapeHtml(trackArtist)}</span>
           </div>`
-        : `<span class="track-title">${track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'}</span>`
+        : `<span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>`
       }
       <button class="track-add-queue${queue.items.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -991,8 +991,8 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
         ${app.getFavoriteButtonHtml(track.path)}
         <span class="track-number">${track.metadata?.track || index + 1}</span>
         <div class="track-info">
-          <span class="track-title">${track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'}</span>
-          <span class="track-artist">${trackArtist}</span>
+          <span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>
+          <span class="track-artist">${escapeHtml(trackArtist)}</span>
         </div>
         <span class="track-duration">${duration}</span>
         ${buttonsHtml}
@@ -1001,7 +1001,7 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
       trackItem.innerHTML = `
         ${app.getFavoriteButtonHtml(track.path)}
         <span class="track-number">${track.metadata?.track || index + 1}</span>
-        <span class="track-title">${track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'}</span>
+        <span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>
         <span class="track-duration">${duration}</span>
         ${buttonsHtml}
       `
@@ -2193,11 +2193,11 @@ export function displayAlbumsGrid() {
 
     card.innerHTML = `
       <div class="album-cover">
-        <img class="album-cover-img" ${hasCachedCover ? `src="${cachedCover}"` : 'style="display: none;"'} alt="${album.album}">
+        <img class="album-cover-img" ${hasCachedCover ? `src="${cachedCover}"` : 'style="display: none;"'} alt="${escapeHtml(album.album)}">
         <div class="album-cover-placeholder" ${hasCachedCover ? 'style="display: none;"' : ''}>\u266A</div>
       </div>
-      <div class="album-title">${album.album}</div>
-      <div class="album-artist">${album.artist}</div>
+      <div class="album-title">${escapeHtml(album.album)}</div>
+      <div class="album-artist">${escapeHtml(album.artist)}</div>
     `
 
     if (!hasCachedCover && album.coverPath) {
@@ -2351,10 +2351,10 @@ export function displayArtistsGrid() {
 
     card.innerHTML = `
       <div class="album-cover artist-cover">
-        <img class="album-cover-img" style="display: none;" alt="${artist.name}">
+        <img class="album-cover-img" style="display: none;" alt="${escapeHtml(artist.name)}">
         <div class="album-cover-placeholder">\u266A</div>
       </div>
-      <div class="album-title">${artist.name}</div>
+      <div class="album-title">${escapeHtml(artist.name)}</div>
       <div class="album-artist">${metaText}</div>
     `
 
@@ -2548,10 +2548,10 @@ export function displayArtistPage(artistKey) {
 
     card.innerHTML = `
       <div class="album-cover">
-        <img class="album-cover-img" ${hasCachedCover ? `src="${cachedCover}"` : 'style="display: none;"'} alt="${albumData.album}">
+        <img class="album-cover-img" ${hasCachedCover ? `src="${cachedCover}"` : 'style="display: none;"'} alt="${escapeHtml(albumData.album)}">
         <div class="album-cover-placeholder" ${hasCachedCover ? 'style="display: none;"' : ''}>\u266A</div>
       </div>
-      <div class="album-title">${albumData.album}</div>
+      <div class="album-title">${escapeHtml(albumData.album)}</div>
       <div class="album-artist">${albumData.tracks.length} track${albumData.tracks.length > 1 ? 's' : ''}${yearText}</div>
     `
 

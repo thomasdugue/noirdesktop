@@ -81,6 +81,7 @@ export const app = {
   getFavoriteButtonHtml: null,
   displayPlaylistView: null,
   showPlaylistModal: null,
+  getPlaylistById: null,
 
   // === Search ===
   buildSearchIndex: null,
@@ -105,6 +106,10 @@ export const app = {
 
   // === Network / NAS ===
   populateNetworkSources: null,
+
+  // === Onboarding ===
+  showOnboarding: null,
+  hideOnboarding: null,
 
   // === Misc ===
   selectFolder: null,

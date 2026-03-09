@@ -1,7 +1,7 @@
 // playlists.js — Gestion des playlists et des favoris pour Noir Desktop
 // Inclut: playlists CRUD, favoris, sidebar, modal, tri, drag reorder, menu contextuel
 
-import { library, favorites, ui, contextMenu, dom, caches } from './state.js'
+import { library, favorites, ui, contextMenu, dom, caches, queue, playback } from './state.js'
 import { invoke } from './state.js'
 import { app } from './app.js'
 import { formatTime, escapeHtml, showToast } from './utils.js'
@@ -26,6 +26,11 @@ let confirmModalResolve = null
  * Retourne le nombre RÉEL de favoris = intersection favorites.tracks ∩ library.tracks.
  * Évite d'afficher des compteurs stale quand favorites contient des paths orphelins.
  */
+// Retourne une playlist par son ID (utilisé par playback.js pour repeat-all / prev)
+export function getPlaylistById(id) {
+  return playlists.find(p => p.id === id) || null
+}
+
 export function getValidFavoritesCount() {
   if (library.tracks.length === 0) return favorites.tracks.size
   let count = 0
@@ -68,9 +73,6 @@ export async function toggleFavorite(trackPath, buttonEl) {
     favorites.tracks.add(trackPath)
   }
 
-  // Optimistic sidebar count update
-  updateFavoritesCountBadge()
-
   // Appel async au backend
   try {
     await invoke('toggle_favorite', { trackPath })
@@ -91,12 +93,6 @@ export async function toggleFavorite(trackPath, buttonEl) {
   }
 }
 
-// Met à jour le badge de comptage favoris dans la sidebar sans recréer tout le DOM
-function updateFavoritesCountBadge() {
-  const favItem = document.querySelector('.playlist-favorites .playlist-item-count')
-  const favCount = getValidFavoritesCount()
-  if (favItem) favItem.textContent = favCount > 0 ? favCount : ''
-}
 
 // Genere le HTML du bouton favori pour une track
 export function getFavoriteButtonHtml(trackPath) {
@@ -282,7 +278,6 @@ export function updatePlaylistsSidebar() {
            data-tooltip="${escapeHtml(playlist.name)}">
         ${icon}
         <span class="playlist-item-name">${playlist.name}</span>
-        <span class="playlist-item-count">${(() => { const c = isFavorites ? getValidFavoritesCount() : playlist.trackPaths.length; return c > 0 ? c : '' })()}</span>
       </div>
     `
   }).join('')
@@ -613,8 +608,8 @@ export function displayPlaylistView(playlist) {
         <div class="playlist-track-item" data-index="${index}" data-track-path="${track.path}">
           <span class="playlist-track-number">${index + 1}</span>
           <div class="playlist-track-info">
-            <span class="playlist-track-title">${title}</span>
-            <span class="playlist-track-artist">${artist}</span>
+            <span class="playlist-track-title">${escapeHtml(title)}</span>
+            <span class="playlist-track-artist">${escapeHtml(artist)}</span>
           </div>
           <span class="playlist-track-duration">${duration}</span>
           <button class="playlist-track-remove" title="Remove from playlist">
@@ -649,16 +644,15 @@ export function displayPlaylistView(playlist) {
       trackItem.classList.add('selected')
     })
 
-    // Double-clic = jouer la track
+    // Double-clic = jouer la track dans le contexte de la playlist
     tracksContainer.addEventListener('dblclick', (e) => {
       if (e.target.closest('button')) return
 
       const trackItem = e.target.closest('.playlist-track-item')
       if (!trackItem) return
 
-      const trackPath = trackItem.dataset.trackPath
-      const globalIndex = library.tracks.findIndex(t => t.path === trackPath)
-      if (globalIndex !== -1) app.playTrack(globalIndex)
+      const clickedIndex = parseInt(trackItem.dataset.index, 10)
+      playTrackInPlaylist(playlist, clickedIndex)
     })
 
     // EVENT DELEGATION : Un seul listener pour les clics droits
@@ -727,24 +721,38 @@ export function displayPlaylistView(playlist) {
   }
 }
 
-// Joue une playlist
-function playPlaylist(playlist) {
+// Joue une track spécifique dans le contexte d'une playlist
+// Construit la queue avec les tracks restantes et set le contexte 'playlist'
+function playTrackInPlaylist(playlist, startIndex) {
   const playlistTracks = playlist.trackPaths
     .map(path => library.tracks.find(t => t.path === path))
     .filter(Boolean)
 
-  if (playlistTracks.length > 0) {
-    // Joue le premier track
-    const firstTrack = playlistTracks[0]
-    const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
-    if (globalIndex !== -1) {
-      app.playTrack(globalIndex)
-      // Ajoute le reste a la queue
-      for (let i = 1; i < playlistTracks.length; i++) {
-        app.addToQueue(playlistTracks[i])
-      }
-    }
+  if (startIndex < 0 || startIndex >= playlistTracks.length) return
+
+  const track = playlistTracks[startIndex]
+  const globalIndex = library.tracks.findIndex(t => t.path === track.path)
+  if (globalIndex === -1) return
+
+  // Vider la queue et remplir avec les tracks APRÈS celle cliquée
+  // Push direct dans queue.items (sans toast par track)
+  app.clearQueue()
+  for (let i = startIndex + 1; i < playlistTracks.length; i++) {
+    queue.items.push(playlistTracks[i])
   }
+  app.updateQueueDisplay()
+  app.updateQueueIndicators()
+
+  // Setter le contexte playlist AVANT playTrack (playTrack préserve 'playlist')
+  playback.playbackContext = 'playlist'
+  playback.currentPlaylistId = playlist.id
+
+  app.playTrack(globalIndex)
+}
+
+// Joue une playlist depuis le début (bouton Play)
+function playPlaylist(playlist) {
+  playTrackInPlaylist(playlist, 0)
 }
 
 // === CREATION / RENOMMAGE PLAYLIST ===

@@ -199,6 +199,7 @@
         <button id="open-folder-welcome" class="btn-primary">
           Choose a music folder
         </button>
+        <button id="setup-library-btn" class="btn-primary" style="display:none">Set up your library</button>
       </div>
 
       <!-- Grille d'albums -->
@@ -527,7 +528,9 @@
         </svg>
       </button>
       <span id="current-time">0:00</span>
-      <input type="range" id="progress" class="progress-bar" value="0" min="0" max="100">
+      <div class="progress-bar-wrapper">
+        <input type="range" id="progress" class="progress-bar" value="0" min="0" max="100">
+      </div>
       <span id="duration">0:00</span>
     </div>
 

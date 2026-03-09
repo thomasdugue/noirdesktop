@@ -23,6 +23,9 @@ import { initFeedbackButton } from './feedback.js'
 // Network / NAS
 import { initNetworkUI, populateNetworkSources } from './network.js'
 
+// Onboarding
+import { initOnboarding } from './onboarding.js'
+
 // EQ
 import {
   eqInit, openEqPanel, closeEqPanel, toggleEqPanel,
@@ -73,7 +76,8 @@ import {
   loadPlaylists, updatePlaylistsSidebar, addTrackToPlaylist,
   showAddToPlaylistMenu, showAddToPlaylistMenuMulti,
   displayPlaylistView, showPlaylistModal, initPlaylists,
-  exportPlaylistM3u, importPlaylistM3u, createPlaylistFromAlbum
+  exportPlaylistM3u, importPlaylistM3u, createPlaylistFromAlbum,
+  getPlaylistById
 } from './playlists.js'
 import {
   initShortcuts, activeShortcuts, formatShortcutDisplay,
@@ -178,6 +182,7 @@ app.displayPlaylistView = displayPlaylistView
 app.showPlaylistModal = showPlaylistModal
 app.exportPlaylistM3u = exportPlaylistM3u
 app.importPlaylistM3u = importPlaylistM3u
+app.getPlaylistById = getPlaylistById
 
 // Views
 app.displayCurrentView = displayCurrentView
@@ -345,6 +350,20 @@ async function populateSettingsLibraryPaths() {
           buildTrackLookup()
           displayCurrentView()
           updateIndexationStats(stats)
+
+          // Check if library is now completely empty → show welcome/setup
+          if (library.tracks.length === 0) {
+            const remainingPaths = await invoke('get_library_paths')
+            let networkSources = []
+            try { networkSources = await invoke('get_network_sources') } catch (_) {}
+            if (remainingPaths.length === 0 && networkSources.length === 0) {
+              if (dom.welcomeDiv) dom.welcomeDiv.classList.remove('hidden')
+              const setupBtn = document.getElementById('setup-library-btn')
+              const openBtn = document.getElementById('open-folder-welcome')
+              if (setupBtn) setupBtn.style.display = ''
+              if (openBtn) openBtn.style.display = 'none'
+            }
+          }
         } catch (e) {
           console.error('[SETTINGS] Error removing library path:', e)
           showToast('Error removing folder')
@@ -697,6 +716,13 @@ async function init() {
   if (savedPaths.length === 0) {
     console.log('[INIT] No library paths configured')
     updateIndexationStats({ artists_count: 0, albums_count: 0, mp3_count: 0, flac_16bit_count: 0, flac_24bit_count: 0 })
+
+    // Check if there are network sources — if none, show onboarding
+    let networkSources = []
+    try { networkSources = await invoke('get_network_sources') } catch (_) {}
+    if (networkSources.length === 0) {
+      setTimeout(() => { if (app.showOnboarding) app.showOnboarding() }, 300)
+    }
     return
   }
 
@@ -807,6 +833,10 @@ setInterval(() => {
 dom.selectFolderBtn.addEventListener('click', selectFolder)
 dom.openFolderWelcomeBtn.addEventListener('click', selectFolder)
 
+// Setup library button (shown after skip onboarding)
+const setupLibraryBtn = document.getElementById('setup-library-btn')
+if (setupLibraryBtn) setupLibraryBtn.addEventListener('click', () => app.showOnboarding?.())
+
 // === DOM READY ===
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -835,6 +865,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Network / NAS UI
   initNetworkUI()
+
+  // Onboarding
+  initOnboarding()
 
   // EQ avec callbacks pour fermer les autres panels
   setEqPanelCallbacks({

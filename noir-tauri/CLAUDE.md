@@ -26,7 +26,7 @@ npm test -- --watchAll=false --testPathPattern=FormatDisplay  # Single test file
 
 Test files: `FormatDisplay.test.js`, `Navigation.test.js`, `PlayerControls.test.js`, `AlbumView.test.js`. Many tests are skipped (require Tauri `invoke` which isn't available in Node test environment).
 
-The `.claude/launch.json` entry (`npm run tauri dev` with `--prefix noirdesktop/noir-tauri`) is used by `preview_start` "Noir Tauri Dev" to start the server in Claude sessions. The native window opens; there is no browser URL to preview.
+The `.claude/launch.json` entry (name: `"noir-tauri"`) runs `npm run tauri dev` with env vars sourced from `scripts/.env.local`. Used by `preview_start` to start the dev server in Claude sessions. The native window opens; there is no browser URL to preview.
 
 ## Architecture
 
@@ -60,6 +60,7 @@ The JS was refactored (Feb 2026) from a 9 600-line monolith into:
 | `drag.js` | ~182 | Custom drag (mousedown/move/up) — HTML5 drag is broken in Tauri WebView |
 | `utils.js` | ~350 | Pure utilities: `showToast`, `escapeHtml`, `formatTime`, `setManagedTimeout`, `createParticleCanvas` |
 | `lyrics.js` | ~220 | Lyrics panel (lrclib.net, lyrics.ovh fallback) |
+| `onboarding.js` | ~1 100 | Onboarding flow (6 steps): library path selection, NAS discovery, SMB auth/browse, scan progress. Shown when `savedPaths.length === 0 && networkSources.length === 0` |
 | `auto-update.js` | ~103 | Auto-update check via Tauri updater plugin |
 
 ### State objects (`state.js`)
@@ -203,6 +204,8 @@ network/
 - `SmbProgressiveFile` (in `audio_decoder.rs`) implements `Read + Seek + MediaSource` with blocking wait loops
 - **`byte_len()` must return `Some(bytes_written)` at all times** — returning `None` makes Symphonia treat the stream as non-seekable
 
+**`add_network_source` returns a `NetworkSource` object** (not a string ID). Callers must use `result.id` to get the UUID for subsequent commands like `scan_network_source_cmd`. See `network.js` line 876 for the canonical pattern: `invoke('scan_network_source_cmd', { sourceId: result.id })`.
+
 **Critical SMB constraint:** `libsmbclient` (via pavao) is a **process-level singleton**. Two concurrent `SmbClient` instances cause EINVAL (os error 22). All SMB operations share a single `CONNECTION: Lazy<Mutex<Option<ActiveConnection>>>` — concurrent access is serialized through this lock.
 
 **Gapless with SMB:** `audio_preload_next` is `async` and SMB-aware — it parses `smb://`, calls `start_progressive_download(cancel_previous=false)`, waits 4MB, then calls `engine.preload_next(temp_path)`. Triggered at 60s remaining (vs. 10s for local files) to cover NAS latency.
@@ -232,6 +235,16 @@ network/
 ### External APIs (called from Rust via reqwest)
 
 MusicBrainz + CoverArtArchive (album art), Deezer (artist images + genre enrichment), WikiMedia.
+
+### Feedback → GitHub Issues
+
+- `submit_feedback` (Tauri command) : sauvegarde locale + POST `https://api.github.com/repos/thomasdugue/noir-feedback/issues`
+- Token injecté au **compile time** via `option_env!("NOIR_GITHUB_FEEDBACK_TOKEN")` dans `lib.rs`
+- La variable d'env `NOIR_GITHUB_FEEDBACK_TOKEN` doit être définie **avant `cargo build`** (pas au runtime)
+- Le launch config parent (`Documents/Thomas/.claude/launch.json`) la définit dans `env: {}`
+- Sans token → le feedback est sauvé en local seulement (`~/.local/share/noir/feedback/`)
+- **Piège** : le nom de l'env var doit être **exactement** `NOIR_GITHUB_FEEDBACK_TOKEN` — tout autre nom (`NOIR_GITHUB_TOKEN`, etc.) fait que `option_env!` retourne `None`
+- **NE JAMAIS** committer, logger ou documenter la valeur du token
 
 ### Audio pipeline (end-to-end)
 
@@ -377,3 +390,4 @@ Lire la spec correspondante AVANT de travailler sur une feature :
 - **2026-03-05** : AirPlay Level 1 — détection transport type CoreAudio + badge UI + blocage hog mode AirPlay. Session cache pour AirPlay (persist dans la liste même quand CoreAudio les désactive). Stale AirPlay reconnect via `set_system_default_device`. Sync device fix (`_lastKnownSystemDefault` change-tracking + `_audioStreamDeviceId`). Fix Bluetooth DAC invisible (transport type `0x626C7565` ajouté au filtre + session cache). Fix position perdue sur device switch (`_lastGoodPosition` + `_seekCancelToken`). Traduction messages français → anglais dans le panel audio output.
 - **2026-03-06** : AirPlay Level 2 — Fix playback AirPlay qui cassait après le premier switch. Cause racine : `set_system_default_device` ne peut PAS réactiver un device AirPlay stale (API accepte silencieusement sans effet). Solution : stratégie de préservation session AirPlay (ne pas changer le défaut système quand on quitte AirPlay). Routing AirPlay via défaut système (`get_device_id()` → None). `prepare_for_streaming` skip sample rate pour AirPlay. Guard hog mode Rust dans `set_exclusive_mode`. Erreur AudioUnit explicite (non-AirPlay). Retry JS 1.5s pour AirPlay. Auto-reset `exclusive_mode=Shared` quand switch → AirPlay avec hog actif. 800ms d'attente activation AirPlay. Tests T1-T6, T8-T13 passés, T11 limitation cosmétique (notification volume macOS).
 - **2026-03-08** : Fix home page — (1) `transitionView` rendu async avec `renderVersion` pour annuler les renders obsolètes, (2) `displayHomeView` awaitée dans `displayCurrentView`, (3) `scan_complete` conditionnel (ne reload que si `new_tracks > 0 || removed_tracks > 0`), (4) `min-width: 0` sur `.main-content` — cause racine du grid 4496px (carousels `calc(100% + extra)` inflataient le flex item), (5) fallback `thumbnailCache` pour covers Recently Played, (6) media queries responsive `.home-recent-grid` (3 cols → 2 → 1).
+- **2026-03-09** : Onboarding integration — Intégration du prototype onboarding (6 étapes) dans l'app. Fixes : (1) CSS variables manquantes `--sp-*`, `--fs-*`, `--color-green` dans `:root`, (2) stats 0/0/0 → payload `data.stats.mp3_count` au lieu de `data.mp3_count`, (3) NAS "Unknown" → `device.display_name`/`device.hostname` au lieu de `device.name`/`device.host`, (4) IPv6 → fallback hostname `.local`, (5) `smb_connect` manquait `isGuest`/`domain`, (6) `add_network_source` manquait `name`/`domain`/`isGuest`, (7) `[object Object]` dans folders → `share.name`, (8) scan progress → champs corrects `data.phase`/`data.current`/`data.total`/`data.folder`, (9) NAS scan 0 tracks → `add_network_source` retourne `NetworkSource` objet, fix `result.id`.

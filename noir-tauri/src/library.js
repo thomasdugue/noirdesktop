@@ -130,7 +130,7 @@ export async function selectFolder() {
 }
 
 async function addFolder(folderPath) {
-  showLoading('Scan du dossier...')
+  showLoading('Scanning folder...')
 
   try {
     const tracksWithMetadata = await invoke('scan_folder_with_metadata', { path: folderPath })

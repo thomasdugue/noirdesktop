@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' data: blob: noir: https://tauri.localhost; img-src 'self' data: blob: noir: https://tauri.localhost https://*.deezer.com https://*.scdn.co https://*.wikimedia.org; connect-src 'self' https://api.deezer.com https://musicbrainz.org https://coverartarchive.org https://commons.wikimedia.org https://github.com https://lrclib.net https://api.lyrics.ovh",
+      "csp": "default-src 'self' data: blob: noir: https://tauri.localhost; script-src 'self' noir: https://tauri.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: noir: https://tauri.localhost https://*.deezer.com https://*.scdn.co https://*.wikimedia.org; connect-src 'self' https://api.deezer.com https://musicbrainz.org https://coverartarchive.org https://commons.wikimedia.org https://github.com https://lrclib.net https://api.lyrics.ovh",
       "assetProtocol": {
         "enable": false
       }
@@ -44,7 +44,7 @@
       "endpoints": [
         "https://github.com/tdugue/noir-desktop/releases/latest/download/latest.json"
       ],
-      "pubkey": "PLACEHOLDER_PUBKEY_GENERATE_WITH_tauri_signer_generate"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3M0I1ODJBNjQ1QTEwMzIKUldReUVGcGtLbGc3cDhiK0N6Wmo5NGNKYlhBSGY0bjAyeGZEUFRGMVAydmtPcG5DU2d1Q0FRWDIK"
     }
   }
 }

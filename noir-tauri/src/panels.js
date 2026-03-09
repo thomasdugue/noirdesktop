@@ -150,8 +150,8 @@ export function updateQueueDisplay() {
         <div class="queue-item-placeholder">♪</div>
       </div>
       <div class="queue-item-info">
-        <span class="queue-item-title">${currentTrack.metadata?.title || currentTrack.name}</span>
-        <span class="queue-item-artist">${currentTrack.metadata?.artist || 'Unknown Artist'}</span>
+        <span class="queue-item-title">${escapeHtml(currentTrack.metadata?.title || currentTrack.name || '')}</span>
+        <span class="queue-item-artist">${escapeHtml(currentTrack.metadata?.artist || 'Unknown Artist')}</span>
       </div>
     `
     // Load the cover art
@@ -170,8 +170,8 @@ export function updateQueueDisplay() {
       <span class="queue-drag-handle" title="Drag to reorder">⠿</span>
       <span class="queue-item-index">${index + 1}</span>
       <div class="queue-item-info">
-        <span class="queue-item-title">${track.metadata?.title || track.name}</span>
-        <span class="queue-item-artist">${track.metadata?.artist || 'Unknown Artist'}</span>
+        <span class="queue-item-title">${escapeHtml(track.metadata?.title || track.name || '')}</span>
+        <span class="queue-item-artist">${escapeHtml(track.metadata?.artist || 'Unknown Artist')}</span>
       </div>
       <button class="queue-item-remove" title="Remove">✕</button>
     </div>
@@ -809,7 +809,7 @@ export async function showTrackInfoPanel(track) {
         ` : ''}
         ${bitDepth ? `
         <div class="track-info-spec">
-          <span class="track-info-spec-label">Profondeur</span>
+          <span class="track-info-spec-label">Bit Depth</span>
           <span class="track-info-spec-value">${bitDepth}-bit</span>
         </div>
         ` : ''}
@@ -827,7 +827,7 @@ export async function showTrackInfoPanel(track) {
         ` : ''}
         ${trackNum ? `
         <div class="track-info-metadata-item">
-          <span class="track-info-metadata-label">Piste</span>
+          <span class="track-info-metadata-label">Track</span>
           <span class="track-info-metadata-value">${disc ? `${disc}-` : ''}${trackNum}</span>
         </div>
         ` : ''}
@@ -842,7 +842,7 @@ export async function showTrackInfoPanel(track) {
     ` : ''}
 
     <div class="track-info-file">
-      <span class="track-info-metadata-label">Fichier</span>
+      <span class="track-info-metadata-label">File</span>
       <div class="track-info-file-path">${escapeHtml(track.path || '')}</div>
     </div>
 
@@ -1258,9 +1258,7 @@ async function saveBulkMetadata(tracks, modal) {
   // Reconstruire l'index artistes/albums pour refléter les nouvelles métadonnées
   app.groupTracksIntoAlbumsAndArtists()
   app.invalidateHomeCache?.()
-  if (['artists', 'albums', 'home'].includes(ui.currentView)) {
-    app.displayCurrentView()
-  }
+  app.displayCurrentView()
 
   modal.remove()
 

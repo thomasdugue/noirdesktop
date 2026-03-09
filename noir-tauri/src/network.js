@@ -59,6 +59,13 @@ async function autoReconnectNetworkSources() {
 }
 
 function initNetworkListeners() {
+  // Migration: clean up any credentials previously stored in localStorage
+  try {
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('noir-nas-creds-')) localStorage.removeItem(key)
+    })
+  } catch (e) { /* ignore */ }
+
   try {
     const { listen } = window.__TAURI__.event
     listen('nas_device_found', (event) => {
@@ -176,6 +183,21 @@ export async function populateNetworkSources() {
             app.buildTrackLookup()
             app.displayCurrentView()
             if (result?.stats) app.updateIndexationStats(result.stats)
+
+            // Check if library is now completely empty → show welcome/setup
+            if (library.tracks.length === 0) {
+              const remainingPaths = await invoke('get_library_paths')
+              let remainingNet = []
+              try { remainingNet = await invoke('get_network_sources') } catch (_) {}
+              if (remainingPaths.length === 0 && remainingNet.length === 0) {
+                const welcomeDiv = document.getElementById('welcome')
+                if (welcomeDiv) welcomeDiv.classList.remove('hidden')
+                const setupBtn = document.getElementById('setup-library-btn')
+                const openBtn = document.getElementById('open-folder-welcome')
+                if (setupBtn) setupBtn.style.display = ''
+                if (openBtn) openBtn.style.display = 'none'
+              }
+            }
           } catch (reloadErr) {
             console.warn('[Network] Library reload after remove failed:', reloadErr)
           }
@@ -274,12 +296,8 @@ function openNetworkDiscoveryModal() {
               spellcheck="false"
               autocorrect="off"
               autocomplete="current-password">
-            <div class="network-remember-row">
-              <span>Remember credentials</span>
-              <label class="ios-toggle ios-toggle-sm">
-                <input type="checkbox" id="network-remember-creds">
-                <span class="ios-toggle-slider"></span>
-              </label>
+            <div class="network-remember-row" style="opacity:0.6;font-size:11px;margin-top:6px">
+              <span>Credentials stored securely in Keychain</span>
             </div>
           </div>
           <button id="network-auth-connect" class="network-btn-primary" style="margin-top:10px;width:100%">
@@ -493,26 +511,8 @@ function showAuthSection(modal, state) {
     authBtn.disabled = false
   }
 
-  // Pré-remplir les credentials sauvegardés pour cet hôte
-  if (!state.host) return
-  try {
-    const saved = JSON.parse(localStorage.getItem(`noir-nas-creds-${state.host}`) || 'null')
-    if (saved?.username) {
-      const usernameInput = modal.querySelector('#network-username')
-      const passwordInput = modal.querySelector('#network-password')
-      const rememberToggle = modal.querySelector('#network-remember-creds')
-      const guestToggle = modal.querySelector('#network-guest-mode')
-      if (usernameInput) usernameInput.value = saved.username
-      if (passwordInput && saved.password) passwordInput.value = saved.password
-      if (rememberToggle) rememberToggle.checked = true
-      // Passer automatiquement en mode credentials (pas guest)
-      if (guestToggle) {
-        guestToggle.checked = false
-        const credsFields = modal.querySelector('#network-creds-fields')
-        if (credsFields) credsFields.style.display = ''
-      }
-    }
-  } catch (e) { /* localStorage inaccessible ou JSON corrompu */ }
+  // Credentials are stored in macOS Keychain — no pre-fill from JS
+  // The Keychain handles credential retrieval at connection time (Rust side)
 }
 
 async function connectAndBrowse(modal, state) {
@@ -550,15 +550,8 @@ async function connectAndBrowse(modal, state) {
     const shares = await invoke('smb_list_shares', { host: state.host })
     connectSuccess = true
 
-    // Sauvegarder les credentials si "Remember" est activé
-    if (!isGuest && username) {
-      const rememberToggle = modal.querySelector('#network-remember-creds')
-      if (rememberToggle?.checked) {
-        try {
-          localStorage.setItem(`noir-nas-creds-${state.host}`, JSON.stringify({ username, password }))
-        } catch (e) { /* ignore */ }
-      }
-    }
+    // Credentials are stored securely in macOS Keychain via Rust backend
+    // (handled by smb_connect → credentials.rs → store_password)
 
     // Changer le bouton en "Disconnect" (secondaire)
     const currentAuthBtn = modal.querySelector('#network-auth-connect')

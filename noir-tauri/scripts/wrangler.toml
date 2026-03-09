@@ -1,0 +1,10 @@
+name = "noir-feedback"
+main = "cloudflare-worker.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+FEEDBACK_REPO = "thomasdugue/noir-feedback"
+
+# Secrets à définir via CLI (jamais dans ce fichier) :
+#   wrangler secret put GITHUB_TOKEN
+#   wrangler secret put NOIR_SECRET

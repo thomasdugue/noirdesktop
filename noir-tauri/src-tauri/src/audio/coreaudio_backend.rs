@@ -819,14 +819,32 @@ impl CoreAudioBackend {
             // kAudioDeviceTransportTypeBluetooth = 'blue' = 0x626C7565
             let is_bluetooth = transport_type == 0x626C7565u32;
             if is_airplay || is_bluetooth {
-                self.airplay_session_devices.insert(device_id.to_string(), info.clone());
+                // Fix duplication: macOS assigns a NEW AudioObjectID each time an
+                // AirPlay/Bluetooth device is re-activated. Before inserting, remove
+                // any stale session entry with the SAME NAME but a different ID —
+                // they represent the same physical device with an old, dead ID.
+                let new_name = &info.name;
+                let new_id_str = device_id.to_string();
+                let stale_ids: Vec<String> = self.airplay_session_devices.iter()
+                    .filter(|(cached_id, cached_info)| {
+                        cached_info.name == *new_name && *cached_id != &new_id_str
+                    })
+                    .map(|(cached_id, _)| cached_id.clone())
+                    .collect();
+                for stale_id in &stale_ids {
+                    println!("[CoreAudio] Replacing stale wireless device {} (was ID {}, now ID {})",
+                             new_name, stale_id, new_id_str);
+                    self.airplay_session_devices.remove(stale_id);
+                }
+                self.airplay_session_devices.insert(new_id_str, info.clone());
             }
 
             self.device_cache.insert(device_id.to_string(), info);
         }
 
-        // Re-inject session-cached AirPlay devices that are no longer active in CoreAudio.
+        // Re-inject session-cached wireless devices that are no longer active in CoreAudio.
         // This keeps them visible in Noir's device list for the entire session.
+        // After the dedup above, only genuinely disconnected devices remain here.
         for (id, mut cached_info) in self.airplay_session_devices.clone() {
             if !self.device_cache.contains_key(&id) {
                 cached_info.is_default = false; // No longer the system default
@@ -874,9 +892,10 @@ impl AudioBackend for CoreAudioBackend {
     }
 
     fn set_output_device(&mut self, device_id: &str) -> Result<()> {
-        let id: AudioObjectID = device_id
+        let mut id: AudioObjectID = device_id
             .parse()
             .map_err(|_| AudioBackendError::DeviceNotFound(device_id.to_string()))?;
+        let mut effective_device_id = device_id.to_string();
 
         // Verify device exists
         if !self.device_cache.contains_key(device_id) {
@@ -891,6 +910,37 @@ impl AudioBackend for CoreAudioBackend {
             .get(device_id)
             .map(|info| info.is_airplay)
             .unwrap_or(false);
+
+        // Fix: If the requested AirPlay ID is stale (cached from a previous macOS
+        // activation), resolve it to the currently active ID with the same name.
+        // macOS assigns a new AudioObjectID each time an AirPlay device is activated,
+        // so the old ID is dead and set_system_default_device would fail silently.
+        if target_is_airplay && self.stale_airplay_ids.contains(device_id) {
+            let stale_name = self.device_cache.get(device_id).map(|d| d.name.clone());
+            if let Some(ref name) = stale_name {
+                // Look for an active (non-stale) device with the same name
+                let active_replacement = self.device_cache.iter()
+                    .find(|(did, info)| {
+                        info.is_airplay
+                            && info.name == *name
+                            && !self.stale_airplay_ids.contains(did.as_str())
+                    })
+                    .map(|(did, _)| did.clone());
+
+                if let Some(active_id) = active_replacement {
+                    println!("[CoreAudio] Resolved stale AirPlay ID {} → active ID {} ({})",
+                             device_id, active_id, name);
+                    id = active_id.parse().map_err(|_| AudioBackendError::DeviceNotFound(active_id.clone()))?;
+                    effective_device_id = active_id;
+                } else {
+                    // No active replacement found — AirPlay device is truly gone
+                    return Err(AudioBackendError::Other(format!(
+                        "AirPlay device '{}' is no longer available. Select it again from macOS Sound Settings.",
+                        name
+                    )));
+                }
+            }
+        }
 
         // Check if the PREVIOUS device was AirPlay (or if system default is currently AirPlay)
         let previous_is_airplay = self.device_cache
@@ -936,15 +986,15 @@ impl AudioBackend for CoreAudioBackend {
             // tries to use it. Without this delay, the stream may start before AirPlay
             // is ready and audio falls through to the old device.
             std::thread::sleep(Duration::from_millis(800));
-            println!("[CoreAudio] Switched to AirPlay device {} (set as system default, 800ms activation wait)", device_id);
+            println!("[CoreAudio] Switched to AirPlay device {} (set as system default, 800ms activation wait)", effective_device_id);
         } else if previous_is_airplay {
             // Switching FROM AirPlay: keep AirPlay as system default to preserve session.
             // Audio will route to the new device via explicit AudioUnit assignment.
-            println!("[CoreAudio] Switched from AirPlay to device {} (keeping AirPlay as system default to preserve session)", device_id);
+            println!("[CoreAudio] Switched from AirPlay to device {} (keeping AirPlay as system default to preserve session)", effective_device_id);
         } else {
             // Non-AirPlay to non-AirPlay: sync system default for volume keys etc.
             let _ = Self::set_system_default_device(id);
-            println!("[CoreAudio] Switched to device {} (system default synced)", device_id);
+            println!("[CoreAudio] Switched to device {} (system default synced)", effective_device_id);
         }
 
         Ok(())

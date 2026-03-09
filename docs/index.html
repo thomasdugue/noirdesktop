@@ -50,6 +50,10 @@
     .filter-chip.bug.active { border-color: var(--red); color: var(--red); }
     .filter-chip.ux.active { border-color: var(--blue); color: var(--blue); }
     .filter-chip.sprint.active { border-color: var(--green); color: var(--green); }
+    .issue-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+    .issue-tab { flex: 1; text-align: center; font-size: 10px; letter-spacing: 0.08em; padding: 5px 6px; border-radius: 4px; background: var(--bg2); border: 1px solid var(--border2); color: var(--muted); cursor: pointer; text-transform: uppercase; transition: all 0.12s; }
+    .issue-tab:hover { color: var(--sub); border-color: var(--muted); }
+    .issue-tab.active { border-color: var(--white); color: var(--white); background: var(--bg3); }
     .issues-list { display: flex; flex-direction: column; gap: 2px; }
     .issue-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; transition: all 0.12s; user-select: none; }
     .issue-row:hover { background: var(--bg2); border-color: var(--border); }
@@ -69,6 +73,8 @@
     .badge.high { background: rgba(224,88,88,0.08); color: #c05050; border: 1px solid rgba(224,88,88,0.15); }
     .badge.effort { background: var(--bg3); color: var(--sub); border: 1px solid var(--border2); }
     .issue-number { font-size: 10px; color: var(--muted); flex-shrink: 0; margin-top: 2px; }
+    .issue-row.closed-row { cursor: default; opacity: 0.7; }
+    .issue-row.closed-row:hover { opacity: 1; }
     .empty-state { text-align: center; padding: 50px 16px; color: var(--muted); }
     .empty-state p { font-size: 12px; line-height: 2; }
     .loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 48px; color: var(--muted); font-size: 12px; }
@@ -197,7 +203,11 @@
         <span class="panel-title">Issues</span>
         <span class="issue-count" id="issueCount">—</span>
       </div>
-      <div class="filter-bar">
+      <div class="issue-tabs">
+        <span class="issue-tab active" onclick="setIssueTab('open',this)">Open</span>
+        <span class="issue-tab" onclick="setIssueTab('completed',this)">Completed</span>
+      </div>
+      <div class="filter-bar" id="filterBar">
         <span class="filter-chip active" onclick="setFilter('all',this)">All</span>
         <span class="filter-chip bug" onclick="setFilter('bug',this)">Bugs</span>
         <span class="filter-chip ux" onclick="setFilter('ux',this)">UX</span>
@@ -285,7 +295,7 @@ const REPO_OWNER = 'thomasdugue', FEEDBACK_REPO = 'noir-feedback', MAIN_REPO = '
 const PROJECT_DIR = '~/Documents/Thomas/noirdesktop/noir-tauri'
 const ENV_CMD = 'export $(cat scripts/.env.local | xargs)'
 
-let allIssues = [], selected = new Set(), activeFilter = 'all'
+let allIssues = [], closedIssues = [], selected = new Set(), activeFilter = 'all', activeIssueTab = 'open'
 let activeReportTab = 'feedback-report'
 let artifactCache = {} // { name: [{id, created_at, size_in_bytes, run_id}] }
 
@@ -313,34 +323,55 @@ async function loadIssues() {
   if (!getToken()) return
   document.getElementById('issuesList').innerHTML = `<div class="loading"><div class="spinner"></div> Chargement…</div>`
   try {
-    const res = await ghFetch(`/repos/${REPO_OWNER}/${FEEDBACK_REPO}/issues?state=open&per_page=100`)
-    if (!res.ok) throw new Error(`${res.status}`)
-    allIssues = (await res.json()).filter(i => !i.pull_request)
-    setDot(true); renderIssues()
-    document.getElementById('issueCount').textContent = `${allIssues.length}`
+    const [openRes, closedRes] = await Promise.all([
+      ghFetch(`/repos/${REPO_OWNER}/${FEEDBACK_REPO}/issues?state=open&per_page=100`),
+      ghFetch(`/repos/${REPO_OWNER}/${FEEDBACK_REPO}/issues?state=closed&per_page=100`)
+    ])
+    if (!openRes.ok) throw new Error(`${openRes.status}`)
+    allIssues = (await openRes.json()).filter(i => !i.pull_request)
+    closedIssues = closedRes.ok ? (await closedRes.json()).filter(i => !i.pull_request) : []
+    setDot(true); renderIssues(); updateIssueTabCounts()
   } catch (e) {
     setDot(false)
     document.getElementById('issuesList').innerHTML = `<div class="empty-state"><p>Erreur: ${e.message}</p></div>`
   }
 }
+function setIssueTab(tab, el) {
+  activeIssueTab = tab
+  document.querySelectorAll('.issue-tab').forEach(t => t.classList.remove('active'))
+  el.classList.add('active')
+  document.getElementById('filterBar').style.display = tab === 'open' ? 'flex' : 'none'
+  renderIssues()
+}
+function updateIssueTabCounts() {
+  const count = activeIssueTab === 'open' ? allIssues.length : closedIssues.length
+  document.getElementById('issueCount').textContent = `${count}`
+}
 function setFilter(f, el) { activeFilter = f; document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active')); el.classList.add('active'); renderIssues() }
 function getFiltered() {
-  if (activeFilter === 'all') return allIssues
-  if (activeFilter === 'bug') return allIssues.filter(i => i.labels.some(l => l.name === 'category:bug'))
-  if (activeFilter === 'ux') return allIssues.filter(i => i.labels.some(l => l.name === 'category:ux'))
-  if (activeFilter === 'sprint') return allIssues.filter(i => i.labels.some(l => l.name === 'sprint-candidate'))
-  if (activeFilter === 'high') return allIssues.filter(i => i.labels.some(l => l.name === 'priority:high'))
-  return allIssues
+  const source = activeIssueTab === 'open' ? allIssues : closedIssues
+  if (activeFilter === 'all' || activeIssueTab === 'completed') return source
+  if (activeFilter === 'bug') return source.filter(i => i.labels.some(l => l.name === 'category:bug'))
+  if (activeFilter === 'ux') return source.filter(i => i.labels.some(l => l.name === 'category:ux'))
+  if (activeFilter === 'sprint') return source.filter(i => i.labels.some(l => l.name === 'sprint-candidate'))
+  if (activeFilter === 'high') return source.filter(i => i.labels.some(l => l.name === 'priority:high'))
+  return source
 }
 function getLabel(i, p) { return i.labels.find(l => l.name.startsWith(p))?.name.replace(p, '') ?? null }
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
 function renderIssues() {
   const issues = getFiltered(), el = document.getElementById('issuesList')
-  if (!issues.length) { el.innerHTML = `<div class="empty-state"><p>Aucune issue.</p></div>`; return }
+  const isClosed = activeIssueTab === 'completed'
+  document.getElementById('issueCount').textContent = `${issues.length}`
+  if (!issues.length) { el.innerHTML = `<div class="empty-state"><p>${isClosed ? 'Aucune issue fermée.' : 'Aucune issue.'}</p></div>`; return }
   el.innerHTML = issues.map(i => {
     const cat = getLabel(i,'category:'), eff = getLabel(i,'effort:'), prio = getLabel(i,'priority:')
     const sp = i.labels.some(l => l.name === 'sprint-candidate'), sel = selected.has(i.number)
     const b = [cat?`<span class="badge ${cat}">${cat}</span>`:'', prio==='high'?`<span class="badge high">🔴</span>`:'', sp?`<span class="badge sprint">⚡</span>`:'', eff?`<span class="badge effort">${eff}</span>`:''].filter(Boolean).join('')
+    if (isClosed) {
+      const closedAt = i.closed_at ? timeAgo(i.closed_at) : ''
+      return `<div class="issue-row closed-row"><div class="issue-content"><div class="issue-title" style="color:var(--sub)">${esc(i.title)}</div><div class="issue-meta">${b}${closedAt ? `<span class="badge effort">${closedAt}</span>` : ''}</div></div><span class="issue-number">#${i.number}</span></div>`
+    }
     return `<div class="issue-row ${sel?'selected':''}" onclick="toggleIssue(${i.number},this)"><div class="issue-checkbox"></div><div class="issue-content"><div class="issue-title">${esc(i.title)}</div><div class="issue-meta">${b}</div></div><span class="issue-number">#${i.number}</span></div>`
   }).join('')
 }

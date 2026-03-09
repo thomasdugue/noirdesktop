@@ -135,7 +135,7 @@ async function fetchFromLrclib(artist, title, album) {
     if (artist) params.set('artist_name', artist)
     if (album) params.set('album_name', album)
 
-    const res = await fetch(`https://lrclib.net/api/get?${params}`, { headers })
+    const res = await fetch(`https://lrclib.net/api/get?${params}`, { headers, signal: AbortSignal.timeout(5000) })
     console.log('[lyrics] LRCLIB /api/get status:', res.status, 'for', artist, '-', title)
 
     if (res.ok) {
@@ -150,7 +150,7 @@ async function fetchFromLrclib(artist, title, album) {
   // Étape 2 : recherche floue via /api/search (si pas de résultat exact)
   try {
     const params = new URLSearchParams({ q: `${artist} ${title}`.trim() })
-    const res = await fetch(`https://lrclib.net/api/search?${params}`, { headers })
+    const res = await fetch(`https://lrclib.net/api/search?${params}`, { headers, signal: AbortSignal.timeout(5000) })
     console.log('[lyrics] LRCLIB /api/search status:', res.status)
 
     if (res.ok) {
@@ -185,7 +185,7 @@ function parseLrcLibResponse(data) {
 async function fetchFromLyricsOvh(artist, title) {
   try {
     const url = `https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`
-    const res = await fetch(url)
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
     console.log('[lyrics] Lyrics.ovh status:', res.status)
     if (!res.ok) return null
     const data = await res.json()
@@ -222,7 +222,7 @@ function buildLyricsHTML(result) {
   if (result.plain) {
     const html = result.plain
       .split(/\n\n+/)
-      .map(para => `<p>${para.replace(/\n/g, '<br>')}</p>`)
+      .map(para => `<p>${escapeHtml(para).replace(/\n/g, '<br>')}</p>`)
       .join('')
     return `<div class="lyrics-plain">${html}</div>`
   }

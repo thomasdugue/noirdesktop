@@ -50,6 +50,7 @@ export const playback = {
   // 'playlist'→ joué depuis une playlist → suit la queue uniquement
   // null      → indéterminé → comportement conservateur (s'arrête en fin d'album)
   playbackContext: null,
+  currentPlaylistId: null,  // ID de la playlist en cours de lecture (pour repeat-all / prev)
 };
 
 // === LIBRARY DATA ===
