@@ -1,7 +1,7 @@
 // playback.js — Contrôle audio Rust
 // Gère la lecture, le seek, le volume, le shuffle/repeat, la sortie audio et l'interpolation 60fps.
 
-import { playback, library, queue, caches, dom } from './state.js'
+import { playback, library, queue, caches, dom, ui } from './state.js'
 import { invoke, listen } from './state.js'
 import { app } from './app.js'
 import { formatTime, formatQuality, showToast, isValidImageSrc, escapeHtml, getCodecFromPath } from './utils.js'
@@ -51,6 +51,15 @@ export async function playTrack(index) {
   resetPlayerUI()
   playback.gaplessPreloadTriggered = false
 
+  // Stop immédiat de l'ancienne track — on attend la confirmation Rust pour éviter
+  // que l'ancienne track continue pendant le buffering SMB (4-5s).
+  // audio_pause est rapide (~10ms) donc l'await n'est pas perceptible.
+  if (playback.audioIsPlaying) {
+    playback.audioIsPlaying = false
+    dom.playPauseBtn.textContent = '▶'
+    await invoke('audio_pause').catch(() => {}) // attendre l'arrêt confirmé
+  }
+
   playback.currentTrackIndex = index
   const track = library.tracks[index]
 
@@ -58,6 +67,10 @@ export async function playTrack(index) {
     console.error('playTrack: track invalide', track)
     return
   }
+
+  // New track: reset saved position so device switch seek doesn't jump to old track position
+  _lastGoodPosition = 0
+  _seekCancelToken = null
 
   // Met à jour l'affichage avec les métadonnées
   const title = track.metadata?.title || track.name || 'Titre inconnu'
@@ -72,57 +85,103 @@ export async function playTrack(index) {
     trackQualityEl.textContent = quality.label !== '-' ? quality.label : ''
   }
 
-  // Charge la pochette (depuis le cache si possible)
-  let cover = caches.coverCache.get(track.path)
-  if (cover === undefined) {
-    try {
-      // 1. Essaie d'abord la pochette embarquée
-      cover = await invoke('get_cover', { path: track.path })
+  // Durée estimée depuis les métadonnées (sera mise à jour via playback_progress)
+  const estimatedDuration = track.metadata?.duration || 0
+  playback.audioDurationFromRust = estimatedDuration
+  dom.durationEl.textContent = estimatedDuration > 0 ? formatTime(estimatedDuration) : '--:--'
 
-      // 2. Si pas de pochette, cherche sur Internet
-      if (!cover && track.metadata) {
-        cover = await invoke('fetch_internet_cover', {
-          artist: track.metadata.artist || 'Unknown Artist',
-          album: track.metadata.album || 'Unknown Album'
-        })
+  // === AUDIO ENGINE RUST : lancé EN PREMIER, sans attendre la pochette ===
+  // Pour les fichiers SMB : affiche un loader dans la progress bar pendant le buffering
+  const isSmb = track.path.startsWith('smb://')
+  const progressContainer = dom.progressBar?.closest('.progress-container')
+  if (isSmb && progressContainer) progressContainer.classList.add('smb-buffering')
+
+  // Lancement audio asynchrone (fire-and-forget) — la pochette charge en parallèle
+  const audioPromise = invoke('audio_play', { path: track.path })
+    .then(() => {
+      playback.audioIsPlaying = true
+      dom.playPauseBtn.textContent = '⏸'
+      dom.durationEl.textContent = estimatedDuration > 0 ? formatTime(estimatedDuration) : '--:--'
+      console.log('Streaming started (Rust):', track.path)
+      // Notifie MPRemoteCommandCenter (media keys macOS)
+      invoke('update_media_metadata', {
+        title: track.metadata?.title || track.name || '',
+        artist: track.metadata?.artist || '',
+        album: track.metadata?.album || ''
+      }).catch(() => {})
+      invoke('update_media_playback_state', { isPlaying: true }).catch(() => {})
+    })
+    .catch(e => {
+      console.error('Rust audio_play error:', e)
+      playback.audioIsPlaying = false
+      dom.playPauseBtn.textContent = '▶'
+    })
+    .finally(() => {
+      if (progressContainer) progressContainer.classList.remove('smb-buffering')
+    })
+
+  // === POCHETTE : chargée en parallèle sans bloquer l'audio ===
+  const cachedCover = caches.coverCache.get(track.path)
+  if (cachedCover !== undefined) {
+    // Cache hit — affichage immédiat
+    if (isValidImageSrc(cachedCover)) {
+      const img = document.createElement('img')
+      img.src = cachedCover
+      const _ov1 = dom.coverArtEl.querySelector('.cover-hover-overlay')
+      img.onerror = () => {
+        const ov = dom.coverArtEl.querySelector('.cover-hover-overlay')
+        dom.coverArtEl.innerHTML = '<div class="cover-placeholder">♪</div>'
+        if (ov) dom.coverArtEl.appendChild(ov)
       }
-    } catch (e) {
-      console.error('[PLAYBACK] Error loading cover:', e)
-      cover = null
-    }
-
-    caches.coverCache.set(track.path, cover)
-  }
-
-  if (isValidImageSrc(cover)) {
-    const img = document.createElement('img')
-    img.src = cover
-    img.onerror = () => {
+      dom.coverArtEl.innerHTML = ''
+      dom.coverArtEl.appendChild(img)
+      if (_ov1) dom.coverArtEl.appendChild(_ov1)
+    } else {
+      const _ov2 = dom.coverArtEl.querySelector('.cover-hover-overlay')
       dom.coverArtEl.innerHTML = '<div class="cover-placeholder">♪</div>'
+      if (_ov2) dom.coverArtEl.appendChild(_ov2)
     }
-    dom.coverArtEl.innerHTML = ''
-    dom.coverArtEl.appendChild(img)
   } else {
+    // Placeholder immédiat, pochette chargée en arrière-plan
+    const _ov3 = dom.coverArtEl.querySelector('.cover-hover-overlay')
     dom.coverArtEl.innerHTML = '<div class="cover-placeholder">♪</div>'
+    if (_ov3) dom.coverArtEl.appendChild(_ov3)
+    ;(async () => {
+      try {
+        let cover = await invoke('get_cover', { path: track.path })
+        if (!cover && track.metadata) {
+          cover = await invoke('fetch_internet_cover', {
+            artist: track.metadata.artist || 'Unknown Artist',
+            album: track.metadata.album || 'Unknown Album'
+          })
+        }
+        caches.coverCache.set(track.path, cover)
+        // Mise à jour uniquement si c'est toujours le même track en cours
+        if (playback.currentTrackIndex === index) {
+          if (isValidImageSrc(cover)) {
+            const img = document.createElement('img')
+            img.src = cover
+            const _ov4 = dom.coverArtEl.querySelector('.cover-hover-overlay')
+            img.onerror = () => {
+              const ov = dom.coverArtEl.querySelector('.cover-hover-overlay')
+              dom.coverArtEl.innerHTML = '<div class="cover-placeholder">♪</div>'
+              if (ov) dom.coverArtEl.appendChild(ov)
+            }
+            dom.coverArtEl.innerHTML = ''
+            dom.coverArtEl.appendChild(img)
+            if (_ov4) dom.coverArtEl.appendChild(_ov4)
+          }
+        }
+      } catch (e) {
+        console.error('[PLAYBACK] Error loading cover:', e)
+        caches.coverCache.set(track.path, null)
+      }
+    })()
   }
 
-  // === AUDIO ENGINE RUST : Joue le fichier via le backend (STREAMING) ===
-  try {
-    // Joue via le moteur Rust (non-bloquant, démarre après ~100ms de buffer)
-    await invoke('audio_play', { path: track.path })
-    playback.audioIsPlaying = true
-    // La durée sera mise à jour via l'événement playback_progress
-    // Utilise la durée des métadonnées comme estimation initiale
-    const estimatedDuration = track.metadata?.duration || 0
-    playback.audioDurationFromRust = estimatedDuration
-    dom.durationEl.textContent = estimatedDuration > 0 ? formatTime(estimatedDuration) : '--:--'
-    console.log('Streaming started (Rust):', track.path)
-  } catch (e) {
-    console.error('Rust audio_play error:', e)
-    // No HTML5 fallback - Rust is the only audio path
-    playback.audioIsPlaying = false
-  }
-  dom.playPauseBtn.textContent = playback.audioIsPlaying ? '⏸' : '▶'
+  // Attendre la confirmation audio pour mettre à jour le bouton play/pause
+  // (audioPromise met à jour audioIsPlaying et le bouton quand audio_play retourne)
+  void audioPromise
 
   // Note: resetPlayerUI() est appelé en début de fonction
 
@@ -130,6 +189,19 @@ export async function playTrack(index) {
 
   // Track l'album en cours de lecture (utilise le nom d'album seul comme clé, cohérent avec groupTracksIntoAlbumsAndArtists)
   playback.currentPlayingAlbumKey = track.metadata?.album || 'Unknown Album'
+
+  // Reload lyrics if panel is open
+  if (app.isLyricsPanelOpen?.()) app.loadLyricsForTrack?.(track)
+
+  // Contexte de lecture — mis à jour à chaque appel pour refléter la vue active
+  // 'library'  = vue liste complète (currentView === 'tracks') → séquentiel global autorisé
+  // 'album'    = toute autre vue (album, artiste, home, search…) → s'arrête en fin d'album
+  // 'playlist' = joué depuis une playlist → suit la queue (set par playlists.js AVANT cet appel)
+  // Quand playNextTrack/playPreviousTrack enchaîne, la vue n'a pas changé → contexte cohérent
+  if (playback.playbackContext !== 'playlist') {
+    playback.playbackContext = (ui.currentView === 'tracks') ? 'library' : 'album'
+    playback.currentPlaylistId = null
+  }
 
   // Affiche le lecteur
   dom.playerDiv.classList.remove('hidden')
@@ -169,6 +241,32 @@ export function getNextTrackPath() {
   const currentTrack = library.tracks[playback.currentTrackIndex]
   if (!currentTrack) return null
 
+  // Contexte playlist : queue vide → fin de playlist (ou repeat-all → première track)
+  if (playback.playbackContext === 'playlist') {
+    if (playback.repeatMode === 'all' && playback.currentPlaylistId != null) {
+      const playlist = app.getPlaylistById?.(playback.currentPlaylistId)
+      if (playlist) {
+        const firstTrack = playlist.trackPaths
+          .map(path => library.tracks.find(t => t.path === path))
+          .find(Boolean)
+        return firstTrack?.path || null
+      }
+    }
+    return null  // Fin de playlist, pas de repeat
+  }
+
+  // Contexte library : respecter l'ordre visuel de la vue tracks
+  if (playback.playbackContext === 'library' && ui.tracksViewOrder.length > 0) {
+    const viewIdx = ui.tracksViewOrder.indexOf(currentTrack.path)
+    if (viewIdx >= 0 && viewIdx < ui.tracksViewOrder.length - 1) {
+      return ui.tracksViewOrder[viewIdx + 1]
+    }
+    // Fin de la vue
+    if (playback.repeatMode === 'all') return ui.tracksViewOrder[0]
+    return null
+  }
+
+  // Contexte album : prochaine track dans l'album
   const currentFolder = currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/'))
   const albumTracks = library.tracks.filter(t => {
     const folder = t.path.substring(0, t.path.lastIndexOf('/'))
@@ -298,6 +396,41 @@ export async function togglePlay() {
 
 // Fonction pour jouer le morceau précédent (réutilisable par raccourcis clavier)
 export function playPreviousTrack() {
+  // Contexte playlist : naviguer dans la playlist, pas dans l'album
+  if (playback.playbackContext === 'playlist' && playback.currentPlaylistId != null) {
+    const playlist = app.getPlaylistById?.(playback.currentPlaylistId)
+    if (playlist) {
+      const currentTrack = library.tracks[playback.currentTrackIndex]
+      const playlistTracks = playlist.trackPaths
+        .map(path => library.tracks.find(t => t.path === path))
+        .filter(Boolean)
+      const playlistIdx = playlistTracks.findIndex(t => t.path === currentTrack?.path)
+
+      if (playlistIdx > 0) {
+        // Track précédente dans la playlist
+        const prevTrack = playlistTracks[playlistIdx - 1]
+        const globalIndex = library.tracks.findIndex(t => t.path === prevTrack.path)
+        // Reconstruire la queue : tracks après prevTrack
+        queue.items.length = 0
+        for (let i = playlistIdx; i < playlistTracks.length; i++) {
+          queue.items.push(playlistTracks[i])
+        }
+        app.updateQueueDisplay()
+        app.updateQueueIndicators()
+        if (globalIndex !== -1) { playTrack(globalIndex); return }
+      } else if (playlistIdx === 0 && playback.repeatMode === 'all') {
+        // Début de playlist + repeat all → dernière track
+        const lastTrack = playlistTracks[playlistTracks.length - 1]
+        const globalIndex = library.tracks.findIndex(t => t.path === lastTrack.path)
+        queue.items.length = 0
+        app.updateQueueDisplay()
+        app.updateQueueIndicators()
+        if (globalIndex !== -1) { playTrack(globalIndex); return }
+      }
+      return  // Début de playlist, pas de repeat → ne rien faire
+    }
+  }
+
   const currentTrack = library.tracks[playback.currentTrackIndex]
   const currentFolder = currentTrack?.path ? currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/')) : null
 
@@ -352,7 +485,14 @@ export function playPreviousTrack() {
 export function playNextTrack() {
   // 1. Priorité : vérifie la file d'attente
   if (queue.items.length > 0) {
-    const nextTrack = queue.items.shift() // Retire le premier de la queue
+    let nextTrack
+    // Shuffle playlist : prendre un item aléatoire au lieu du premier
+    if (playback.playbackContext === 'playlist' && playback.shuffleMode !== 'off') {
+      const randomIdx = Math.floor(Math.random() * queue.items.length)
+      nextTrack = queue.items.splice(randomIdx, 1)[0]
+    } else {
+      nextTrack = queue.items.shift() // Retire le premier de la queue
+    }
     const globalIndex = library.tracks.findIndex(t => t.path === nextTrack.path)
     if (globalIndex !== -1) {
       playTrack(globalIndex)
@@ -360,6 +500,45 @@ export function playNextTrack() {
       app.updateQueueIndicators()
       return
     }
+  }
+
+  // 1b. Contexte playlist : queue vide = fin de playlist
+  if (playback.playbackContext === 'playlist') {
+    if (playback.repeatMode === 'all' && playback.currentPlaylistId != null) {
+      // Recharger la playlist dans la queue et relancer
+      const playlist = app.getPlaylistById?.(playback.currentPlaylistId)
+      if (playlist) {
+        const currentTrackForRepeat = library.tracks[playback.currentTrackIndex]
+        let playlistTracks = playlist.trackPaths
+          .map(path => library.tracks.find(t => t.path === path))
+          .filter(Boolean)
+
+        // En mode shuffle, shuffler la playlist (exclure la track courante pour éviter doublon)
+        if (playback.shuffleMode !== 'off') {
+          playlistTracks = playlistTracks.filter(t => t.path !== currentTrackForRepeat?.path)
+          for (let i = playlistTracks.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1))
+            ;[playlistTracks[i], playlistTracks[j]] = [playlistTracks[j], playlistTracks[i]]
+          }
+        }
+
+        if (playlistTracks.length > 0) {
+          const firstTrack = playlistTracks[0]
+          const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
+          // Re-remplir la queue avec les tracks restantes
+          for (let i = 1; i < playlistTracks.length; i++) {
+            queue.items.push(playlistTracks[i])
+          }
+          app.updateQueueDisplay()
+          app.updateQueueIndicators()
+          if (globalIndex !== -1) { playTrack(globalIndex); return }
+        }
+      }
+    }
+    // Fin de playlist sans repeat → stop
+    console.log('playNextTrack: end of playlist, no repeat - stopping')
+    dom.playPauseBtn.textContent = '▶'
+    return
   }
 
   // 2. Récupère les tracks de l'album en cours
@@ -394,8 +573,39 @@ export function playNextTrack() {
     repeatMode: playback.repeatMode
   })
 
-  // 3. Gestion des modes shuffle (seulement si le track actuel est bien dans l'album)
+  // 3. Contexte 'library' → séquentiel selon l'ordre visuel de la vue tracks
+  if (playback.playbackContext === 'library' && playback.shuffleMode === 'off') {
+    if (ui.tracksViewOrder.length > 0) {
+      // Naviguer dans l'ordre trié/filtré de la vue (ui.tracksViewOrder)
+      const viewIdx = ui.tracksViewOrder.indexOf(currentTrack?.path)
+      if (viewIdx >= 0 && viewIdx < ui.tracksViewOrder.length - 1) {
+        const nextPath = ui.tracksViewOrder[viewIdx + 1]
+        const globalIndex = library.tracks.findIndex(t => t.path === nextPath)
+        if (globalIndex !== -1) { playTrack(globalIndex); return }
+      }
+      // Fin de la vue
+      if (playback.repeatMode === 'all') {
+        const firstPath = ui.tracksViewOrder[0]
+        const globalIndex = library.tracks.findIndex(t => t.path === firstPath)
+        if (globalIndex !== -1) { playTrack(globalIndex); return }
+      }
+    } else {
+      // Fallback si tracksViewOrder vide (vue non encore rendue)
+      if (playback.currentTrackIndex < library.tracks.length - 1) {
+        playTrack(playback.currentTrackIndex + 1); return
+      } else if (playback.repeatMode === 'all') {
+        playTrack(0); return
+      }
+    }
+    dom.playPauseBtn.textContent = '▶'
+    return
+  }
+
+  // 4. Gestion des modes shuffle (seulement si le track actuel est bien dans l'album)
   if (playback.shuffleMode === 'album' && albumTracks.length > 1 && currentAlbumTrackIndex !== -1) {
+    // Marquer la track courante comme jouée AVANT de filtrer (évite de la rejouer immédiatement)
+    if (currentTrack) playback.shufflePlayedTracks.add(currentTrack.path)
+
     // Shuffle dans l'album uniquement - évite les doublons
     const availableTracks = albumTracks.filter(t => !playback.shufflePlayedTracks.has(t.path))
 
@@ -425,6 +635,9 @@ export function playNextTrack() {
       }
     }
   } else if (playback.shuffleMode === 'library') {
+    // Marquer la track courante comme jouée AVANT de filtrer (évite de la rejouer immédiatement)
+    if (currentTrack) playback.shufflePlayedTracks.add(currentTrack.path)
+
     // Shuffle sur toute la bibliothèque - évite les doublons
     const availableTracks = library.tracks.filter(t => !playback.shufflePlayedTracks.has(t.path))
 
@@ -449,7 +662,7 @@ export function playNextTrack() {
     }
   }
 
-  // 4. Mode séquentiel : track suivante dans l'album
+  // 5. Mode séquentiel album (contexte album/playlist/null)
   if (albumTracks.length > 0 && currentAlbumTrackIndex !== -1) {
     // On est dans un album, on joue le track suivant de l'album
     if (currentAlbumTrackIndex < albumTracks.length - 1) {
@@ -480,22 +693,28 @@ export function playNextTrack() {
       console.log('playNextTrack: end of album, no repeat - stopping')
     }
   } else {
-    // Pas d'album ou track non trouvé dans l'album - comportement séquentiel global
-    console.log('playNextTrack: fallback to global sequential', {
-      hasAlbum: !!playback.currentPlayingAlbumKey,
+    // Track non trouvée dans le contexte album (album vide ou index invalide)
+    // Ne jamais sauter à un album différent — seulement autoriser la lecture globale
+    // si le contexte est explicitement 'library' (vue liste complète)
+    console.log('playNextTrack: album lookup failed', {
+      playbackContext: playback.playbackContext,
       currentAlbumTrackIndex,
       currentTrackIndex: playback.currentTrackIndex,
       tracksLength: library.tracks.length
     })
-    if (playback.currentTrackIndex < library.tracks.length - 1) {
-      console.log('playNextTrack: playing global next track', { nextIndex: playback.currentTrackIndex + 1 })
-      playTrack(playback.currentTrackIndex + 1)
-      return
-    } else if (playback.repeatMode === 'all') {
-      console.log('playNextTrack: repeat all - back to track 0')
-      playTrack(0)
-      return
+    if (playback.playbackContext === 'library') {
+      if (playback.currentTrackIndex < library.tracks.length - 1) {
+        console.log('playNextTrack: library mode - playing global next track', { nextIndex: playback.currentTrackIndex + 1 })
+        playTrack(playback.currentTrackIndex + 1)
+        return
+      } else if (playback.repeatMode === 'all') {
+        console.log('playNextTrack: library mode repeat all - back to track 0')
+        playTrack(0)
+        return
+      }
     }
+    // Contexte album/playlist/null → ne pas sauter à un autre album, s'arrêter proprement
+    console.log('playNextTrack: non-library context with failed album lookup - stopping to avoid cross-album jump')
   }
 
   // Fin de lecture
@@ -811,6 +1030,10 @@ export function updateAudioSpecs(specs) {
 
   if (!container || !sourceEl || !outputEl) return
 
+  // Stocker les specs source pour le calcul bit-perfect des devices
+  playback.currentSourceSampleRate = specs.source_sample_rate
+  playback.currentSourceBitDepth = specs.source_bit_depth
+
   // Formater les valeurs SOURCE
   sourceEl.textContent = `${formatSampleRate(specs.source_sample_rate)}/${specs.source_bit_depth}bit`
 
@@ -836,11 +1059,17 @@ export function updateAudioSpecs(specs) {
 
   // Sync fullscreen specs display
   if (isFullscreenOpen()) updateFullscreenData()
+
+  // Mettre à jour les indicateurs bit-perfect sur les devices audio si le menu est visible
+  updateDeviceBitPerfectIndicators()
 }
 
 // Reset du moniteur audio specs
 export function resetAudioSpecs() {
   stopBitPerfectAnimation()
+  playback.currentSourceSampleRate = null
+  playback.currentSourceBitDepth = null
+
   const container = document.getElementById('audio-specs')
   const sourceEl = document.getElementById('source-specs')
   const outputEl = document.getElementById('output-specs')
@@ -848,6 +1077,9 @@ export function resetAudioSpecs() {
   if (container) container.classList.remove('bit-perfect', 'mismatch', 'resampled')
   if (sourceEl) sourceEl.textContent = '-'
   if (outputEl) outputEl.textContent = '-'
+
+  // Effacer les indicateurs bit-perfect
+  updateDeviceBitPerfectIndicators()
 }
 
 // === COVER ART ===
@@ -878,13 +1110,19 @@ export async function updateCoverArt(track) {
   if (isValidImageSrc(cover)) {
     const img = document.createElement('img')
     img.src = cover
+    const _ov = dom.coverArtEl.querySelector('.cover-hover-overlay')
     img.onerror = () => {
+      const ov = dom.coverArtEl.querySelector('.cover-hover-overlay')
       dom.coverArtEl.innerHTML = '<div class="cover-placeholder">♪</div>'
+      if (ov) dom.coverArtEl.appendChild(ov)
     }
     dom.coverArtEl.innerHTML = ''
     dom.coverArtEl.appendChild(img)
+    if (_ov) dom.coverArtEl.appendChild(_ov)
   } else {
+    const _ov = dom.coverArtEl.querySelector('.cover-hover-overlay')
     dom.coverArtEl.innerHTML = '<div class="cover-placeholder">♪</div>'
+    if (_ov) dom.coverArtEl.appendChild(_ov)
   }
 }
 
@@ -899,6 +1137,8 @@ export async function initRustAudioListeners() {
     // Met à jour les variables globales
     playback.audioPositionFromRust = position
     playback.audioDurationFromRust = duration
+    // Track last good position for device switches (not reset by playback_started)
+    if (position > 0) _lastGoodPosition = position
 
     // Forward RMS energy to fullscreen player visualisation
     if (rms !== undefined) setFullscreenRms(rms)
@@ -922,12 +1162,19 @@ export async function initRustAudioListeners() {
       startPositionInterpolation()
     }
 
-    // Gapless: preload next track when < 10s remaining
+    // Gapless: preload next track en avance
+    // SMB : 60s (download du fichier entier peut prendre plusieurs secondes)
+    // Local : 10s (classique)
     const remaining = duration - position
-    if (remaining > 0 && remaining < 10 && !playback.gaplessPreloadTriggered && playback.audioIsPlaying) {
+    const nextPath = getNextTrackPath()
+    const preloadThreshold = nextPath?.startsWith('smb://') ? 60 : 10
+    if (remaining > 0 && remaining < preloadThreshold && !playback.gaplessPreloadTriggered && playback.audioIsPlaying) {
       playback.gaplessPreloadTriggered = true
       triggerGaplessPreload()
     }
+
+    // Sync lyrics to current position (side panel or fullscreen overlay)
+    if (app.isLyricsPanelOpen?.() || app.isFullscreenLyricsOpen?.()) app.syncLyricsToTime?.(position)
   })
 
   // Seeking en cours (émis par Rust quand un seek démarre)
@@ -963,6 +1210,7 @@ export async function initRustAudioListeners() {
     playback.isPausedFromRust = true
     playback.audioIsPlaying = false
     dom.playPauseBtn.textContent = '▶'
+    invoke('update_media_playback_state', { isPlaying: false }).catch(() => {})
     // Stoppe la boucle RAF pour économiser le CPU
     stopPositionInterpolation()
     setFullscreenPlayState(false)
@@ -973,6 +1221,7 @@ export async function initRustAudioListeners() {
     playback.isPausedFromRust = false
     playback.audioIsPlaying = true
     dom.playPauseBtn.textContent = '⏸'
+    invoke('update_media_playback_state', { isPlaying: true }).catch(() => {})
     // Re-synchronise le timestamp pour éviter un saut
     playback.lastRustTimestamp = performance.now()
     // Redémarre la boucle RAF
@@ -1033,28 +1282,44 @@ export async function initRustAudioListeners() {
     } else if (playback.repeatMode === 'one') {
       // Stay on same track, just reset position display
     } else {
-      // Advance to next track in album order
+      // Advance to next track
       const currentTrack = library.tracks[playback.currentTrackIndex]
       if (currentTrack) {
-        const currentFolder = currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/'))
-        const albumTracks = library.tracks.filter(t => {
-          const folder = t.path.substring(0, t.path.lastIndexOf('/'))
-          return folder === currentFolder && t.metadata?.album === currentTrack.metadata?.album
-        }).sort((a, b) => {
-          const discA = a.metadata?.disc || 1
-          const discB = b.metadata?.disc || 1
-          if (discA !== discB) return discA - discB
-          return (a.metadata?.track || 0) - (b.metadata?.track || 0)
-        })
+        if (playback.playbackContext === 'library' && ui.tracksViewOrder.length > 0) {
+          // Contexte library : respecter l'ordre visuel de la vue tracks
+          const viewIdx = ui.tracksViewOrder.indexOf(currentTrack.path)
+          if (viewIdx >= 0 && viewIdx < ui.tracksViewOrder.length - 1) {
+            const nextPath = ui.tracksViewOrder[viewIdx + 1]
+            const globalIndex = library.tracks.findIndex(t => t.path === nextPath)
+            if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
+          } else if (playback.repeatMode === 'all' && ui.tracksViewOrder.length > 0) {
+            const firstPath = ui.tracksViewOrder[0]
+            const globalIndex = library.tracks.findIndex(t => t.path === firstPath)
+            if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
+          }
+          // else : fin de la vue, currentTrackIndex reste inchangé
+        } else {
+          // Contexte album : ordre de l'album
+          const currentFolder = currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/'))
+          const albumTracks = library.tracks.filter(t => {
+            const folder = t.path.substring(0, t.path.lastIndexOf('/'))
+            return folder === currentFolder && t.metadata?.album === currentTrack.metadata?.album
+          }).sort((a, b) => {
+            const discA = a.metadata?.disc || 1
+            const discB = b.metadata?.disc || 1
+            if (discA !== discB) return discA - discB
+            return (a.metadata?.track || 0) - (b.metadata?.track || 0)
+          })
 
-        const idx = albumTracks.findIndex(t => t.path === currentTrack.path)
-        if (idx >= 0 && idx < albumTracks.length - 1) {
-          const nextTrack = albumTracks[idx + 1]
-          const globalIndex = library.tracks.findIndex(t => t.path === nextTrack.path)
-          if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
-        } else if (playback.repeatMode === 'all' && albumTracks.length > 0) {
-          const globalIndex = library.tracks.findIndex(t => t.path === albumTracks[0].path)
-          if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
+          const idx = albumTracks.findIndex(t => t.path === currentTrack.path)
+          if (idx >= 0 && idx < albumTracks.length - 1) {
+            const nextTrack = albumTracks[idx + 1]
+            const globalIndex = library.tracks.findIndex(t => t.path === nextTrack.path)
+            if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
+          } else if (playback.repeatMode === 'all' && albumTracks.length > 0) {
+            const globalIndex = library.tracks.findIndex(t => t.path === albumTracks[0].path)
+            if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
+          }
         }
       }
     }
@@ -1116,6 +1381,30 @@ export async function initRustAudioListeners() {
         console.log(`[PlaybackError] Auto-skipping due to ${code}`)
         playNextTrack()
       }, 300)
+    }
+  })
+
+  // === Media keys (MPRemoteCommandCenter via souvlaki) ===
+  // Reçoit les évènements play/pause/next/previous depuis Rust quand Noir
+  // a pris le contrôle de MPRemoteCommandCenter (plus fort qu'Apple Music).
+  await listen('media-control', (event) => {
+    const action = event.payload
+    console.log('[MediaControl] Received:', action)
+    switch (action) {
+      case 'play':
+      case 'pause':
+      case 'toggle':
+        app.togglePlay()
+        break
+      case 'next':
+        app.playNextTrack()
+        break
+      case 'previous':
+        app.playPreviousTrack()
+        break
+      case 'stop':
+        if (playback.audioIsPlaying) app.togglePlay()
+        break
     }
   })
 
@@ -1182,6 +1471,84 @@ function startDevicePolling() {
   }, 3000)
 }
 
+// === SYNC SYSTÈME → NOIR (polling toutes les 5s) ===
+// Détecte quand macOS change le périphérique de sortie par défaut
+// (casque branché, changement dans Préférences Système, etc.)
+// et met à jour Noir en conséquence.
+//
+// IMPORTANT: On compare le systemDefault avec sa valeur PRÉCÉDENTE (lastKnownSystemDefault),
+// pas avec currentAudioDeviceId. Cela permet à Noir de choisir un device différent du
+// système (ex: rester sur AirPlay pendant que macOS revient aux speakers) sans déclencher
+// un revert. Le sync ne se déclenche que sur un vrai changement externe.
+
+let _systemDeviceSyncInterval = null
+let _lastKnownSystemDefault = null
+
+// Device on which audio_play was last successfully called.
+// Distinct from playback.currentAudioDeviceId (which reflects the UI selection,
+// updated by loadAudioDevices even before audio_play is called).
+// The sync uses this to decide if a restart is actually needed.
+let _audioStreamDeviceId = null
+
+export function setAudioStreamDeviceId(id) {
+  _audioStreamDeviceId = id
+}
+
+// Last confirmed playback position from the Rust progress handler.
+// Updated continuously while audio plays; reset to 0 only when a NEW track is selected.
+// Unlike playback.audioPositionFromRust, this is NOT reset by playback_started events,
+// so it survives the position-reset that happens when audio_play is called on a new device.
+let _lastGoodPosition = 0
+
+// Cancellation token for pending seeks after device switch.
+// When a second device switch happens before the 300ms seek fires, the old seek
+// is silently skipped, preventing it from seeking on the newly-opened stream.
+let _seekCancelToken = null
+
+function startSystemDeviceSync() {
+  if (_systemDeviceSyncInterval) return // Déjà démarré
+  _systemDeviceSyncInterval = setInterval(async () => {
+    try {
+      const systemDefaultId = await invoke('get_system_default_device_id')
+      if (!systemDefaultId) return
+
+      // Premier cycle : initialiser sans déclencher de sync
+      if (_lastKnownSystemDefault === null) {
+        _lastKnownSystemDefault = systemDefaultId
+        return
+      }
+
+      // Sync uniquement si le système a changé depuis le dernier cycle
+      if (systemDefaultId !== _lastKnownSystemDefault) {
+        console.log('[AUDIO-OUTPUT] System default changed externally:', _lastKnownSystemDefault, '→', systemDefaultId)
+        _lastKnownSystemDefault = systemDefaultId
+
+        // Restart only if audio stream is not already on the new system default.
+        // Use _audioStreamDeviceId (last device passed to audio_play), NOT
+        // playback.currentAudioDeviceId which can be updated by loadAudioDevices
+        // before audio_play is actually called, causing a false "already on device" match.
+        if (systemDefaultId !== _audioStreamDeviceId) {
+          const devices = await invoke('refresh_audio_devices')
+          const newDevice = devices.find(d => d.id === systemDefaultId)
+          if (newDevice) {
+            console.log('[AUDIO-OUTPUT] Synced to system default:', newDevice.name)
+            await selectAudioDevice(systemDefaultId, newDevice.name)
+          }
+        }
+      }
+    } catch (_) {
+      // Non-fatal : le polling reprend au prochain cycle
+    }
+  }, 5000)
+}
+
+function stopSystemDeviceSync() {
+  if (_systemDeviceSyncInterval) {
+    clearInterval(_systemDeviceSyncInterval)
+    _systemDeviceSyncInterval = null
+  }
+}
+
 // Charge la liste des périphériques audio
 export async function loadAudioDevices() {
   console.log('[AUDIO-OUTPUT] Loading audio devices (with refresh)...')
@@ -1201,33 +1568,90 @@ export async function loadAudioDevices() {
       item.className = `audio-output-item${device.id === playback.currentAudioDeviceId ? ' active' : ''}`
       item.dataset.deviceId = device.id
 
+      // Stocker les supported_sample_rates dans le dataset pour bit-perfect checks
+      if (device.supported_sample_rates?.length) {
+        item.dataset.supportedRates = JSON.stringify(device.supported_sample_rates)
+      }
+
       // Formate le sample rate
       const sampleRate = device.current_sample_rate
         ? `${(device.current_sample_rate / 1000).toFixed(1).replace('.0', '')} kHz`
         : ''
 
-      // Formate les sample rates supportés
-      const supportedRates = device.supported_sample_rates && device.supported_sample_rates.length > 0
-        ? device.supported_sample_rates.map(r => `${r/1000}k`).join(', ')
+      // Formate les sample rates supportés :
+      // - Si une track joue : masquer les rates < source, highlight argent du rate exact
+      // - Si le device supporte le rate source → badge "BIT PERFECT" argenté
+      const srcRate = playback.currentSourceSampleRate
+      const canBitPerfect = srcRate && !device.is_airplay && device.supported_sample_rates?.includes(srcRate)
+
+      let supportedRatesHtml = ''
+      if (device.supported_sample_rates && device.supported_sample_rates.length > 0) {
+        // Filtrer : si une track joue, ne montrer que les rates >= source rate
+        const ratesToShow = srcRate
+          ? device.supported_sample_rates.filter(r => r >= srcRate)
+          : device.supported_sample_rates
+        if (ratesToShow.length > 0) {
+          const ratesFormatted = ratesToShow.map(r => {
+            const label = `${r/1000}k`
+            if (srcRate && r === srcRate && !device.is_airplay) {
+              return `<span class="rate-match">${label}</span>`
+            }
+            return label
+          }).join(', ')
+          supportedRatesHtml = ` • ${ratesFormatted}`
+        }
+      }
+
+      // Badge bit perfect argenté (style identique au player)
+      const bpBadge = canBitPerfect
+        ? '<span class="device-bp-badge">BIT PERFECT</span>'
         : ''
+
+      // Badge transport type (AirPlay uniquement pour l'instant)
+      const transportBadge = device.is_airplay
+        ? '<span class="device-transport-badge airplay-badge" title="AirPlay — non bit-perfect, hog mode unavailable">AirPlay</span>'
+        : ''
+      const airplayWarning = device.is_airplay
+        ? '<span class="airplay-warning">⚠ +2s latency · non bit-perfect</span>'
+        : ''
+
+      // Stocke is_airplay dans le dataset pour selectAudioDevice
+      if (device.is_airplay) item.dataset.isAirplay = 'true'
 
       item.innerHTML = `
         <div class="audio-output-item-info">
-          <div class="audio-output-item-name">${device.name}</div>
+          <div class="audio-output-item-name">${device.name}${transportBadge}</div>
           <div class="audio-output-item-details">
-            ${sampleRate}${supportedRates ? ` • Supporte: ${supportedRates}` : ''}
+            ${sampleRate}${supportedRatesHtml}${airplayWarning}${bpBadge}
           </div>
         </div>
-        ${device.is_default ? '<span class="audio-output-item-default">Default</span>' : ''}
       `
 
       item.addEventListener('click', () => selectAudioDevice(device.id, device.name))
       dom.audioOutputList.appendChild(item)
     }
+
+    // Hint AirPlay si aucun device AirPlay n'est visible dans la liste
+    const hasAirPlay = devices.some(d => d.is_airplay)
+    if (!hasAirPlay) {
+      const hint = document.createElement('div')
+      hint.className = 'airplay-discovery-hint'
+      hint.innerHTML = 'To use AirPlay, first select it in <strong>macOS Sound Settings</strong>'
+      dom.audioOutputList.appendChild(hint)
+    }
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error loading devices:', e)
     console.error('[AUDIO-OUTPUT] Error details:', JSON.stringify(e, null, 2))
     dom.audioOutputList.innerHTML = `<div style="padding: 16px; color: #ff6b6b;">Error: ${escapeHtml(e?.message || e || 'Audio engine not initialized')}</div>`
+  }
+}
+
+// Met à jour les indicateurs bit-perfect quand la track change
+// Re-render la liste pour filtrer les rates et afficher les badges
+function updateDeviceBitPerfectIndicators() {
+  // Si le menu est visible, recharger pour mettre à jour les rates filtrés + badges
+  if (dom.audioOutputMenu && !dom.audioOutputMenu.classList.contains('hidden')) {
+    loadAudioDevices()
   }
 }
 
@@ -1253,6 +1677,14 @@ export async function selectAudioDevice(deviceId, deviceName) {
     await invoke('set_audio_device', { deviceId })
     console.log('[AUDIO-OUTPUT] Device preference changed successfully')
 
+    // Read back the ACTUAL system default after the switch.
+    // When switching FROM AirPlay, Rust intentionally keeps AirPlay as system default
+    // (to preserve the session). So the actual system default may differ from deviceId.
+    // We must track the actual value to prevent the sync polling from misinterpreting
+    // the preserved AirPlay default as an "external" change.
+    const actualDefault = await invoke('get_system_default_device_id').catch(() => null)
+    _lastKnownSystemDefault = actualDefault || deviceId
+
     const previousDeviceId = playback.currentAudioDeviceId
     playback.currentAudioDeviceId = deviceId
 
@@ -1261,6 +1693,21 @@ export async function selectAudioDevice(deviceId, deviceName) {
       item.classList.toggle('active', item.dataset.deviceId === deviceId)
     })
 
+    // Vérifier si le device sélectionné est AirPlay
+    const selectedItem = dom.audioOutputList.querySelector(`[data-device-id="${deviceId}"]`)
+    const isAirplay = selectedItem?.dataset.isAirplay === 'true'
+
+    if (isAirplay) {
+      console.log('[AUDIO-OUTPUT] AirPlay device selected — disabling hog mode if active')
+      // Auto-désactiver hog mode (incompatible AirPlay)
+      const isExclusive = await invoke('is_exclusive_mode').catch(() => false)
+      if (isExclusive) {
+        await invoke('set_exclusive_mode', { enabled: false }).catch(() => {})
+        await loadExclusiveMode()
+        showToast('Exclusive mode disabled (incompatible with AirPlay)', 3000)
+      }
+    }
+
     // Si de la musique joue ou était en pause, relance la lecture sur le nouveau device
     // Note: Le backend CPAL utilise toujours le device par défaut système, donc on doit
     // forcer une relance pour que le changement prenne effet via prepare_for_streaming()
@@ -1268,14 +1715,22 @@ export async function selectAudioDevice(deviceId, deviceName) {
     if (playback.currentTrackIndex >= 0 && library.tracks[playback.currentTrackIndex]) {
       const currentTrack = library.tracks[playback.currentTrackIndex]
       console.log('[AUDIO-OUTPUT] Restarting playback on new device...', { wasPlaying, audioIsPlaying: playback.audioIsPlaying, isPausedFromRust: playback.isPausedFromRust })
-      showToast(`Output: ${deviceName}`)
+      showToast(isAirplay ? `AirPlay: ${deviceName} — +2s latency · non bit-perfect` : `Output: ${deviceName}`, isAirplay ? 4000 : undefined)
 
-      // Sauvegarde la position actuelle (utilise le slider comme référence fiable)
+      // Sauvegarde la position avant tout changement de stream.
+      // _lastGoodPosition est mis à jour par le handler playback_progress et n'est PAS
+      // réinitialisé par playback_started — il survit donc aux restarts de stream sur
+      // des devices intermédiaires (ex: AirPlay échoue → position ne revient pas à 0).
       const progressSlider = document.getElementById('progress')
-      let currentPosition = playback.audioPositionFromRust
-      if (progressSlider && playback.audioDurationFromRust > 0) {
-        currentPosition = (parseFloat(progressSlider.value) / 100) * playback.audioDurationFromRust
-      }
+      const sliderPos = progressSlider && playback.audioDurationFromRust > 0
+        ? (parseFloat(progressSlider.value) / 100) * playback.audioDurationFromRust
+        : 0
+      const savedPosition = _lastGoodPosition > 0 ? _lastGoodPosition : sliderPos
+
+      // Token d'annulation : si un deuxième switch de device arrive avant le seek (+300ms),
+      // l'ancien seek est silencieusement ignoré (évite un seek sur le mauvais stream).
+      const seekToken = {}
+      _seekCancelToken = seekToken
 
       try {
         // Stoppe d'abord pour libérer le stream
@@ -1284,15 +1739,30 @@ export async function selectAudioDevice(deviceId, deviceName) {
         // Court délai pour laisser le temps au stream de se fermer
         await new Promise(resolve => setTimeout(resolve, 100))
 
-        // Relance la lecture
-        await invoke('audio_play', { path: currentTrack.path })
+        // Attempt playback on new device
+        try {
+          await invoke('audio_play', { path: currentTrack.path })
+        } catch (playError) {
+          // If AirPlay, retry once after 1.5s — device may need more time to activate
+          // (network negotiation, receiver waking from sleep, etc.)
+          if (isAirplay) {
+            console.log('[AUDIO-OUTPUT] AirPlay play failed, retrying in 1.5s...', playError)
+            await new Promise(resolve => setTimeout(resolve, 1500))
+            await invoke('audio_play', { path: currentTrack.path })
+          } else {
+            throw playError // Non-AirPlay: propagate immediately
+          }
+        }
+        // Track which device the stream is now on (used by startSystemDeviceSync)
+        _audioStreamDeviceId = deviceId
 
         // Seek à la position précédente après un court délai
-        if (currentPosition > 1) {
+        if (savedPosition > 1) {
           setTimeout(async () => {
+            if (_seekCancelToken !== seekToken) return // Annulé par un switch ultérieur
             try {
-              await invoke('audio_seek', { time: currentPosition })
-              console.log('[AUDIO-OUTPUT] Seeked to previous position:', currentPosition.toFixed(2))
+              await invoke('audio_seek', { time: savedPosition })
+              console.log('[AUDIO-OUTPUT] Seeked to previous position:', savedPosition.toFixed(2))
             } catch (e) {
               console.error('[AUDIO-OUTPUT] Error seeking:', e)
             }
@@ -1317,11 +1787,13 @@ export async function selectAudioDevice(deviceId, deviceName) {
         showToast('Error changing output')
       }
     } else {
-      showToast(`Audio output: ${deviceName}`)
+      showToast(isAirplay ? `AirPlay: ${deviceName} — +2s latency · non bit-perfect` : `Audio output: ${deviceName}`, isAirplay ? 4000 : undefined)
     }
   } catch (e) {
     console.error('[AUDIO-OUTPUT] Error changing device:', e)
-    showToast('Error changing audio output')
+    // Show the actual error message from Rust if available (e.g. AirPlay disconnected instructions)
+    const msg = typeof e === 'string' ? e : e?.message || 'Error changing audio output'
+    showToast(msg, 5000)
   }
 }
 
@@ -1411,21 +1883,10 @@ export function initPlayback() {
     playNextTrack()
   })
 
-  // === Cover Art click → navigate to album ===
+  // === Cover Art click → fullscreen player ===
   dom.coverArtEl.addEventListener('click', () => {
-    // Si on était en train de drag, ne pas naviguer
     if (isDragging()) return
-
-    if (!playback.currentPlayingAlbumKey || playback.currentTrackIndex < 0) return
-
-    const album = library.albums[playback.currentPlayingAlbumKey]
-    if (!album) {
-      console.log('Album not found for key:', playback.currentPlayingAlbumKey)
-      return
-    }
-
-    // Navigue vers la page album dédiée
-    app.navigateToAlbumPage(playback.currentPlayingAlbumKey)
+    app.toggleFullscreenPlayer?.()
   })
 
   // === Drag from Cover Art → add current track to playlist ===
@@ -1610,6 +2071,17 @@ export function initPlayback() {
     console.log('[AUDIO-OUTPUT] Current device ID:', playback.currentAudioDeviceId)
     console.log('[AUDIO-OUTPUT] Audio is currently playing:', playback.audioIsPlaying)
 
+    // Bloquer hog mode sur les devices AirPlay (CoreAudio ne peut pas accorder
+    // un accès exclusif à un device réseau virtuel → déconnecte la session)
+    if (newState) {
+      const currentItem = dom.audioOutputList?.querySelector(`[data-device-id="${playback.currentAudioDeviceId}"]`)
+      if (currentItem?.dataset.isAirplay === 'true') {
+        dom.exclusiveModeCheckbox.checked = false
+        showToast('Exclusive mode unavailable on AirPlay', 3000)
+        return
+      }
+    }
+
     try {
       console.log('[AUDIO-OUTPUT] Calling set_exclusive_mode...')
       await invoke('set_exclusive_mode', { enabled: newState })
@@ -1666,6 +2138,10 @@ export function initPlayback() {
 
   // === Hog Mode tooltip ===
   initHogModeTooltip()
+
+  // === Sync périphérique système → Noir (polling arrière-plan 5s) ===
+  // Démarre dès l'init pour détecter les changements de sortie système (casque, etc.)
+  startSystemDeviceSync()
 
   // === Register in app mediator ===
   app.playTrack = playTrack

@@ -24,6 +24,12 @@ pub struct DeviceInfo {
     pub max_channels: u16,
     /// Whether exclusive mode is supported
     pub supports_exclusive: bool,
+    /// Raw CoreAudio transport type (kAudioDevicePropertyTransportType)
+    /// 0x61697270 = AirPlay, 0x626C746E = Built-in, 0x75736220 = USB, 0x626C7565 = Bluetooth
+    pub transport_type: u32,
+    /// True if the device is an AirPlay receiver (transport_type == 0x61697270)
+    /// AirPlay devices do not support hog mode and introduce ~2s latency
+    pub is_airplay: bool,
 }
 
 impl DeviceInfo {

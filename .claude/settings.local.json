@@ -36,7 +36,32 @@
       "Bash(node -c:*)",
       "Bash(node:*)",
       "Bash(node --input-type=module -e \"import ''./src/utils.js''\")",
-      "Bash(git remote add:*)"
+      "Bash(git remote add:*)",
+      "Bash(ffmpeg -version)",
+      "Bash(brew install ffmpeg)",
+      "Bash(chmod +x /Users/tsunami25/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/tests/generate_fixtures.sh)",
+      "Bash(bash /Users/tsunami25/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/tests/generate_fixtures.sh)",
+      "Bash(npm install)",
+      "Bash(cargo test --no-run)",
+      "Bash(cargo test --test library_scanner --test queue --test network_source --test tauri_commands)",
+      "Bash(npm test)",
+      "Bash(cargo test --test audio_decode --test audio_seek --test ring_buffer --test metadata)",
+      "Bash(cargo test --test ring_buffer)",
+      "Bash(cargo test --test metadata)",
+      "Bash(cargo test)",
+      "Bash(npm test -- --watchAll=false)",
+      "Bash(git status -u)",
+      "Bash(for f in src/*.js)",
+      "Bash(do node --check \"$f\")",
+      "Bash(echo \"FAIL: $f\")",
+      "Bash(done)",
+      "Bash(cat /Users/tsunami25/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/capabilities/*.json)",
+      "Bash(cargo clippy)",
+      "Bash(cat src-tauri/src-tauri/*.plist)",
+      "Bash(sort -t: -k2 -rn)",
+      "Bash(npx @tauri-apps/cli@latest signer generate --help)",
+      "Bash(npx @tauri-apps/cli signer generate -w ~/.tauri/noir-desktop.key -p \"noir-beta-2026\" --ci)",
+      "Bash(echo \"OK: $f\")"
     ]
   }
 }

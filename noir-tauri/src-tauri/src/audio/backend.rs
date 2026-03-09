@@ -148,6 +148,13 @@ pub trait AudioBackend: Send + Sync {
 
     /// Get the backend name (e.g., "CoreAudio", "WASAPI")
     fn name(&self) -> &'static str;
+
+    /// Get the OS-level system default output device ID (bypasses manual selection)
+    ///
+    /// Used by JS polling to detect when the user changes the system output externally
+    /// (e.g., via System Preferences or by plugging in headphones).
+    /// Returns None if not supported on this platform.
+    fn system_default_device_id(&self) -> Option<String>;
 }
 
 /// Factory function to create the appropriate backend for the current platform

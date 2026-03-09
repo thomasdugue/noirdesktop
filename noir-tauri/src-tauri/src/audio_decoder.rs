@@ -5,6 +5,7 @@
 // Architecture : [Thread Décodeur] ←→ [Resampler?] → [RingBuffer] → [Callback cpal]
 
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use ringbuf::traits::{Consumer, Producer, Split};
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::formats::{FormatOptions, SeekMode, SeekTo};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
@@ -164,6 +165,109 @@ impl StreamingSession {
     }
 }
 
+// =====================================================================
+// === SMB PROGRESSIVE FILE — blocking Read+Seek pour téléchargements partiels ===
+// =====================================================================
+
+/// Wrapper autour d'un fichier temporaire SMB en cours de téléchargement.
+///
+/// Bloque sur `read()` et `seek()` jusqu'à ce que les bytes nécessaires soient disponibles,
+/// en sondant `bytes_written` toutes les 50ms. Quand `download_done = true`, les opérations
+/// ne bloquent plus (données finales disponibles ou download échoué → EOF gracieux).
+///
+/// Cela permet à Symphonia de seeker librement même si le fichier n'est pas entièrement
+/// téléchargé — notamment lors d'un seek utilisateur sur un gros fichier FLAC.
+struct SmbProgressiveFile {
+    file: File,
+    pos: u64,
+    bytes_written: Arc<AtomicU64>,
+    download_done: Arc<AtomicBool>,
+}
+
+impl SmbProgressiveFile {
+    fn new(file: File, bytes_written: Arc<AtomicU64>, download_done: Arc<AtomicBool>) -> Self {
+        Self { file, pos: 0, bytes_written, download_done }
+    }
+
+    /// Attend que `target` bytes soient disponibles OU que le téléchargement soit terminé.
+    /// Pour SeekFrom::End : appeler avec `u64::MAX` pour attendre la fin complète.
+    fn wait_for_bytes(&self, target: u64) {
+        loop {
+            let available = self.bytes_written.load(Ordering::Acquire);
+            let done = self.download_done.load(Ordering::Acquire);
+            if available >= target || done { break; }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+impl Read for SmbProgressiveFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // Attendre que des données soient disponibles à la position courante
+        self.wait_for_bytes(self.pos + 1);
+        let n = self.file.read(buf)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for SmbProgressiveFile {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let target = match pos {
+            SeekFrom::Start(n) => n,
+            SeekFrom::Current(n) => {
+                if n >= 0 { self.pos.saturating_add(n as u64) }
+                else { self.pos.saturating_sub((-n) as u64) }
+            }
+            SeekFrom::End(n) => {
+                // Doit connaître la taille totale → attendre la fin du téléchargement
+                self.wait_for_bytes(u64::MAX);
+                let total = self.bytes_written.load(Ordering::Acquire);
+                if n >= 0 { total.saturating_add(n as u64) }
+                else { total.saturating_sub((-n) as u64) }
+            }
+        };
+        // Attendre que la position cible soit téléchargée
+        self.wait_for_bytes(target);
+        let new_pos = self.file.seek(SeekFrom::Start(target))?;
+        self.pos = new_pos;
+        Ok(new_pos)
+    }
+}
+
+impl MediaSource for SmbProgressiveFile {
+    fn is_seekable(&self) -> bool { true }
+    fn byte_len(&self) -> Option<u64> {
+        // Toujours retourner Some() pour que Symphonia traite le stream comme seekable
+        // et puisse effectuer des seeks (nécessaire pour FLAC et durée correcte).
+        // Si le téléchargement est encore en cours, retourne les bytes actuellement disponibles ;
+        // notre impl Seek bloque jusqu'à la disponibilité effective → pas de lecture hors-limites.
+        Some(self.bytes_written.load(Ordering::Acquire))
+    }
+}
+
+/// Ouvre un fichier audio pour Symphonia.
+///
+/// Si le chemin est enregistré dans `PROGRESSIVE_DOWNLOADS` (download SMB en cours),
+/// retourne un `SmbProgressiveFile` qui bloque reads/seeks jusqu'à la disponibilité.
+/// Sinon, retourne un `File` standard (fichier local ou download déjà terminé).
+fn open_media_source(path: &Path) -> Option<Box<dyn MediaSource>> {
+    // Vérifier si c'est un download progressif SMB en cours
+    if let Ok(registry) = crate::PROGRESSIVE_DOWNLOADS.lock() {
+        if let Some((bw, dd)) = registry.get(path) {
+            if let Ok(file) = File::open(path) {
+                return Some(Box::new(SmbProgressiveFile::new(
+                    file, bw.clone(), dd.clone()
+                )));
+            }
+        }
+    }
+    // Fallback : fichier local standard (ou SMB téléchargé complètement hors registry)
+    File::open(path).ok().map(|f| Box::new(f) as Box<dyn MediaSource>)
+}
+
+// =====================================================================
+
 /// Probe un fichier audio pour obtenir ses métadonnées sans décoder
 /// Utilise Symphonia d'abord, puis lofty en fallback pour les M4A/AAC
 pub fn probe_audio_file(path: &str) -> Result<AudioInfo, String> {
@@ -188,8 +292,9 @@ pub fn probe_audio_file(path: &str) -> Result<AudioInfo, String> {
 /// Tente de probe avec Symphonia (peut échouer sur certains M4A)
 fn try_probe_with_symphonia(path: &str) -> Option<AudioInfo> {
     let path_buf = Path::new(path).to_path_buf();
-    let file = File::open(&path_buf).ok()?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    // open_media_source retourne SmbProgressiveFile (blocking) si download en cours, File sinon
+    let media_source = open_media_source(&path_buf)?;
+    let mss = MediaSourceStream::new(media_source, Default::default());
 
     let mut hint = Hint::new();
     if let Some(ext) = path_buf.extension().and_then(|e| e.to_str()) {
@@ -305,9 +410,11 @@ pub fn start_streaming_with_config(
 ) -> Result<StreamingSession, String> {
     let path_buf = Path::new(path).to_path_buf();
 
-    // Ouvre le fichier
-    let file = File::open(&path_buf).map_err(|e| format!("Cannot open file: {}", e))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    // open_media_source retourne SmbProgressiveFile (blocking) si download en cours, File sinon.
+    // Cela permet à Symphonia de seeker même si le fichier FLAC n'est pas entièrement téléchargé.
+    let media_source = open_media_source(&path_buf)
+        .ok_or_else(|| format!("Cannot open file: {}", path))?;
+    let mss = MediaSourceStream::new(media_source, Default::default());
 
     // Hint pour aider symphonia
     let mut hint = Hint::new();

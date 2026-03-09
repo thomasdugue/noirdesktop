@@ -31,10 +31,112 @@ let virtualScrollState = {
 
 let artistSortMode = 'name-asc'
 
+// === EMPTY SEARCH STATE ===
+
+function createEmptySearchState(viewType) {
+  const div = document.createElement('div')
+  div.className = 'empty-search-state'
+  div.innerHTML = `
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3">
+      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+    </svg>
+    <p>No results for <strong>"${escapeHtml(search.query)}"</strong> in ${viewType}</p>
+    <button class="empty-search-clear btn-primary-small">Clear search</button>
+  `
+  return div
+}
+
+// === EMPTY LIBRARY STATE ===
+// Affiché quand la librairie est vide (aucune track scannée).
+// CTA → ouvrir Settings pour ajouter des dossiers.
+function createEmptyLibraryState(title, subtitle) {
+  const el = document.createElement('div')
+  el.className = 'empty-library-state'
+  el.innerHTML = `
+    <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 18V5l12-2v13"/>
+      <circle cx="6" cy="18" r="3"/>
+      <circle cx="18" cy="16" r="3"/>
+    </svg>
+    <h2 class="empty-library-title">${title}</h2>
+    <p class="empty-library-sub">${subtitle}</p>
+    <button class="empty-library-cta">Add folders</button>
+  `
+  el.querySelector('.empty-library-cta').addEventListener('click', () => app.openSettings())
+  return el
+}
+
+// === PAGE TRANSITION ===
+let isTransitioning = false
+let transitionTimer = null
+let renderVersion = 0
+
+/**
+ * Wraps a view render in a fade-out → render → fade-in transition.
+ * Supports async render functions (e.g. displayHomeView).
+ * Uses renderVersion to cancel obsolete renders when a new transition starts.
+ */
+async function transitionView(renderFn) {
+  if (transitionTimer) clearTimeout(transitionTimer)
+  const version = ++renderVersion
+
+  const grid = dom.albumsGridDiv
+  if (!grid) {
+    try { await renderFn() } catch (e) { console.error('[transitionView] renderFn error (no grid):', e) }
+    return
+  }
+
+  // Si déjà en transition, skip fade-out et swap direct
+  if (isTransitioning) {
+    try { await renderFn() } catch (e) { console.error('[transitionView] renderFn error (reentrant):', e) }
+    if (renderVersion !== version) { isTransitioning = false; return }
+    grid.classList.remove('view-fade-out')
+    grid.classList.add('view-fade-in')
+    transitionTimer = setTimeout(() => {
+      grid.classList.remove('view-fade-in')
+      isTransitioning = false
+    }, 200)
+    return
+  }
+
+  isTransitioning = true
+  grid.classList.remove('view-fade-in')
+  grid.classList.add('view-fade-out')
+
+  // Attendre le fade-out
+  await new Promise(resolve => {
+    transitionTimer = setTimeout(resolve, 130)
+  })
+  if (renderVersion !== version) { isTransitioning = false; return }
+
+  // Render (peut être async — ex: displayHomeView avec await invokes Rust)
+  try {
+    await renderFn()
+  } catch (e) {
+    console.error('[transitionView] renderFn error:', e)
+  }
+  if (renderVersion !== version) { isTransitioning = false; return }
+
+  // Fade-in
+  grid.classList.remove('view-fade-out')
+  grid.classList.add('view-fade-in')
+
+  transitionTimer = setTimeout(() => {
+    grid.classList.remove('view-fade-in')
+    isTransitioning = false
+  }, 200)
+}
+
 // === DISCOVERY MIX CACHE ===
 const DISCOVERY_MIX_CACHE_KEY = 'discovery_mixes_cache'
 const DISCOVERY_MIX_TTL = 24 * 60 * 60 * 1000  // 24h
 let discoveryMixes = []
+
+// Cache mémoire pour éviter de recalculer les mixes à chaque affichage de la Home
+// (le calcul parcourt toute la librairie → coûteux avec de nombreux tracks)
+let _discoveryMixesMemCache = null
+let _discoveryMixesMemCacheAt = 0
+const DISCOVERY_MEM_TTL = 2 * 60 * 1000  // 2 minutes en mémoire
 
 // ============================================================
 // INIT
@@ -46,6 +148,9 @@ export function initViews() {
     item.addEventListener('click', () => {
       dom.navItems.forEach(i => i.classList.remove('active'))
       item.classList.add('active')
+
+      // Désélectionner toutes les playlists (mutuellement exclusif)
+      document.querySelectorAll('.playlist-item.active').forEach(el => el.classList.remove('active'))
 
       ui.filteredArtist = null
       ui.currentView = item.dataset.view
@@ -118,9 +223,7 @@ export function displayCurrentView() {
   // Disconnect cover observer to avoid memory leaks
   app.initCoverObserver()  // ensures observer exists
 
-  dom.albumsGridDiv.classList.add('view-transitioning')
-
-  setTimeout(() => {
+  transitionView(async () => {
     dom.albumsGridDiv.textContent = ''
     dom.albumsViewDiv.classList.remove('hidden')
 
@@ -128,7 +231,7 @@ export function displayCurrentView() {
 
     switch (ui.currentView) {
       case 'home':
-        displayHomeView()
+        await displayHomeView()
         break
       case 'albums':
         displayAlbumsGrid()
@@ -152,11 +255,7 @@ export function displayCurrentView() {
         app.displayPlaylistView()
         break
     }
-
-    requestAnimationFrame(() => {
-      dom.albumsGridDiv.classList.remove('view-transitioning')
-    })
-  }, 80)
+  })
 }
 
 // ============================================================
@@ -169,7 +268,9 @@ export function navigateToArtistPage(artistKey) {
   ui.navigationHistory.push({
     view: ui.currentView,
     filteredArtist: ui.filteredArtist,
-    scrollPosition: document.querySelector('.albums-view')?.scrollTop || 0
+    scrollPosition: document.querySelector('.albums-view')?.scrollTop || 0,
+    albumPageKey: ui.currentAlbumPageKey,   // ← nécessaire pour revenir sur une album-page
+    artistPageKey: ui.currentArtistPageKey
   })
 
   ui.currentArtistPageKey = artistKey
@@ -179,10 +280,12 @@ export function navigateToArtistPage(artistKey) {
   document.querySelector('[data-view="artists"]')?.classList.add('active')
 
   closeAlbumDetail()
-  dom.albumsGridDiv.textContent = ''
-  dom.albumsViewDiv.classList.remove('hidden')
 
-  displayArtistPage(artistKey)
+  transitionView(() => {
+    dom.albumsGridDiv.textContent = ''
+    dom.albumsViewDiv.classList.remove('hidden')
+    displayArtistPage(artistKey)
+  })
 }
 
 export function navigateToAlbumPage(albumKey) {
@@ -192,6 +295,7 @@ export function navigateToAlbumPage(albumKey) {
     view: ui.currentView,
     filteredArtist: ui.filteredArtist,
     scrollPosition: document.querySelector('.albums-view')?.scrollTop || 0,
+    albumPageKey: ui.currentAlbumPageKey,
     artistPageKey: ui.currentArtistPageKey
   })
 
@@ -201,10 +305,12 @@ export function navigateToAlbumPage(albumKey) {
   dom.navItems.forEach(i => i.classList.remove('active'))
 
   closeAlbumDetail()
-  dom.albumsGridDiv.textContent = ''
-  dom.albumsViewDiv.classList.remove('hidden')
 
-  displayAlbumPage(albumKey)
+  transitionView(() => {
+    dom.albumsGridDiv.textContent = ''
+    dom.albumsViewDiv.classList.remove('hidden')
+    displayAlbumPage(albumKey)
+  })
 }
 
 export function navigateToMixPage(mix) {
@@ -214,6 +320,7 @@ export function navigateToMixPage(mix) {
     view: ui.currentView,
     filteredArtist: ui.filteredArtist,
     scrollPosition: document.querySelector('.albums-view')?.scrollTop || 0,
+    albumPageKey: ui.currentAlbumPageKey,
     artistPageKey: ui.currentArtistPageKey
   })
 
@@ -223,10 +330,12 @@ export function navigateToMixPage(mix) {
   dom.navItems.forEach(i => i.classList.remove('active'))
 
   closeAlbumDetail()
-  dom.albumsGridDiv.textContent = ''
-  dom.albumsViewDiv.classList.remove('hidden')
 
-  displayMixPage(mix)
+  transitionView(() => {
+    dom.albumsGridDiv.textContent = ''
+    dom.albumsViewDiv.classList.remove('hidden')
+    displayMixPage(mix)
+  })
 }
 
 export function navigateBack() {
@@ -242,10 +351,16 @@ export function navigateBack() {
   ui.currentView = previous.view
   ui.filteredArtist = previous.filteredArtist
 
-  if (previous.view === 'artist-page' && previous.artistPageKey) {
-    ui.currentArtistPageKey = previous.artistPageKey
-    ui.currentAlbumPageKey = null
+  if (previous.view === 'album-page') {
+    // Retour vers une page album : restaurer la clé album (sinon displayAlbumPage(null) = blanc)
+    ui.currentAlbumPageKey = previous.albumPageKey || null
+    ui.currentArtistPageKey = previous.artistPageKey || null
+  } else if (previous.view === 'artist-page') {
+    // Retour vers une page artiste
+    ui.currentArtistPageKey = previous.artistPageKey || null
+    ui.currentAlbumPageKey = previous.albumPageKey || null
   } else {
+    // Retour vers une vue standard (albums, artists, tracks, home)
     ui.currentAlbumPageKey = null
     ui.currentArtistPageKey = null
   }
@@ -271,16 +386,8 @@ export function switchView(view) {
     item.classList.toggle('active', item.dataset.view === view)
   })
 
-  const mainContent = document.querySelector('.main-content')
-  mainContent.style.opacity = '0.5'
-  mainContent.style.transition = 'opacity 0.15s ease'
-
-  setTimeout(() => {
-    ui.currentView = view
-    displayCurrentView()
-
-    mainContent.style.opacity = '1'
-  }, 100)
+  ui.currentView = view
+  displayCurrentView()
 }
 
 // ============================================================
@@ -288,18 +395,30 @@ export function switchView(view) {
 // ============================================================
 
 async function generateDiscoveryMixes() {
+  // 1. Cache mémoire ultra-rapide (évite tout calcul pour la même session)
+  const now = Date.now()
+  if (_discoveryMixesMemCache && (now - _discoveryMixesMemCacheAt < DISCOVERY_MEM_TTL)) {
+    discoveryMixes = _discoveryMixesMemCache
+    console.log(`[Discovery] In-memory cache hit (${discoveryMixes.length} mixes)`)
+    return discoveryMixes
+  }
+
+  // 2. Cache localStorage (24h) — plus rapide que recalculer
   try {
     const cached = localStorage.getItem(DISCOVERY_MIX_CACHE_KEY)
     if (cached) {
       const parsed = JSON.parse(cached)
-      if (parsed.timestamp && (Date.now() - parsed.timestamp < DISCOVERY_MIX_TTL)) {
+      if (parsed.timestamp && (now - parsed.timestamp < DISCOVERY_MIX_TTL)) {
         const pathSet = new Set(library.tracks.map(t => t.path))
         const validMixes = parsed.mixes.filter(mix =>
           mix.tracks.some(path => pathSet.has(path))
         )
         if (validMixes.length > 0) {
           discoveryMixes = validMixes
-          console.log(`[Discovery] Loaded ${validMixes.length} mixes from cache`)
+          // Peupler le cache mémoire pour éviter ce chemin à la prochaine navigation
+          _discoveryMixesMemCache = validMixes
+          _discoveryMixesMemCacheAt = now
+          console.log(`[Discovery] Loaded ${validMixes.length} mixes from localStorage cache`)
           return discoveryMixes
         }
       }
@@ -417,6 +536,9 @@ async function generateDiscoveryMixes() {
 export function invalidateDiscoveryMixCache() {
   localStorage.removeItem(DISCOVERY_MIX_CACHE_KEY)
   discoveryMixes = []
+  // Invalider aussi le cache mémoire
+  _discoveryMixesMemCache = null
+  _discoveryMixesMemCacheAt = 0
 }
 
 // ============================================================
@@ -443,7 +565,7 @@ export function displayMixPage(mix) {
 
   pageContainer.innerHTML = `
     <div class="album-page-header">
-      <button class="btn-back-nav" title="Retour">
+      <button class="btn-back-nav" title="Back">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M19 12H5"/>
           <path d="M12 19l-7-7 7-7"/>
@@ -464,7 +586,7 @@ export function displayMixPage(mix) {
       <div class="album-page-info">
         <p class="album-page-artist">${escapeHtml(mix.genre)} \u2014 ${mix.decadeLabel}</p>
         <p class="album-page-meta">
-          ${mixTracks.length} titres &bull; ${formatTime(totalDuration)}
+          ${mixTracks.length} tracks &bull; ${formatTime(totalDuration)}
         </p>
         <div class="album-page-buttons">
           <button class="btn-primary-small play-mix-btn">
@@ -504,7 +626,7 @@ export function displayMixPage(mix) {
 
     const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-'
     const trackArtist = track.metadata?.artist || 'Unknown Artist'
-    const trackTitle = track.metadata?.title || track.name
+    const trackTitle = track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'
 
     trackItem.innerHTML = `
       ${app.getFavoriteButtonHtml(track.path)}
@@ -580,7 +702,7 @@ export function displayAlbumPage(albumKey) {
 
   pageContainer.innerHTML = `
     <div class="album-page-header">
-      <button class="btn-back-nav" title="Retour">
+      <button class="btn-back-nav" title="Back">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M19 12H5"/>
           <path d="M12 19l-7-7 7-7"/>
@@ -598,7 +720,7 @@ export function displayAlbumPage(albumKey) {
       <div class="album-page-info">
         <p class="album-page-artist clickable-artist" data-artist="${escapeHtml(album.artist)}">${escapeHtml(album.artist)}</p>
         <p class="album-page-meta">
-          ${album.tracks.length} titres \u2022 ${formatTime(totalDuration)}${firstTrack?.metadata?.year ? ` \u2022 ${firstTrack.metadata.year}` : ''}
+          ${album.tracks.length} tracks \u2022 ${formatTime(totalDuration)}${firstTrack?.metadata?.year ? ` \u2022 ${firstTrack.metadata.year}` : ''}
           ${qualityTag ? `<span class="album-page-tags">${qualityTag}</span>` : ''}
         </p>
         <div class="album-page-buttons">
@@ -670,10 +792,10 @@ export function displayAlbumPage(albumKey) {
       <span class="track-number">${track.metadata?.track || (idx + 1)}</span>
       ${isMultiArtist
         ? `<div class="track-info">
-            <span class="track-title">${track.metadata?.title || track.name}</span>
-            <span class="track-artist">${trackArtist}</span>
+            <span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>
+            <span class="track-artist">${escapeHtml(trackArtist)}</span>
           </div>`
-        : `<span class="track-title">${track.metadata?.title || track.name}</span>`
+        : `<span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>`
       }
       <button class="track-add-queue${queue.items.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -699,7 +821,7 @@ export function displayAlbumPage(albumKey) {
     trackItem.querySelector('.track-add-queue').addEventListener('click', (e) => {
       e.stopPropagation()
       app.addToQueue(track)
-      app.showQueueNotification(`"${track.metadata?.title || track.name}" added to queue`)
+      app.showQueueNotification(`"${track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'}" added to queue`)
       trackItem.querySelector('.track-add-queue').classList.add('in-queue')
     })
 
@@ -739,7 +861,7 @@ export function displayAlbumPage(albumKey) {
       hiddenImg.style.display = 'none'
       albumPageCoverContainer.appendChild(hiddenImg)
 
-      app.loadThumbnailAsync(album.coverPath, hiddenImg).then(() => {
+      app.loadThumbnailAsync(album.coverPath, hiddenImg, album.artist, album.album).then(() => {
         const cachedSrc = caches.coverCache.get(album.coverPath) || caches.thumbnailCache.get(album.coverPath)
         if (isValidImageSrc(cachedSrc) && albumPageCoverContainer) {
           const placeholder = albumPageCoverContainer.querySelector('.album-cover-placeholder')
@@ -793,7 +915,7 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
         <h2 class="album-detail-title">${album.album}</h2>
         <p class="album-detail-artist">${album.artist}</p>
         <p class="album-detail-meta">
-          ${album.tracks.length} titres \u2022 ${formatTime(totalDuration)}${firstTrack?.metadata?.year ? ` \u2022 ${firstTrack.metadata.year}` : ''}
+          ${album.tracks.length} tracks \u2022 ${formatTime(totalDuration)}${firstTrack?.metadata?.year ? ` \u2022 ${firstTrack.metadata.year}` : ''}
           ${qualityTag ? `<span class="album-detail-tags">${qualityTag}</span>` : ''}
         </p>
         <div class="album-detail-buttons">
@@ -823,7 +945,7 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
       hiddenImg.style.display = 'none'
       detailCoverContainer.appendChild(hiddenImg)
 
-      app.loadThumbnailAsync(album.coverPath, hiddenImg).then(() => {
+      app.loadThumbnailAsync(album.coverPath, hiddenImg, album.artist, album.album).then(() => {
         const cachedCover = caches.coverCache.get(album.coverPath) || caches.thumbnailCache.get(album.coverPath)
         if (isValidImageSrc(cachedCover) && detailCoverContainer) {
           const placeholder = detailCoverContainer.querySelector('.album-cover-placeholder')
@@ -869,8 +991,8 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
         ${app.getFavoriteButtonHtml(track.path)}
         <span class="track-number">${track.metadata?.track || index + 1}</span>
         <div class="track-info">
-          <span class="track-title">${track.metadata?.title || track.name}</span>
-          <span class="track-artist">${trackArtist}</span>
+          <span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>
+          <span class="track-artist">${escapeHtml(trackArtist)}</span>
         </div>
         <span class="track-duration">${duration}</span>
         ${buttonsHtml}
@@ -879,7 +1001,7 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
       trackItem.innerHTML = `
         ${app.getFavoriteButtonHtml(track.path)}
         <span class="track-number">${track.metadata?.track || index + 1}</span>
-        <span class="track-title">${track.metadata?.title || track.name}</span>
+        <span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>
         <span class="track-duration">${duration}</span>
         ${buttonsHtml}
       `
@@ -1077,15 +1199,18 @@ export async function displayHomeView() {
   let lastPlayed, recentTracks, allPlayedAlbums, topArtists
 
   if (cacheValid) {
+    // Cache chaud → rendu instantané sans attendre les invoke Rust
     lastPlayed = caches.homeDataCache.lastPlayed
     recentTracks = caches.homeDataCache.recentTracks
     allPlayedAlbums = caches.homeDataCache.allPlayedAlbums
     topArtists = caches.homeDataCache.topArtists
   } else {
+    // Cache froid (démarrage, après scan_complete, TTL expiré) → bloquer et
+    // attendre les données Rust pour garantir un rendu non-vide dès le premier affichage
     try {
       const [lastPlayedResult, recentTracksResult, allPlayedAlbumsResult, topArtistsResult] = await Promise.all([
         invoke('get_last_played').catch(() => null),
-        invoke('get_recent_albums', { days: 15 }).catch(() => []),
+        invoke('get_recent_albums', { days: 30 }).catch(() => []),
         invoke('get_all_played_albums').catch(() => []),
         invoke('get_top_artists', { limit: 20 }).catch(() => [])
       ])
@@ -1098,7 +1223,7 @@ export async function displayHomeView() {
       caches.homeDataCache.recentTracks = recentTracks
       caches.homeDataCache.allPlayedAlbums = allPlayedAlbums
       caches.homeDataCache.topArtists = topArtists
-      caches.homeDataCache.lastFetch = now
+      caches.homeDataCache.lastFetch = Date.now()
       caches.homeDataCache.isValid = true
     } catch (err) {
       console.error('Erreur chargement historique:', err)
@@ -1115,8 +1240,14 @@ export async function displayHomeView() {
   homeContainer.className = 'home-container'
 
   // === 1. Now Playing / Resume tile ===
-  const isCurrentlyPlaying = playback.audioIsPlaying && playback.currentTrackIndex >= 0
-  const currentTrack = isCurrentlyPlaying ? library.tracks[playback.currentTrackIndex] : null
+  // hasActiveTrack = une track est chargée (en lecture OU en pause)
+  // isCurrentlyPlaying = elle joue activement (pour l'icône du bouton)
+  const hasActiveTrack = playback.currentTrackIndex >= 0
+  const isCurrentlyPlaying = playback.audioIsPlaying && hasActiveTrack
+  // Si une track est chargée, on l'affiche en priorité (même si pausée)
+  // → évite la race condition PASSE 2 qui re-rendrait "Resume Playback"
+  //   pendant les ~200ms avant que audio_play ne confirme audioIsPlaying=true
+  const currentTrack = hasActiveTrack ? library.tracks[playback.currentTrackIndex] : null
   const displayTrack = currentTrack || (lastPlayed && lastPlayed.path ? lastPlayed : null)
 
   if (displayTrack) {
@@ -1131,7 +1262,8 @@ export async function displayHomeView() {
     const title = currentTrack?.metadata?.title || currentTrack?.name || displayTrack.title || 'Titre inconnu'
     const artist = currentTrack?.metadata?.artist || displayTrack.artist || 'Unknown Artist'
     const albumName = currentTrack?.metadata?.album || displayTrack.album || ''
-    const label = isCurrentlyPlaying ? 'Now Playing' : 'Resume Playback'
+    // Label "Now Playing" dès qu'une track est chargée, "Resume Playback" seulement si rien de chargé
+    const label = hasActiveTrack ? 'Now Playing' : 'Resume Playback'
 
     let specsTagsHtml = ''
     if (currentTrack?.metadata) {
@@ -1161,7 +1293,7 @@ export async function displayHomeView() {
         <div class="resume-cover-placeholder">\u266A</div>
       </div>
       <div class="resume-info">
-        <span class="resume-label${isCurrentlyPlaying ? ' resume-label-active' : ''}">${label}</span>
+        <span class="resume-label${hasActiveTrack ? ' resume-label-active' : ''}">${label}</span>
         <span class="resume-title">${escapeHtml(title)}</span>
         <span class="resume-artist">${escapeHtml(artist)}</span>
         ${albumName ? `<span class="resume-album">${escapeHtml(albumName)}</span>` : ''}
@@ -1170,8 +1302,8 @@ export async function displayHomeView() {
       <button class="resume-play-btn">${isCurrentlyPlaying ? '\u23F8' : '\u25B6'}</button>
     `
 
-    // Particle animation for currently playing track
-    if (isCurrentlyPlaying) {
+    // Particle animation si une track est chargée (lecture ou pause)
+    if (hasActiveTrack) {
       createParticleCanvas(resumeTile)
     }
 
@@ -1217,6 +1349,7 @@ export async function displayHomeView() {
       }
     }
 
+
     for (const entry of uniqueTracks) {
       const albumKey = entry.album || 'Unknown Album'
       const album = library.albums[albumKey]
@@ -1232,7 +1365,6 @@ export async function displayHomeView() {
         <div class="recent-track-info">
           <span class="recent-track-title">${escapeHtml(entry.title) || 'Titre inconnu'}</span>
           <span class="recent-track-artist">${escapeHtml(entry.artist) || 'Unknown Artist'}</span>
-          <span class="recent-track-album">${escapeHtml(entry.album) || ''}</span>
         </div>
       `
 
@@ -1241,7 +1373,7 @@ export async function displayHomeView() {
 
       const coverPath = (album && album.coverPath) ? album.coverPath : entry.path
       if (img && placeholder) {
-        const cachedCover = caches.coverCache.get(coverPath)
+        const cachedCover = caches.coverCache.get(coverPath) || caches.thumbnailCache.get(coverPath)
         if (!loadCachedImage(img, placeholder, cachedCover)) {
           app.loadThumbnailAsync(coverPath, img, entry.artist, entry.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
@@ -1643,7 +1775,7 @@ export async function displayHomeView() {
           </div>
         </div>
         <div class="carousel-title">${escapeHtml(mix.title)}</div>
-        <div class="carousel-artist">${mix.trackCount} titres</div>
+        <div class="carousel-artist">${mix.trackCount} tracks</div>
       `
 
       const img = item.querySelector('.discovery-mix-bg-img')
@@ -1700,6 +1832,14 @@ export async function displayHomeView() {
           playBtn.textContent = '\u23F8'
         } catch (err) {
           app.playTrack(playback.currentTrackIndex)
+        }
+      } else {
+        // Aucune track chargée cette session — trouver la track affichée dans la tuile et la jouer
+        const tile = playBtn.closest('.home-resume-tile')
+        const trackPath = tile?.dataset.trackPath
+        if (trackPath) {
+          const trackIndex = library.tracks.findIndex(t => t.path === trackPath)
+          if (trackIndex !== -1) app.playTrack(trackIndex)
         }
       }
       return
@@ -1926,11 +2066,20 @@ export function displayAlbumsGrid() {
   const existingNav = document.querySelector('.alphabet-nav')
   if (existingNav) existingNav.remove()
 
+  // Empty state : librairie vide (pas de filtre actif)
+  if (library.tracks.length === 0 && !ui.filteredArtist) {
+    dom.albumsGridDiv.appendChild(createEmptyLibraryState(
+      'No albums',
+      'Add music folders to get started.'
+    ))
+    return
+  }
+
   if (ui.filteredArtist) {
     const header = document.createElement('div')
     header.className = 'view-header'
     header.innerHTML = `
-      <button class="btn-back-nav" title="Retour">
+      <button class="btn-back-nav" title="Back">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M19 12H5"/>
           <path d="M12 19l-7-7 7-7"/>
@@ -1953,7 +2102,7 @@ export function displayAlbumsGrid() {
     headerDiv.innerHTML = `
       <h1 class="view-title">Albums</h1>
       <div class="artist-sort-dropdown">
-        <button id="album-sort-btn" class="btn-sort-icon" title="Trier">
+        <button id="album-sort-btn" class="btn-sort-icon" title="Sort">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 6h18"/>
             <path d="M7 12h10"/>
@@ -2044,23 +2193,38 @@ export function displayAlbumsGrid() {
 
     card.innerHTML = `
       <div class="album-cover">
-        <img class="album-cover-img" ${hasCachedCover ? `src="${cachedCover}"` : 'style="display: none;"'} alt="${album.album}">
+        <img class="album-cover-img" ${hasCachedCover ? `src="${cachedCover}"` : 'style="display: none;"'} alt="${escapeHtml(album.album)}">
         <div class="album-cover-placeholder" ${hasCachedCover ? 'style="display: none;"' : ''}>\u266A</div>
       </div>
-      <div class="album-title">${album.album}</div>
-      <div class="album-artist">${album.artist}</div>
+      <div class="album-title">${escapeHtml(album.album)}</div>
+      <div class="album-artist">${escapeHtml(album.artist)}</div>
     `
 
     if (!hasCachedCover && album.coverPath) {
-      app.observeCoverLoading(card, album.coverPath)
+      // Passe artist/album pour activer le fallback Internet (MusicBrainz) si pas de cover embarquée
+      app.observeCoverLoading(card, album.coverPath, album.artist, album.album)
     }
 
     gridContainer.appendChild(card)
   }
 
+  // Empty state when search yields no results
+  if (gridContainer.children.length === 0 && search.query) {
+    gridContainer.appendChild(createEmptySearchState('albums'))
+  }
+
   // Event delegation: 3 listeners on the container instead of 3×N on each card
   gridContainer.addEventListener('click', (e) => {
     if (isDragging()) return
+    // Handle "clear search" button inside empty state
+    const clearBtn = e.target.closest('.empty-search-clear')
+    if (clearBtn) {
+      search.query = ''
+      const input = document.getElementById('search-input')
+      if (input) input.value = ''
+      displayCurrentView()
+      return
+    }
     const card = e.target.closest('.album-card')
     if (!card) return
     const key = card.dataset.albumKey
@@ -2091,13 +2255,22 @@ export function displayArtistsGrid() {
   dom.albumsGridDiv.textContent = ''
   dom.albumsGridDiv.classList.remove('tracks-mode')
 
+  // Empty state : librairie vide
+  if (library.tracks.length === 0) {
+    dom.albumsGridDiv.appendChild(createEmptyLibraryState(
+      'No artists',
+      'Add music folders to get started.'
+    ))
+    return
+  }
+
   const headerDiv = document.createElement('div')
   headerDiv.className = 'view-header-with-sort'
 
   headerDiv.innerHTML = `
-    <h1 class="view-title">Artistes</h1>
+    <h1 class="view-title">Artists</h1>
     <div class="artist-sort-dropdown">
-      <button id="artist-sort-btn" class="btn-sort-icon" title="Trier">
+      <button id="artist-sort-btn" class="btn-sort-icon" title="Sort">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 6h18"/>
           <path d="M7 12h10"/>
@@ -2169,16 +2342,20 @@ export function displayArtistsGrid() {
     const card = document.createElement('div')
     card.className = 'album-card artist-card'
 
-    const albumCount = artist.albums.length
+    const albumCount = artist.albums.size
     const trackCount = artist.tracks.length
+
+    const metaText = albumCount > 0
+      ? `${albumCount} album${albumCount > 1 ? 's' : ''} \u2022 ${trackCount} track${trackCount > 1 ? 's' : ''}`
+      : `${trackCount} track${trackCount > 1 ? 's' : ''}`
 
     card.innerHTML = `
       <div class="album-cover artist-cover">
-        <img class="album-cover-img" style="display: none;" alt="${artist.name}">
+        <img class="album-cover-img" style="display: none;" alt="${escapeHtml(artist.name)}">
         <div class="album-cover-placeholder">\u266A</div>
       </div>
-      <div class="album-title">${artist.name}</div>
-      <div class="album-artist">${albumCount} album${albumCount > 1 ? 's' : ''} \u2022 ${trackCount} titre${trackCount > 1 ? 's' : ''}</div>
+      <div class="album-title">${escapeHtml(artist.name)}</div>
+      <div class="album-artist">${metaText}</div>
     `
 
     const img = card.querySelector('.album-cover-img')
@@ -2187,11 +2364,8 @@ export function displayArtistsGrid() {
     const firstAlbum = artist.albums.length > 0 ? artist.albums[0] : null
     const fallbackCoverPath = artist.coverPath || null
 
-    app.loadArtistImageAsync(artist.name, img, firstAlbum, fallbackCoverPath).then(() => {
-      if (img.style.display === 'block') {
-        placeholder.style.display = 'none'
-      }
-    })
+    // Lazy loading via IntersectionObserver (comme la grille albums)
+    app.observeArtistLoading(card, artist.name, firstAlbum, fallbackCoverPath)
 
     card.dataset.artistKey = artistKey
 
@@ -2200,8 +2374,22 @@ export function displayArtistsGrid() {
     alphabetItems.push({ name: artist.name, element: card })
   }
 
+  // Empty state when search yields no results
+  if (gridContainer.children.length === 0 && search.query) {
+    gridContainer.appendChild(createEmptySearchState('artistes'))
+  }
+
   // Event delegation: 1 listener on the container instead of 1×N on each card
   gridContainer.addEventListener('click', (e) => {
+    // Handle "clear search" button inside empty state
+    const clearBtn = e.target.closest('.empty-search-clear')
+    if (clearBtn) {
+      search.query = ''
+      const input = document.getElementById('search-input')
+      if (input) input.value = ''
+      displayCurrentView()
+      return
+    }
     const card = e.target.closest('.artist-card')
     if (card?.dataset.artistKey) showArtistAlbums(card.dataset.artistKey)
   })
@@ -2248,12 +2436,20 @@ export function displayArtistPage(artistKey) {
   const totalTracks = artist.tracks.length
   const totalDuration = artist.tracks.reduce((acc, t) => acc + (t.metadata?.duration || 0), 0)
 
+  // Build smart meta line: skip "0 album" when artist has no full albums
+  const fullAlbumsCount = Object.keys(library.albums)
+    .filter(key => library.albums[key].artist === artistKey && library.albums[key].tracks.length > 1).length
+  const metaParts = []
+  if (fullAlbumsCount > 0) metaParts.push(`${fullAlbumsCount} album${fullAlbumsCount > 1 ? 's' : ''}`)
+  metaParts.push(`${totalTracks} track${totalTracks > 1 ? 's' : ''}`)
+  metaParts.push(formatTime(totalDuration))
+
   const pageContainer = document.createElement('div')
   pageContainer.className = 'artist-page-container'
 
   pageContainer.innerHTML = `
     <div class="album-page-header">
-      <button class="btn-back-nav" title="Retour">
+      <button class="btn-back-nav" title="Back">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M19 12H5"/>
           <path d="M12 19l-7-7 7-7"/>
@@ -2268,14 +2464,14 @@ export function displayArtistPage(artistKey) {
       </div>
       <div class="artist-page-info">
         <p class="artist-page-meta">
-          ${artistAlbums.length} album${artistAlbums.length > 1 ? 's' : ''} \u2022 ${totalTracks} titre${totalTracks > 1 ? 's' : ''} \u2022 ${formatTime(totalDuration)}
+          ${metaParts.join(' \u2022 ')}
         </p>
         <div class="artist-page-buttons">
           <button class="btn-primary-small play-artist-btn">
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z"/>
             </svg>
-            Tout lire
+            Play All
           </button>
           <button class="btn-add-queue-album add-artist-queue-btn" title="Add to queue">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2315,6 +2511,7 @@ export function displayArtistPage(artistKey) {
   const firstAlbum = artist.albums.length > 0 ? artist.albums[0] : null
   const fallbackCoverPath = artist.coverPath || null
 
+  // Chargement direct (photo déjà visible dans la page — pas besoin de lazy loading)
   app.loadArtistImageAsync(artist.name, img, firstAlbum, fallbackCoverPath).then(() => {
     if (img.style.display === 'block') {
       placeholder.style.display = 'none'
@@ -2331,6 +2528,12 @@ export function displayArtistPage(artistKey) {
 
   const albumsGrid = pageContainer.querySelector('.artist-albums-grid')
 
+  // Drag album → playlist depuis la vue artiste
+  albumsGrid.addEventListener('mousedown', (e) => {
+    const card = e.target.closest('.album-card')
+    if (card?.dataset.albumKey) app.prepareAlbumDrag(e, card.dataset.albumKey, card)
+  })
+
   // Full albums
   for (const albumData of fullAlbums) {
     const card = document.createElement('div')
@@ -2345,11 +2548,11 @@ export function displayArtistPage(artistKey) {
 
     card.innerHTML = `
       <div class="album-cover">
-        <img class="album-cover-img" ${hasCachedCover ? `src="${cachedCover}"` : 'style="display: none;"'} alt="${albumData.album}">
+        <img class="album-cover-img" ${hasCachedCover ? `src="${cachedCover}"` : 'style="display: none;"'} alt="${escapeHtml(albumData.album)}">
         <div class="album-cover-placeholder" ${hasCachedCover ? 'style="display: none;"' : ''}>\u266A</div>
       </div>
-      <div class="album-title">${albumData.album}</div>
-      <div class="album-artist">${albumData.tracks.length} titre${albumData.tracks.length > 1 ? 's' : ''}${yearText}</div>
+      <div class="album-title">${escapeHtml(albumData.album)}</div>
+      <div class="album-artist">${albumData.tracks.length} track${albumData.tracks.length > 1 ? 's' : ''}${yearText}</div>
     `
 
     if (!hasCachedCover && albumData.coverPath) {
@@ -2388,17 +2591,16 @@ export function displayArtistPage(artistKey) {
       trackItem.className = 'album-track-item'
       trackItem.dataset.trackPath = track.path
 
-      const title = track.metadata?.title || track.name
+      const title = track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown' || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'
       const albumName = track.metadata?.album || ''
       const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-'
       const trackNum = track.metadata?.track || (idx + 1)
 
       trackItem.innerHTML = `
         ${app.getFavoriteButtonHtml(track.path)}
-        <span class="track-number">${trackNum}</span>
+        <span class="track-number">${idx + 1}</span>
         <div class="track-info">
           <span class="track-title">${escapeHtml(title)}</span>
-          <span class="track-artist">${escapeHtml(albumName)}</span>
         </div>
         <button class="track-add-queue${queue.items.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2423,7 +2625,7 @@ export function displayArtistPage(artistKey) {
       trackItem.querySelector('.track-add-queue').addEventListener('click', (e) => {
         e.stopPropagation()
         app.addToQueue(track)
-        app.showQueueNotification(`"${track.metadata?.title || track.name}" added to queue`)
+        app.showQueueNotification(`"${track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'}" added to queue`)
         trackItem.querySelector('.track-add-queue').classList.add('in-queue')
       })
 
@@ -2510,7 +2712,7 @@ export function getSortedAndFilteredTracks() {
       })
     } else {
       sortedTracks = sortedTracks.filter(track => {
-        const title = (track.metadata?.title || track.name).toLowerCase()
+        const title = (track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown').toLowerCase()
         const artist = (track.metadata?.artist || '').toLowerCase()
         const album = (track.metadata?.album || '').toLowerCase()
         return title.includes(search.query) || artist.includes(search.query) || album.includes(search.query)
@@ -2526,7 +2728,7 @@ export function createPoolNode() {
   el.className = 'tracks-list-item'
   el.style.cssText = 'position: absolute; left: 0; right: 0; height: ' + TRACK_ITEM_HEIGHT + 'px;'
   el.innerHTML = `
-    <button class="track-favorite-btn" title="Favoris">
+    <button class="track-favorite-btn" title="Favorites">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
       </svg>
@@ -2599,7 +2801,7 @@ export function updateVirtualScrollItems() {
       el.dataset.trackPath = track.path
       el.dataset.virtualIndex = trackIndex
 
-      el._title.textContent = track.metadata?.title || track.name
+      el._title.textContent = track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'
       el._artist.textContent = track.metadata?.artist || 'Unknown Artist'
       el._album.textContent = track.metadata?.album || ''
       el._duration.textContent = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
@@ -2607,7 +2809,7 @@ export function updateVirtualScrollItems() {
       el._quality.className = 'quality-tag ' + quality.class
 
       el._favBtn.classList.toggle('active', isFav)
-      el._favBtn.title = isFav ? 'Retirer des favoris' : 'Ajouter aux favoris'
+      el._favBtn.title = isFav ? 'Remove from favorites' : 'Add to favorites'
       el._favSvg.setAttribute('fill', isFav ? 'currentColor' : 'none')
       el._queueBtn.classList.toggle('in-queue', isInQueue)
       el._queueBtn.title = isInQueue ? 'Remove from queue' : 'Add to queue'
@@ -2642,7 +2844,20 @@ export function displayTracksGrid() {
   headerDiv.innerHTML = `<h1 class="view-title">Tracks</h1>`
   dom.albumsGridDiv.appendChild(headerDiv)
 
+  // Empty state : librairie vide (avant le virtual scroll pour éviter height:0)
+  if (library.tracks.length === 0) {
+    virtualScrollState.filteredTracks = []
+    ui.tracksViewOrder = []
+    dom.albumsGridDiv.appendChild(createEmptyLibraryState(
+      'No tracks',
+      'Add music folders to get started.'
+    ))
+    return
+  }
+
   virtualScrollState.filteredTracks = getSortedAndFilteredTracks()
+  // Expose l'ordre visuel au module playback (navigation séquentielle en contexte 'library')
+  ui.tracksViewOrder = virtualScrollState.filteredTracks.map(t => t.path)
   const totalTracks = virtualScrollState.filteredTracks.length
 
   const tracksContainer = document.createElement('div')
@@ -2854,6 +3069,8 @@ export function updateTracksFilter() {
   }
 
   virtualScrollState.filteredTracks = getSortedAndFilteredTracks()
+  // Expose l'ordre visuel au module playback (navigation séquentielle en contexte 'library')
+  ui.tracksViewOrder = virtualScrollState.filteredTracks.map(t => t.path)
   const totalTracks = virtualScrollState.filteredTracks.length
 
   if (virtualScrollState.contentContainer) {

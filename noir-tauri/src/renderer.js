@@ -5,7 +5,7 @@
 // === IMPORTS ===
 
 // State centralisé & Tauri API
-import { library, playback, ui, queue, caches, dom } from './state.js'
+import { library, playback, ui, queue, caches, dom, favorites } from './state.js'
 import { invoke } from './state.js'
 
 // Médiateur cross-module
@@ -17,11 +17,27 @@ import { showToast } from './utils.js'
 // Auto-update
 import { initAutoUpdate } from './auto-update.js'
 
+// Feedback
+import { initFeedbackButton } from './feedback.js'
+
+// Network / NAS
+import { initNetworkUI, populateNetworkSources } from './network.js'
+
+// Onboarding
+import { initOnboarding } from './onboarding.js'
+
 // EQ
 import {
   eqInit, openEqPanel, closeEqPanel, toggleEqPanel,
   getEqPanelOpen, setEqPanelCallbacks
 } from './eq.js'
+
+// Lyrics
+import {
+  toggleLyricsPanel, closeLyricsPanel, isLyricsPanelOpen,
+  toggleFullscreenLyrics, closeFullscreenLyrics, isFullscreenLyricsOpen,
+  loadLyricsForTrack, syncLyricsToTime
+} from './lyrics.js'
 
 // Modules extraits
 import { initCustomDragSystem, prepareCustomDrag, prepareAlbumDrag } from './drag.js'
@@ -32,7 +48,7 @@ import {
 import {
   initCoverObserver, selectFolder, groupTracksIntoAlbumsAndArtists,
   buildTrackLookup, loadCoverAsync, loadThumbnailAsync, loadArtistImageAsync,
-  observeCoverLoading, startBackgroundScan, invalidateHomeCache,
+  observeCoverLoading, observeArtistLoading, startBackgroundScan, invalidateHomeCache,
   updateIndexationStats, initScanListeners, initLibrary, removeTracksFromLibrary,
   invalidateDiscoveryMixCache as libInvalidateDiscoveryMixCache
 } from './library.js'
@@ -60,7 +76,8 @@ import {
   loadPlaylists, updatePlaylistsSidebar, addTrackToPlaylist,
   showAddToPlaylistMenu, showAddToPlaylistMenuMulti,
   displayPlaylistView, showPlaylistModal, initPlaylists,
-  exportPlaylistM3u, importPlaylistM3u
+  exportPlaylistM3u, importPlaylistM3u, createPlaylistFromAlbum,
+  getPlaylistById
 } from './playlists.js'
 import {
   initShortcuts, activeShortcuts, formatShortcutDisplay,
@@ -104,11 +121,15 @@ app.loadThumbnailAsync = loadThumbnailAsync
 app.loadCoverAsync = loadCoverAsync
 app.loadArtistImageAsync = loadArtistImageAsync
 app.observeCoverLoading = observeCoverLoading
+app.observeArtistLoading = observeArtistLoading
 app.initCoverObserver = initCoverObserver
 app.startBackgroundScan = startBackgroundScan
 app.updateIndexationStats = updateIndexationStats
 app.removeTracksFromLibrary = removeTracksFromLibrary
 app.selectFolder = selectFolder
+
+// Network / NAS
+app.populateNetworkSources = populateNetworkSources
 
 // Playback
 app.playTrack = playTrack
@@ -153,6 +174,7 @@ app.toggleFavorite = toggleFavorite
 app.getFavoriteButtonHtml = getFavoriteButtonHtml
 app.loadPlaylists = loadPlaylists
 app.updatePlaylistsSidebar = updatePlaylistsSidebar
+app.createPlaylistFromAlbum = createPlaylistFromAlbum
 app.addTrackToPlaylist = addTrackToPlaylist
 app.showAddToPlaylistMenu = showAddToPlaylistMenu
 app.showAddToPlaylistMenuMulti = showAddToPlaylistMenuMulti
@@ -160,6 +182,7 @@ app.displayPlaylistView = displayPlaylistView
 app.showPlaylistModal = showPlaylistModal
 app.exportPlaylistM3u = exportPlaylistM3u
 app.importPlaylistM3u = importPlaylistM3u
+app.getPlaylistById = getPlaylistById
 
 // Views
 app.displayCurrentView = displayCurrentView
@@ -178,6 +201,14 @@ app.getVirtualScrollState = getVirtualScrollState
 // Fullscreen player
 app.toggleFullscreenPlayer = toggleFullscreenPlayer
 app.closeFullscreenPlayer = closeFullscreenPlayer
+
+// Lyrics
+app.closeLyricsPanel = closeLyricsPanel
+app.isLyricsPanelOpen = isLyricsPanelOpen
+app.isFullscreenLyricsOpen = isFullscreenLyricsOpen
+app.loadLyricsForTrack = loadLyricsForTrack
+app.syncLyricsToTime = syncLyricsToTime
+app.closeFullscreenLyrics = closeFullscreenLyrics
 
 // addAlbumToQueue — ajoute tous les tracks d'un album à la queue
 app.addAlbumToQueue = function addAlbumToQueue(albumKey) {
@@ -201,12 +232,14 @@ function openSettings() {
   if (ui.isQueuePanelOpen) toggleQueuePanel()
   if (ui.isTrackInfoPanelOpen) closeTrackInfoPanel()
   if (getEqPanelOpen()) closeEqPanel()
+  closeLyricsPanel()
 
   ui.isSettingsPanelOpen = true
   panel.classList.add('open')
 
   populateSettingsAudioDevices()
   populateSettingsLibraryPaths()
+  populateNetworkSources()
   populateSettingsValues()
   populateShortcutsList()
 }
@@ -271,7 +304,7 @@ async function populateSettingsAudioDevices() {
     }
   } catch (e) {
     console.error('[SETTINGS] Error loading audio devices:', e)
-    select.innerHTML = '<option value="">Erreur de chargement</option>'
+    select.innerHTML = '<option value="">Loading error</option>'
   }
 }
 
@@ -293,7 +326,7 @@ async function populateSettingsLibraryPaths() {
       item.className = 'settings-path-item'
       item.innerHTML = `
         <span class="settings-path-text" title="${p}">${p}</span>
-        <button class="settings-path-remove" title="Retirer ce dossier" data-path="${p}">
+        <button class="settings-path-remove" title="Remove this folder" data-path="${p}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
           </svg>
@@ -317,6 +350,20 @@ async function populateSettingsLibraryPaths() {
           buildTrackLookup()
           displayCurrentView()
           updateIndexationStats(stats)
+
+          // Check if library is now completely empty → show welcome/setup
+          if (library.tracks.length === 0) {
+            const remainingPaths = await invoke('get_library_paths')
+            let networkSources = []
+            try { networkSources = await invoke('get_network_sources') } catch (_) {}
+            if (remainingPaths.length === 0 && networkSources.length === 0) {
+              if (dom.welcomeDiv) dom.welcomeDiv.classList.remove('hidden')
+              const setupBtn = document.getElementById('setup-library-btn')
+              const openBtn = document.getElementById('open-folder-welcome')
+              if (setupBtn) setupBtn.style.display = ''
+              if (openBtn) openBtn.style.display = 'none'
+            }
+          }
         } catch (e) {
           console.error('[SETTINGS] Error removing library path:', e)
           showToast('Error removing folder')
@@ -344,7 +391,7 @@ function populateShortcutsList() {
     const keyBtn = document.createElement('button')
     keyBtn.className = 'settings-shortcut-key'
     keyBtn.textContent = formatShortcutDisplay(binding)
-    keyBtn.title = 'Cliquer pour modifier'
+    keyBtn.title = 'Click to edit'
     keyBtn.dataset.action = action
     keyBtn.addEventListener('click', () => startShortcutCapture(action, keyBtn))
 
@@ -365,7 +412,7 @@ function startShortcutCapture(action, buttonEl) {
 
   shortcutCaptureAction = action
   buttonEl.classList.add('capturing')
-  buttonEl.textContent = 'Appuyez...'
+  buttonEl.textContent = 'Press key...'
 
   const captureHandler = (e) => {
     e.preventDefault()
@@ -445,6 +492,19 @@ function initSettingsPanel() {
   const closeBtn = document.getElementById('close-settings')
   if (closeBtn) {
     closeBtn.addEventListener('click', closeSettings)
+  }
+
+  // Quitter Noir — ferme proprement l'app (sur macOS la croix rouge cache seulement)
+  const quitBtn = document.getElementById('settings-quit-btn')
+  if (quitBtn) {
+    quitBtn.addEventListener('click', async () => {
+      try {
+        await invoke('quit_app')
+      } catch (e) {
+        // Fallback si la commande échoue
+        console.error('[QUIT] quit_app failed:', e)
+      }
+    })
   }
 
   const audioSelect = document.getElementById('settings-audio-device')
@@ -552,15 +612,24 @@ function initSidebarResize() {
   let startX = 0
   let startWidth = 0
 
-  const savedWidth = localStorage.getItem('sidebarWidth')
-  if (savedWidth) {
-    const width = parseInt(savedWidth, 10)
-    if (width >= 180 && width <= 400) {
-      sidebar.style.width = `${width}px`
+  // Responsive : clear inline width when collapsed breakpoint is active
+  const collapseMq = window.matchMedia('(max-width: 900px)')
+  function handleSidebarBreakpoint(e) {
+    if (e.matches) {
+      sidebar.style.width = ''  // Clear inline → media query 60px takes over
+    } else {
+      const saved = localStorage.getItem('sidebarWidth')
+      if (saved) {
+        const w = parseInt(saved, 10)
+        if (w >= 180 && w <= 400) sidebar.style.width = `${w}px`
+      }
     }
   }
+  collapseMq.addEventListener('change', handleSidebarBreakpoint)
+  handleSidebarBreakpoint(collapseMq)
 
   resizeHandle.addEventListener('mousedown', (e) => {
+    if (collapseMq.matches) return  // Don't allow resize when collapsed
     isResizing = true
     startX = e.clientX
     startWidth = sidebar.offsetWidth
@@ -617,7 +686,7 @@ async function handleAutoResume() {
         playback.currentTrackIndex = trackIndex
         const track = library.tracks[trackIndex]
         const meta = track.metadata || {}
-        document.getElementById('track-name').textContent = meta.title || track.name || 'Titre inconnu'
+        document.getElementById('track-name').textContent = meta.title || track.name || 'Unknown Title'
         document.getElementById('track-folder').textContent = meta.artist || 'Unknown Artist'
         const player = document.getElementById('player')
         if (player) player.classList.remove('hidden')
@@ -647,6 +716,13 @@ async function init() {
   if (savedPaths.length === 0) {
     console.log('[INIT] No library paths configured')
     updateIndexationStats({ artists_count: 0, albums_count: 0, mp3_count: 0, flac_16bit_count: 0, flac_24bit_count: 0 })
+
+    // Check if there are network sources — if none, show onboarding
+    let networkSources = []
+    try { networkSources = await invoke('get_network_sources') } catch (_) {}
+    if (networkSources.length === 0) {
+      setTimeout(() => { if (app.showOnboarding) app.showOnboarding() }, 300)
+    }
     return
   }
 
@@ -681,9 +757,36 @@ async function init() {
     console.log('[INIT] Albums count:', Object.keys(library.albums).length)
     console.log('[INIT] Artists count:', Object.keys(library.artists).length)
 
-    dom.welcomeDiv.classList.add('hidden')
+    if (dom.welcomeDiv) dom.welcomeDiv.classList.add('hidden')
+
+    // Nettoyer les favoris stale (JS synchrone, instantané)
+    const trackPathsSet = new Set(library.tracks.map(t => t.path))
+    const stalePaths = [...favorites.tracks].filter(p => !trackPathsSet.has(p))
+    if (stalePaths.length > 0) {
+      console.log(`[INIT] Cleaning ${stalePaths.length} stale favorites`)
+      for (const stalePath of stalePaths) {
+        favorites.tracks.delete(stalePath)
+      }
+    }
+
+    // Afficher les vues IMMÉDIATEMENT (pas de blocage)
     console.log('[INIT] Displaying current view:', ui.currentView)
     displayCurrentView()
+
+    // Rebuild la sidebar playlists maintenant que library.tracks est peuplé
+    if (app.updatePlaylistsSidebar) app.updatePlaylistsSidebar()
+
+    // Persister le nettoyage côté Rust EN ARRIÈRE-PLAN (non-bloquant)
+    if (stalePaths.length > 0) {
+      ;(async () => {
+        for (const p of stalePaths) {
+          try { await invoke('toggle_favorite', { trackPath: p }) } catch (_) {}
+        }
+        await loadPlaylists()
+        if (app.updatePlaylistsSidebar) app.updatePlaylistsSidebar()
+        console.log(`[INIT] Stale favorites persisted to Rust`)
+      })()
+    }
 
     updateIndexationStats(cachedStats)
 
@@ -715,7 +818,7 @@ initLibrary()
 initScanListeners()
 
 // Lance l'init principale
-init()
+init().catch(err => console.error('[INIT] FATAL:', err))
 
 // Sauvegarde du cache
 window.addEventListener('beforeunload', () => {
@@ -729,6 +832,10 @@ setInterval(() => {
 // Boutons de sélection de dossier
 dom.selectFolderBtn.addEventListener('click', selectFolder)
 dom.openFolderWelcomeBtn.addEventListener('click', selectFolder)
+
+// Setup library button (shown after skip onboarding)
+const setupLibraryBtn = document.getElementById('setup-library-btn')
+if (setupLibraryBtn) setupLibraryBtn.addEventListener('click', () => app.showOnboarding?.())
 
 // === DOM READY ===
 
@@ -753,6 +860,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // Auto-update
   initAutoUpdate()
 
+  // Feedback button
+  initFeedbackButton()
+
+  // Network / NAS UI
+  initNetworkUI()
+
+  // Onboarding
+  initOnboarding()
+
   // EQ avec callbacks pour fermer les autres panels
   setEqPanelCallbacks({
     closeOtherPanels: () => {
@@ -763,6 +879,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (ui.isQueuePanelOpen) toggleQueuePanel()
       if (ui.isTrackInfoPanelOpen) closeTrackInfoPanel()
       if (ui.isSettingsPanelOpen) closeSettings()
+      closeLyricsPanel()
     }
   })
   setTimeout(eqInit, 500)
@@ -772,11 +889,22 @@ document.addEventListener('DOMContentLoaded', () => {
   setNextTrackInfoCallback(getNextTrackInfo)
   setCurrentTrackPathCallback(getCurrentTrackPath)
 
-  // Cover double-click opens fullscreen
-  const coverArt = document.getElementById('cover-art')
-  if (coverArt) {
-    coverArt.addEventListener('dblclick', () => toggleFullscreenPlayer())
-  }
+  // === LYRICS ===
+  document.getElementById('btn-lyrics')?.addEventListener('click', toggleLyricsPanel)
+  document.getElementById('close-lyrics')?.addEventListener('click', closeLyricsPanel)
+  document.getElementById('fs-lyrics-btn')?.addEventListener('click', toggleFullscreenLyrics)
+
+  // Cover click → fullscreen (single click, via overlay button)
+  document.getElementById('cover-fs-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    toggleFullscreenPlayer()
+  })
+
+  // Artist link → navigate to artist page
+  document.getElementById('track-folder')?.addEventListener('click', () => {
+    const artistName = document.getElementById('track-folder')?.textContent?.trim()
+    if (artistName && artistName !== '-') app.navigateToArtistPage?.(artistName)
+  })
 
   // Fullscreen close button
   const fsClose = document.getElementById('fs-close')

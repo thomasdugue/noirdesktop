@@ -56,7 +56,7 @@ export function initCustomDragSystem() {
 
         if (customDragState.albumKey && library.albums[customDragState.albumKey]) {
           const album = library.albums[customDragState.albumKey]
-          customDragState.ghostElement.textContent = '\uD83D\uDCBF ' + album.album + ' (' + album.tracks.length + ' titres)'
+          customDragState.ghostElement.textContent = '\uD83D\uDCBF ' + album.album + ' (' + album.tracks.length + ' tracks)'
         } else if (customDragState.track) {
           const title = customDragState.track.metadata?.title || customDragState.track.name
           customDragState.ghostElement.textContent = '\u266A ' + title
@@ -105,9 +105,13 @@ export function initCustomDragSystem() {
     }
 
     if (wasDragging) {
-      const playlistItem = document.elementFromPoint(e.clientX, e.clientY)?.closest('.playlist-item')
+      const dropTarget = document.elementFromPoint(e.clientX, e.clientY)
+      const playlistItem = dropTarget?.closest('.playlist-item')
+      const playlistsSidebar = document.querySelector('.sidebar-playlists')
+      const isInSidebar = playlistsSidebar && (playlistsSidebar === dropTarget || playlistsSidebar.contains(dropTarget))
 
       if (playlistItem) {
+        // Drop sur une playlist existante → ajouter les tracks
         const playlistId = playlistItem.dataset.playlistId
         if (playlistId) {
           if (customDragState.albumKey && library.albums[customDragState.albumKey]) {
@@ -120,6 +124,9 @@ export function initCustomDragSystem() {
             await app.addTrackToPlaylist(playlistId, customDragState.track)
           }
         }
+      } else if (isInSidebar && customDragState.albumKey && library.albums[customDragState.albumKey]) {
+        // Drop sur la sidebar playlists (zone vide) → créer une nouvelle playlist avec l'album
+        await app.createPlaylistFromAlbum(customDragState.albumKey)
       }
     }
 
@@ -130,6 +137,26 @@ export function initCustomDragSystem() {
     customDragState.albumKey = null
     customDragState.trackElement = null
     customDragState.currentHighlightedPlaylist = null
+  })
+
+  // Annulation du drag par Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && (customDragState.isDragging || customDragState.isPotentialDrag)) {
+      if (customDragState.ghostElement) customDragState.ghostElement.style.display = 'none'
+      document.body.classList.remove('dragging-active')
+      if (customDragState.currentHighlightedPlaylist) {
+        customDragState.currentHighlightedPlaylist.classList.remove('drag-over')
+      }
+      if (customDragState.trackElement) {
+        customDragState.trackElement.classList.remove('dragging-track')
+      }
+      customDragState.isPotentialDrag = false
+      customDragState.isDragging = false
+      customDragState.track = null
+      customDragState.albumKey = null
+      customDragState.trackElement = null
+      customDragState.currentHighlightedPlaylist = null
+    }
   })
 
   // === DRAG DEPUIS LE PLAYER ===

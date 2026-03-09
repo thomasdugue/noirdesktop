@@ -1,0 +1,1195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noir Desktop — Home Page Mockup</title>
+  <style>
+    /* ============================================
+       FONTS — Geist Mono fallback
+       ============================================ */
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@100..800&display=swap');
+
+    /* ============================================
+       CSS VARIABLES — Design System Noir
+       ============================================ */
+    :root {
+      --color-bg: #0a0a0a;
+      --color-bg-light: #111;
+      --color-bg-lighter: #151515;
+      --color-bg-surface: #1a1a1a;
+      --color-bg-hover: #222;
+      --color-bg-active: #2a2a2a;
+      --color-bg-elevated: #333;
+      --color-bg-muted: #444;
+
+      --color-text: #fff;
+      --color-text-muted: #888;
+      --color-text-dimmed: #666;
+      --color-text-faint: #555;
+
+      --color-accent: #fff;
+      --color-accent-hover: #ccc;
+      --color-accent-muted: #888;
+
+      --color-border: #222;
+      --color-border-light: #333;
+      --color-border-muted: #444;
+
+      --color-error: #ff4444;
+      --color-success: #fff;
+
+      --transition-fast: 0.15s ease;
+      --transition-normal: 0.2s ease;
+      --transition-slow: 0.3s ease;
+
+      --radius-sm: 2px;
+      --radius-md: 6px;
+      --radius-lg: 8px;
+
+      --font-body: 'JetBrains Mono', 'SF Mono', 'Monaco', 'Menlo', monospace;
+    }
+
+    /* Reset */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-body);
+      -webkit-font-smoothing: antialiased;
+      background-color: var(--color-bg);
+      color: var(--color-text);
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* ============================================
+       TITLEBAR (macOS traffic lights zone)
+       ============================================ */
+    .titlebar {
+      height: 38px;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 9999;
+      background: rgba(0, 0, 0, 0.15);
+      padding-left: 80px;
+      padding-right: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+    }
+
+    /* Fake macOS traffic lights */
+    .traffic-lights {
+      position: fixed;
+      top: 12px; left: 16px;
+      display: flex; gap: 8px;
+      z-index: 99999;
+    }
+    .traffic-light {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+    }
+    .tl-close { background: #ff5f57; }
+    .tl-minimize { background: #febc2e; }
+    .tl-maximize { background: #28c840; }
+
+    /* ============================================
+       APP LAYOUT
+       ============================================ */
+    .app {
+      display: flex;
+      height: 100vh;
+      padding-top: 38px;
+      padding-bottom: 94px; /* Space for player */
+    }
+
+    /* ============================================
+       SIDEBAR
+       ============================================ */
+    .sidebar {
+      width: 280px;
+      min-width: 180px;
+      background: #111;
+      border-right: 1px solid #222;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .sidebar-resize-handle {
+      position: absolute;
+      top: 0; right: -4px;
+      width: 8px; height: 100%;
+      cursor: col-resize;
+      z-index: 100;
+    }
+
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 20px;
+      border-bottom: 1px solid #222;
+    }
+
+    .app-logo { height: 18px; width: auto; flex-shrink: 0; }
+
+    .sidebar-header h2 {
+      font-size: 18px;
+      font-weight: 400;
+      color: #fff;
+      letter-spacing: -0.5px;
+    }
+
+    /* Navigation */
+    .sidebar-nav {
+      display: flex;
+      flex-direction: column;
+      padding: 8px 12px;
+      gap: 4px;
+      border-bottom: 1px solid #222;
+    }
+
+    .nav-item {
+      background: transparent;
+      border: none;
+      color: #888;
+      font-family: var(--font-body);
+      font-size: 14px;
+      font-weight: 500;
+      padding: 10px 12px;
+      text-align: left;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: color var(--transition-fast), background-color var(--transition-fast);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .nav-item svg { flex-shrink: 0; opacity: 0.6; }
+    .nav-item:hover { background: #1a1a1a; color: #fff; }
+    .nav-item:hover svg { opacity: 1; }
+    .nav-item.active { background: #222; color: #fff; }
+    .nav-item.active svg { opacity: 1; }
+
+    /* Playlists */
+    .sidebar-playlists {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      border-top: 1px solid #222;
+    }
+
+    .playlists-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px 8px;
+    }
+
+    .playlists-title {
+      font-size: 11px;
+      font-weight: 400;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .playlists-actions { display: flex; align-items: center; gap: 2px; }
+
+    .btn-icon-small {
+      background: transparent;
+      border: none;
+      color: #555;
+      width: 24px; height: 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: color var(--transition-fast), background-color var(--transition-fast);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .btn-icon-small:hover { background: #222; color: #fff; }
+
+    .playlists-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 8px 8px;
+    }
+
+    .playlist-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background var(--transition-fast);
+      color: #888;
+      font-size: 13px;
+    }
+    .playlist-item:hover { background: #1a1a1a; color: #fff; }
+    .playlist-item svg { width: 16px; height: 16px; flex-shrink: 0; color: #666; }
+    .playlist-item:hover svg { color: #fff; }
+
+    .playlist-favorites svg { color: #fff; }
+
+    /* Indexation Module */
+    .indexation-module {
+      border-top: 1px solid #222;
+      flex-shrink: 0;
+    }
+
+    .indexation-header {
+      display: flex;
+      align-items: center;
+      padding: 10px 16px;
+      gap: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast);
+    }
+    .indexation-header:hover { background: #1a1a1a; }
+
+    .indexation-title {
+      font-size: 11px;
+      font-weight: 400;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      flex-shrink: 0;
+    }
+
+    .indexation-stats-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 4px;
+      padding: 0 16px 12px;
+    }
+    .indexation-stat {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+    }
+    .stat-value { font-size: 14px; font-weight: 500; color: #fff; }
+    .stat-label { font-size: 8px; color: #555; text-transform: uppercase; letter-spacing: 0.2px; }
+
+    .btn-add-content {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: #888;
+      font-family: var(--font-body);
+      font-size: 11px;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: color var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast);
+      margin: 0 16px 12px;
+    }
+    .btn-add-content:hover { background: #222; border-color: #fff; color: #fff; }
+
+    .btn-toggle-indexation {
+      background: transparent;
+      border: none;
+      color: #444;
+      width: 20px; height: 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      margin-left: auto;
+    }
+
+    /* ============================================
+       MAIN CONTENT
+       ============================================ */
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      min-width: 0;
+    }
+
+    /* Search bar */
+    .search-bar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 12px 30px;
+      background: #0a0a0a;
+      border-bottom: 1px solid #1a1a1a;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      gap: 12px;
+    }
+
+    .search-bar-inner {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      max-width: 400px;
+      position: relative;
+    }
+
+    .search-bar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    .search-input {
+      width: 100%;
+      background: #151515;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 10px 44px 10px 16px;
+      font-family: var(--font-body);
+      font-size: 14px;
+      color: #fff;
+      outline: none;
+      transition: border-color var(--transition-normal), background var(--transition-normal);
+    }
+    .search-input::placeholder { color: #555; }
+    .search-input:focus { border-color: #444; background: #1a1a1a; }
+
+    .search-icon {
+      position: absolute;
+      right: 12px;
+      color: #555;
+      pointer-events: none;
+    }
+
+    /* Feedback button */
+    .feedback-header-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      background: transparent;
+      color: #999;
+      border: 1px solid rgba(200, 160, 60, 0.4);
+      border-radius: 6px;
+      font-family: var(--font-body);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+    .feedback-header-btn:hover { color: #fff; border-color: rgba(200, 160, 60, 0.7); background: rgba(200, 160, 60, 0.06); }
+
+    .beta-badge {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(200, 160, 60, 0.15);
+      color: rgba(200, 160, 60, 0.8);
+      border: 1px solid rgba(200, 160, 60, 0.3);
+    }
+
+    .titlebar-settings-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px; height: 28px;
+      background: none;
+      border: none;
+      color: #555;
+      cursor: pointer;
+      border-radius: 6px;
+      transition: color var(--transition-normal), background-color var(--transition-normal);
+    }
+    .titlebar-settings-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+
+    /* ============================================
+       HOME VIEW
+       ============================================ */
+    .albums-view {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: clip;
+      padding: 24px;
+    }
+
+    .home-container {
+      padding: 20px clamp(16px, 4vw, 30px);
+      width: 100%;
+      box-sizing: border-box;
+      overflow-x: hidden;
+    }
+
+    .home-section { margin-bottom: 40px; max-width: 100%; }
+
+    .home-section-title {
+      font-size: 22px;
+      font-weight: 400;
+      margin-bottom: 16px;
+      color: #fff;
+    }
+
+    /* Now Playing / Resume tile */
+    .home-resume-section { margin-bottom: 48px; }
+
+    .home-resume-tile {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      background: linear-gradient(135deg, #1a1a1a 0%, #252525 100%);
+      border-radius: 8px;
+      padding: 20px;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      max-width: 500px;
+      position: relative;
+      overflow: hidden;
+    }
+    .home-resume-tile:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+
+    .resume-cover {
+      width: 100px; height: 100px;
+      border-radius: 8px;
+      overflow: hidden;
+      flex-shrink: 0;
+      background: #2a2a2a;
+      position: relative;
+    }
+    .resume-cover-img { width: 100%; height: 100%; object-fit: cover; }
+    .resume-cover-placeholder {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 32px; color: #555;
+      background: linear-gradient(135deg, #1e1e1e, #2a2a2a);
+    }
+
+    .resume-info {
+      flex: 1; min-width: 0;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+
+    .resume-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #fff;
+      font-weight: 500;
+    }
+    .resume-label-active { color: #fff; }
+
+    .resume-title { font-size: 16px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .resume-artist { font-size: 13px; color: #888; }
+    .resume-album { font-size: 12px; color: #555; }
+
+    .resume-specs-container { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+    .resume-spec-tag {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #aaa;
+      font-weight: 500;
+    }
+    .resume-specs-text { font-size: 10px; color: #666; }
+
+    .resume-play-btn {
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      border: none;
+      background: #fff;
+      color: #000;
+      font-size: 16px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      transition: transform 0.15s;
+    }
+    .resume-play-btn:hover { transform: scale(1.08); }
+
+    /* Recently Played grid */
+    .home-recent-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      width: 100%;
+    }
+
+    .recent-track-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px;
+      background: #151515;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s;
+      overflow: hidden;
+      min-width: 0;
+    }
+    .recent-track-item:hover { background: #1f1f1f; }
+
+    .recent-track-cover {
+      width: 44px; height: 44px;
+      border-radius: 4px;
+      overflow: hidden;
+      flex-shrink: 0;
+      background: #2a2a2a;
+      position: relative;
+    }
+    .recent-track-placeholder {
+      width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; color: #444;
+      background: linear-gradient(135deg, #1e1e1e, #2a2a2a);
+    }
+
+    .recent-track-info {
+      flex: 1; min-width: 0;
+      display: flex; flex-direction: column; gap: 1px;
+    }
+    .recent-track-title { font-size: 12px; font-weight: 500; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .recent-track-artist { font-size: 11px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .recent-track-album { font-size: 10px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Carousel */
+    .home-carousel {
+      display: flex;
+      gap: clamp(12px, 2vw, 20px);
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: 16px;
+      padding-right: 24px;
+      scroll-snap-type: x mandatory;
+      -webkit-overflow-scrolling: touch;
+      width: calc(100% + 24px);
+      max-width: calc(100% + 24px);
+    }
+
+    .home-carousel::-webkit-scrollbar { height: 8px; }
+    .home-carousel::-webkit-scrollbar-track { background: transparent; border-radius: 4px; }
+    .home-carousel::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+    .home-carousel:hover::-webkit-scrollbar-thumb { background: #333; }
+
+    .carousel-item {
+      flex-shrink: 0;
+      width: clamp(120px, 18vw, 160px);
+      scroll-snap-align: start;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    .carousel-item:hover { transform: translateY(-4px); }
+
+    .carousel-cover {
+      width: 100%;
+      aspect-ratio: 1;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #1a1a1a;
+      position: relative;
+      margin-bottom: 10px;
+    }
+
+    .carousel-cover-placeholder {
+      width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px; color: #333;
+      background: linear-gradient(135deg, #161616, #1e1e1e);
+    }
+
+    .carousel-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .carousel-subtitle {
+      font-size: 11px;
+      color: #666;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+
+    /* Artist carousel (round covers) */
+    .carousel-item.artist-item .carousel-cover {
+      border-radius: 50%;
+    }
+
+    /* ============================================
+       PLAYER BAR
+       ============================================ */
+    .player {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: #111;
+      border-top: 1px solid #222;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      z-index: 1000;
+      height: 94px;
+    }
+
+    .player-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      overflow: hidden;
+      flex-shrink: 0;
+      max-width: 240px;
+    }
+
+    .cover-art {
+      width: 56px; height: 56px;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #222;
+      flex-shrink: 0;
+    }
+    .cover-placeholder {
+      width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 24px; color: #444;
+      background: linear-gradient(135deg, #1a1a1a, #222);
+    }
+
+    .now-playing { min-width: 0; max-width: 320px; overflow: hidden; }
+    #track-name { font-size: 14px; font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .track-meta { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+    .track-folder { font-size: 12px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Buttons */
+    .btn-mode {
+      background: transparent;
+      border: 1px solid #333;
+      color: #888;
+      width: 28px; height: 28px;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: color var(--transition-fast), background var(--transition-fast);
+      flex-shrink: 0;
+    }
+    .btn-mode:hover { background: #222; color: #fff; border-color: #444; }
+
+    .player-controls {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .btn-control {
+      background: transparent;
+      border: 1px solid #333;
+      color: #fff;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background var(--transition-fast), border-color var(--transition-fast);
+    }
+    .btn-control:hover { background: #333; border-color: #555; }
+
+    .btn-control.btn-play {
+      width: 36px; height: 36px;
+      font-size: 14px;
+    }
+    .btn-control.btn-nav {
+      width: 28px; height: 28px;
+      font-size: 12px;
+    }
+
+    /* Progress bar */
+    .progress-container {
+      flex: 1;
+      min-width: 120px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .progress-container span { font-size: 11px; color: #666; min-width: 32px; }
+
+    .progress-bar {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+    .progress-bar::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    /* Volume */
+    .volume-container {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .btn-volume {
+      background: transparent;
+      border: none;
+      color: #888;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px;
+    }
+    .btn-volume:hover { color: #fff; }
+
+    .volume-bar {
+      width: 80px;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+    .volume-bar::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    /* Audio specs */
+    .audio-specs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      padding: 3px 8px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 4px;
+      border: 1px solid #333;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .specs-source, .specs-output { display: flex; align-items: center; gap: 4px; }
+    .specs-label { color: #555; font-size: 8px; text-transform: uppercase; letter-spacing: 2px; }
+    .specs-value { color: #888; font-weight: 500; }
+    .specs-separator { color: #444; }
+
+    .bit-perfect-badge {
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(192, 197, 206, 0.12);
+      color: rgba(192, 197, 206, 0.8);
+      border: 1px solid rgba(192, 197, 206, 0.25);
+      margin-left: 4px;
+    }
+
+    /* Audio output button */
+    .btn-audio-output {
+      background: transparent;
+      border: none;
+      color: #888;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px;
+      border-radius: 6px;
+      transition: color var(--transition-fast), background var(--transition-fast);
+    }
+    .btn-audio-output:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+
+    /* ============================================
+       SCROLLBAR STYLING
+       ============================================ */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #444; }
+
+    /* ============================================
+       RESPONSIVE
+       ============================================ */
+    @media (max-width: 900px) {
+      .home-recent-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+      .home-recent-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Fake macOS traffic lights -->
+  <div class="traffic-lights">
+    <div class="traffic-light tl-close"></div>
+    <div class="traffic-light tl-minimize"></div>
+    <div class="traffic-light tl-maximize"></div>
+  </div>
+
+  <!-- Titlebar -->
+  <div class="titlebar"></div>
+
+  <!-- App container -->
+  <div class="app">
+    <!-- ===== SIDEBAR ===== -->
+    <aside class="sidebar">
+      <div class="sidebar-resize-handle"></div>
+
+      <div class="sidebar-header">
+        <svg class="app-logo" viewBox="0 0 343 232" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="31.5" cy="117.5" r="31.5" fill="white"/>
+          <path d="M69 117C62.2 94.6 42 86 33 86C33.5 103.833 32.6 141.8 33 149C57 149 67 126.5 69 117Z" fill="white"/>
+          <circle cx="311.5" cy="117.5" r="31.5" transform="rotate(-180 311.5 117.5)" fill="white"/>
+          <path d="M274 118C280.8 140.4 301 149 310 149C309.5 131.167 310.4 93.2 310 86C286 86 276 108.5 274 118Z" fill="white"/>
+          <rect x="69" y="48" width="64" height="138" rx="32" fill="white"/>
+          <rect x="137" width="69" height="232" rx="32" fill="white"/>
+          <rect x="210" y="48" width="64" height="138" rx="32" fill="white"/>
+          <circle cx="171.5" cy="117.5" r="38.5" fill="black"/>
+          <path d="M70 116.854C75.2991 106.115 111.333 91.9599 132 116.854C116.315 139.112 76.359 131.985 70 116.854Z" fill="black"/>
+          <path d="M211 116.854C216.299 106.115 252.333 91.9599 273 116.854C257.315 139.112 217.359 131.985 211 116.854Z" fill="black"/>
+        </svg>
+        <h2>Noir</h2>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="home">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+          <span>Home</span>
+        </button>
+        <button class="nav-item" data-view="albums">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/></svg>
+          <span>Albums</span>
+        </button>
+        <button class="nav-item" data-view="artists">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+          <span>Artists</span>
+        </button>
+        <button class="nav-item" data-view="tracks">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+          <span>Tracks</span>
+        </button>
+      </nav>
+
+      <!-- Playlists -->
+      <div class="sidebar-playlists">
+        <div class="playlists-header">
+          <span class="playlists-title">Playlists</span>
+          <div class="playlists-actions">
+            <button class="btn-icon-small" title="Import M3U">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            </button>
+            <button class="btn-icon-small" title="New playlist">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="playlists-list">
+          <div class="playlist-item playlist-favorites">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            <span>Favorites</span>
+          </div>
+          <div class="playlist-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+            <span>Jazz Night</span>
+          </div>
+          <div class="playlist-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+            <span>Deep Focus</span>
+          </div>
+          <div class="playlist-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+            <span>Vinyl Rips 24-bit</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Indexation module -->
+      <div class="indexation-module">
+        <div class="indexation-header">
+          <span class="indexation-title">Indexing</span>
+          <button class="btn-icon-small" title="Add folder" style="margin-left: auto;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          </button>
+          <button class="btn-toggle-indexation" title="Show/hide">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+        </div>
+        <div class="indexation-stats-grid">
+          <div class="indexation-stat">
+            <span class="stat-value">42</span>
+            <span class="stat-label">Artists</span>
+          </div>
+          <div class="indexation-stat">
+            <span class="stat-value">128</span>
+            <span class="stat-label">Albums</span>
+          </div>
+          <div class="indexation-stat">
+            <span class="stat-value">847</span>
+            <span class="stat-label">MP3</span>
+          </div>
+          <div class="indexation-stat">
+            <span class="stat-value">312</span>
+            <span class="stat-label">FLAC 16</span>
+          </div>
+          <div class="indexation-stat">
+            <span class="stat-value">64</span>
+            <span class="stat-label">FLAC 24</span>
+          </div>
+        </div>
+        <button class="btn-add-content">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          Add content
+        </button>
+      </div>
+    </aside>
+
+    <!-- ===== MAIN CONTENT ===== -->
+    <main class="main-content">
+      <!-- Search bar -->
+      <div class="search-bar">
+        <div class="search-bar-inner">
+          <input type="text" class="search-input" placeholder="Search..." autocomplete="off">
+          <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        </div>
+        <div class="search-bar-actions">
+          <button class="feedback-header-btn">Give feedback <span class="beta-badge">BETA</span></button>
+          <button class="titlebar-settings-btn" title="Settings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Home view content -->
+      <div class="albums-view">
+        <div class="home-container">
+
+          <!-- 1. Now Playing -->
+          <section class="home-section home-resume-section">
+            <div class="home-resume-tile">
+              <div class="resume-cover">
+                <div class="resume-cover-placeholder">&#9834;</div>
+              </div>
+              <div class="resume-info">
+                <span class="resume-label resume-label-active">Now Playing</span>
+                <span class="resume-title">So What</span>
+                <span class="resume-artist">Miles Davis</span>
+                <span class="resume-album">Kind of Blue</span>
+                <div class="resume-specs-container">
+                  <span class="resume-spec-tag bitdepth">24-bit</span>
+                  <span class="resume-spec-tag samplerate">96kHz</span>
+                  <span class="resume-specs-text">FLAC &bull; 9:22</span>
+                </div>
+              </div>
+              <button class="resume-play-btn">&#9646;&#9646;</button>
+            </div>
+          </section>
+
+          <!-- 2. Recently Played -->
+          <section class="home-section">
+            <h2 class="home-section-title">Recently Played</h2>
+            <div class="home-recent-grid">
+              <div class="recent-track-item">
+                <div class="recent-track-cover"><div class="recent-track-placeholder">&#9834;</div></div>
+                <div class="recent-track-info">
+                  <span class="recent-track-title">Blue in Green</span>
+                  <span class="recent-track-artist">Miles Davis</span>
+                  <span class="recent-track-album">Kind of Blue</span>
+                </div>
+              </div>
+              <div class="recent-track-item">
+                <div class="recent-track-cover"><div class="recent-track-placeholder">&#9834;</div></div>
+                <div class="recent-track-info">
+                  <span class="recent-track-title">A Love Supreme, Pt. 1</span>
+                  <span class="recent-track-artist">John Coltrane</span>
+                  <span class="recent-track-album">A Love Supreme</span>
+                </div>
+              </div>
+              <div class="recent-track-item">
+                <div class="recent-track-cover"><div class="recent-track-placeholder">&#9834;</div></div>
+                <div class="recent-track-info">
+                  <span class="recent-track-title">Nisi Dominus, RV 608</span>
+                  <span class="recent-track-artist">Philippe Jaroussky</span>
+                  <span class="recent-track-album">Vivaldi: Stabat Mater</span>
+                </div>
+              </div>
+              <div class="recent-track-item">
+                <div class="recent-track-cover"><div class="recent-track-placeholder">&#9834;</div></div>
+                <div class="recent-track-info">
+                  <span class="recent-track-title">Clair de Lune</span>
+                  <span class="recent-track-artist">Claude Debussy</span>
+                  <span class="recent-track-album">Suite bergamasque</span>
+                </div>
+              </div>
+              <div class="recent-track-item">
+                <div class="recent-track-cover"><div class="recent-track-placeholder">&#9834;</div></div>
+                <div class="recent-track-info">
+                  <span class="recent-track-title">Gymnopedie No. 1</span>
+                  <span class="recent-track-artist">Erik Satie</span>
+                  <span class="recent-track-album">Piano Works</span>
+                </div>
+              </div>
+              <div class="recent-track-item">
+                <div class="recent-track-cover"><div class="recent-track-placeholder">&#9834;</div></div>
+                <div class="recent-track-info">
+                  <span class="recent-track-title">Nefertiti</span>
+                  <span class="recent-track-artist">Miles Davis</span>
+                  <span class="recent-track-album">Nefertiti</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 3. New Releases carousel -->
+          <section class="home-section">
+            <h2 class="home-section-title">New Releases</h2>
+            <div class="home-carousel">
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Kind of Blue</div><div class="carousel-subtitle">Miles Davis</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">A Love Supreme</div><div class="carousel-subtitle">John Coltrane</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Head Hunters</div><div class="carousel-subtitle">Herbie Hancock</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Maiden Voyage</div><div class="carousel-subtitle">Herbie Hancock</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Blue Train</div><div class="carousel-subtitle">John Coltrane</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Bitches Brew</div><div class="carousel-subtitle">Miles Davis</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Time Out</div><div class="carousel-subtitle">Dave Brubeck</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Moanin'</div><div class="carousel-subtitle">Art Blakey</div></div>
+            </div>
+          </section>
+
+          <!-- 4. Discover (unplayed) -->
+          <section class="home-section">
+            <h2 class="home-section-title">Discover</h2>
+            <div class="home-carousel">
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Speak No Evil</div><div class="carousel-subtitle">Wayne Shorter</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Empyrean Isles</div><div class="carousel-subtitle">Herbie Hancock</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Somethin' Else</div><div class="carousel-subtitle">Cannonball Adderley</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">The Sidewinder</div><div class="carousel-subtitle">Lee Morgan</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Saxophone Colossus</div><div class="carousel-subtitle">Sonny Rollins</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Out to Lunch!</div><div class="carousel-subtitle">Eric Dolphy</div></div>
+            </div>
+          </section>
+
+          <!-- 5. Top Artists carousel -->
+          <section class="home-section">
+            <h2 class="home-section-title">Top Artists</h2>
+            <div class="home-carousel">
+              <div class="carousel-item artist-item"><div class="carousel-cover"><div class="carousel-cover-placeholder" style="font-size: 20px; background: linear-gradient(135deg, #1a1a1a, #252525);">MD</div></div><div class="carousel-title" style="text-align:center;">Miles Davis</div><div class="carousel-subtitle" style="text-align:center;">24 tracks</div></div>
+              <div class="carousel-item artist-item"><div class="carousel-cover"><div class="carousel-cover-placeholder" style="font-size: 20px; background: linear-gradient(135deg, #1a1a1a, #252525);">JC</div></div><div class="carousel-title" style="text-align:center;">John Coltrane</div><div class="carousel-subtitle" style="text-align:center;">18 tracks</div></div>
+              <div class="carousel-item artist-item"><div class="carousel-cover"><div class="carousel-cover-placeholder" style="font-size: 20px; background: linear-gradient(135deg, #1a1a1a, #252525);">HH</div></div><div class="carousel-title" style="text-align:center;">Herbie Hancock</div><div class="carousel-subtitle" style="text-align:center;">15 tracks</div></div>
+              <div class="carousel-item artist-item"><div class="carousel-cover"><div class="carousel-cover-placeholder" style="font-size: 20px; background: linear-gradient(135deg, #1a1a1a, #252525);">WS</div></div><div class="carousel-title" style="text-align:center;">Wayne Shorter</div><div class="carousel-subtitle" style="text-align:center;">12 tracks</div></div>
+              <div class="carousel-item artist-item"><div class="carousel-cover"><div class="carousel-cover-placeholder" style="font-size: 20px; background: linear-gradient(135deg, #1a1a1a, #252525);">BM</div></div><div class="carousel-title" style="text-align:center;">Bill Evans</div><div class="carousel-subtitle" style="text-align:center;">10 tracks</div></div>
+              <div class="carousel-item artist-item"><div class="carousel-cover"><div class="carousel-cover-placeholder" style="font-size: 20px; background: linear-gradient(135deg, #1a1a1a, #252525);">TM</div></div><div class="carousel-title" style="text-align:center;">Thelonious Monk</div><div class="carousel-subtitle" style="text-align:center;">9 tracks</div></div>
+            </div>
+          </section>
+
+          <!-- 6. Hi-Res Audio -->
+          <section class="home-section">
+            <h2 class="home-section-title">Hi-Res Audio</h2>
+            <div class="home-carousel">
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Waltz for Debby</div><div class="carousel-subtitle">Bill Evans Trio</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Sunday at the Village</div><div class="carousel-subtitle">Bill Evans Trio</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">The Bridge</div><div class="carousel-subtitle">Sonny Rollins</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Night Train</div><div class="carousel-subtitle">Oscar Peterson</div></div>
+              <div class="carousel-item"><div class="carousel-cover"><div class="carousel-cover-placeholder">&#9834;</div></div><div class="carousel-title">Getz/Gilberto</div><div class="carousel-subtitle">Stan Getz</div></div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ===== PLAYER BAR ===== -->
+  <div class="player">
+    <!-- Cover + track info -->
+    <div class="player-left">
+      <div class="cover-art">
+        <div class="cover-placeholder">&#9834;</div>
+      </div>
+      <div class="now-playing">
+        <span id="track-name">So What</span>
+        <span class="track-meta">
+          <span class="track-folder">Miles Davis</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- Queue button -->
+    <button class="btn-mode" title="Queue">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+    </button>
+
+    <!-- Progress bar -->
+    <div class="progress-container">
+      <span>2:34</span>
+      <input type="range" class="progress-bar" value="27" min="0" max="100">
+      <span>9:22</span>
+    </div>
+
+    <!-- Shuffle -->
+    <button class="btn-mode" title="Shuffle">&#10542;</button>
+
+    <!-- Playback controls -->
+    <div class="player-controls">
+      <button class="btn-control btn-nav">&#9198;</button>
+      <button class="btn-control btn-play">&#9646;&#9646;</button>
+      <button class="btn-control btn-nav">&#9197;</button>
+    </div>
+
+    <!-- Repeat -->
+    <button class="btn-mode" title="Repeat">&#10227;</button>
+
+    <!-- Audio specs -->
+    <span class="audio-specs">
+      <span class="specs-source">
+        <span class="specs-label">SRC</span>
+        <span class="specs-value">24/96</span>
+      </span>
+      <span class="specs-separator">&rarr;</span>
+      <span class="specs-output">
+        <span class="specs-label">OUT</span>
+        <span class="specs-value">24/96</span>
+      </span>
+      <span class="bit-perfect-badge">BIT PERFECT</span>
+    </span>
+
+    <!-- Volume -->
+    <div class="volume-container">
+      <button class="btn-volume" title="Volume">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+      </button>
+      <input type="range" class="volume-bar" value="85" min="0" max="100">
+    </div>
+
+    <!-- Audio output -->
+    <button class="btn-audio-output" title="Audio output">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-5 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm0 16c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+    </button>
+  </div>
+</body>
+</html>

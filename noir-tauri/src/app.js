@@ -63,6 +63,7 @@ export const app = {
   loadCoverAsync: null,
   loadArtistImageAsync: null,
   observeCoverLoading: null,
+  observeArtistLoading: null,
   initCoverObserver: null,
   startBackgroundScan: null,
   updateIndexationStats: null,
@@ -70,6 +71,7 @@ export const app = {
 
   // === Playlists ===
   addTrackToPlaylist: null,
+  createPlaylistFromAlbum: null,
   showAddToPlaylistMenu: null,
   showAddToPlaylistMenuMulti: null,
   loadPlaylists: null,
@@ -79,6 +81,7 @@ export const app = {
   getFavoriteButtonHtml: null,
   displayPlaylistView: null,
   showPlaylistModal: null,
+  getPlaylistById: null,
 
   // === Search ===
   buildSearchIndex: null,
@@ -100,6 +103,13 @@ export const app = {
   openSettings: null,
   toggleSettings: null,
   updateHogModeUI: null,
+
+  // === Network / NAS ===
+  populateNetworkSources: null,
+
+  // === Onboarding ===
+  showOnboarding: null,
+  hideOnboarding: null,
 
   // === Misc ===
   selectFolder: null,

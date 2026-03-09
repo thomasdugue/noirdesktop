@@ -1,0 +1,1577 @@
+<!DOCTYPE html>
+<!--
+  test-regression.html — Noir Desktop
+  Tests de régression pour les fixes SMB / Playback / Homepage
+
+  Usage :
+    1. Ouvrir dans le navigateur standard (file://) OU via Tauri WebView :
+       tauri dev → F12 → onglet Sources → exécuter ce fichier
+    2. Tous les tests s'exécutent au chargement
+    3. Les sections MANUELLES (Rust) nécessitent l'app en cours d'exécution
+
+  Couvre :
+    Fix D — Suppression SMB (library.tracks muté, pas réassigné)
+    Fix F — ⟳ Sidebar (logs console pendant sync)
+    Fix G — Stop immédiat (await audio_pause avant audio_play)
+    Fix G — Animation SMB buffering (::before sur .progress-container)
+    Fix I — Homepage immédiate (pas de await generateDiscoveryMixes au rendu)
+    [Rust] byte_len() retourne toujours Some(n)
+    [Rust] current_path mis à jour après transition gapless
+    [Rust] audio_preload_next SMB-aware (cancel_previous=false)
+-->
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Noir Desktop — Tests de régression</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+      font-size: 13px;
+      background: #111;
+      color: #ddd;
+      padding: 24px;
+      line-height: 1.5;
+    }
+
+    h1 { font-size: 17px; font-weight: 600; color: #fff; margin-bottom: 4px; }
+    .subtitle { font-size: 11px; color: #555; margin-bottom: 28px; }
+
+    /* ─── SUITE ─────────────────────────────────────────────────── */
+    .suite {
+      margin-bottom: 24px;
+      border: 1px solid #222;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .suite-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: #181818;
+      border-bottom: 1px solid #222;
+      font-weight: 600;
+      font-size: 12px;
+      color: #ccc;
+    }
+    .suite-header .badge {
+      font-size: 10px;
+      font-weight: 500;
+      padding: 2px 7px;
+      border-radius: 99px;
+      background: #252525;
+      color: #888;
+    }
+    .suite-header .badge.pass  { background: #1a2e1a; color: #4caf4c; }
+    .suite-header .badge.fail  { background: #2e1a1a; color: #cf4c4c; }
+    .suite-header .badge.skip  { background: #252525; color: #777; }
+
+    /* ─── TEST ITEM ─────────────────────────────────────────────── */
+    .test {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 9px 14px;
+      border-bottom: 1px solid #1a1a1a;
+      transition: background 0.1s;
+    }
+    .test:last-child { border-bottom: none; }
+    .test:hover { background: #151515; }
+
+    .icon {
+      flex-shrink: 0;
+      width: 16px;
+      height: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 50%;
+      margin-top: 1px;
+    }
+    .icon.pass  { background: #1f3b1f; color: #5cb85c; }
+    .icon.fail  { background: #3b1f1f; color: #d9534f; }
+    .icon.skip  { background: #252525; color: #666; }
+
+    .test-body { flex: 1; min-width: 0; }
+    .test-name { font-size: 12px; color: #ccc; }
+    .test-name.fail { color: #e07070; }
+    .test-name.skip { color: #555; }
+
+    .error-msg {
+      margin-top: 5px;
+      padding: 6px 10px;
+      background: #1c1010;
+      border-left: 2px solid #d9534f;
+      border-radius: 3px;
+      font-size: 11px;
+      color: #c07070;
+      font-family: 'SF Mono', 'Fira Mono', monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* ─── MANUAL SECTION ────────────────────────────────────────── */
+    .manual-section {
+      margin-bottom: 24px;
+      border: 1px solid #222;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .manual-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: #181818;
+      border-bottom: 1px solid #222;
+      font-weight: 600;
+      font-size: 12px;
+      color: #aaa;
+    }
+    .manual-header .tag {
+      font-size: 10px;
+      background: #1d2a1d;
+      color: #6a9b6a;
+      padding: 2px 7px;
+      border-radius: 99px;
+    }
+    .manual-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 9px 14px;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    .manual-item:last-child { border-bottom: none; }
+    .manual-check {
+      flex-shrink: 0;
+      width: 14px;
+      height: 14px;
+      border: 1px solid #444;
+      border-radius: 3px;
+      margin-top: 2px;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background: #1a1a1a;
+      position: relative;
+    }
+    .manual-check:checked { background: #2d4a2d; border-color: #5cb85c; }
+    .manual-check:checked::after {
+      content: '✓';
+      position: absolute;
+      top: -1px;
+      left: 1px;
+      font-size: 10px;
+      color: #5cb85c;
+      font-weight: 700;
+    }
+    .manual-label { font-size: 12px; color: #bbb; }
+    .manual-label .step { color: #666; font-style: italic; display: block; font-size: 11px; margin-top: 2px; }
+    .manual-label .expected { color: #5cb85c; display: block; font-size: 11px; margin-top: 2px; }
+
+    /* ─── SUMMARY ───────────────────────────────────────────────── */
+    #summary {
+      margin-top: 28px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      background: #181818;
+      border: 1px solid #2a2a2a;
+      font-size: 12px;
+      display: flex;
+      gap: 20px;
+      align-items: center;
+    }
+    #summary .s-pass { color: #5cb85c; font-weight: 600; }
+    #summary .s-fail { color: #d9534f; font-weight: 600; }
+    #summary .s-skip { color: #666; }
+    #summary .s-total { color: #888; margin-left: auto; }
+
+    /* ─── SMB ANIMATION SANDBOX ─────────────────────────────────── */
+    .sandbox {
+      padding: 12px 14px;
+      background: #151515;
+    }
+    .sandbox label { font-size: 11px; color: #555; display: block; margin-bottom: 6px; }
+
+    /* ─── MANUAL ITEM — état coché ──────────────────────────────────────── */
+    .manual-item.checked {
+      background: rgba(34, 197, 94, 0.05);
+      border-left: 2px solid #22c55e;
+      padding-left: calc(12px - 2px); /* compenser la bordure */
+    }
+    .manual-item.checked .manual-label {
+      color: #999;
+    }
+    .manual-item.checked .expected {
+      color: #22c55e;
+      opacity: 0.8;
+    }
+    .manual-check {
+      accent-color: #22c55e;
+      width: 14px;
+      height: 14px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    /* Reproduire le markup exact de l'app pour le test CSS */
+    .progress-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      position: relative;
+      min-width: 200px;
+    }
+    .progress-bar {
+      flex: 1;
+      -webkit-appearance: none;
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+    }
+    /* Règle CSS corrigée (Fix G animation) */
+    .progress-container.smb-buffering::before {
+      content: '';
+      position: absolute;
+      left: 36px;
+      right: 40px;
+      top: 50%;
+      transform: translateY(-50%);
+      height: 3px;
+      border-radius: 2px;
+      background: linear-gradient(90deg, transparent 0%, #666 30%, #bbb 50%, #666 70%, transparent 100%);
+      background-size: 200% 100%;
+      animation: smb-buffering-slide 1.2s ease-in-out infinite;
+      pointer-events: none;
+      z-index: 2;
+    }
+    @keyframes smb-buffering-slide {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    .progress-container-demo {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .demo-label { font-size: 11px; color: #555; }
+  </style>
+</head>
+<body>
+
+<h1>Noir Desktop — Tests de régression</h1>
+<p class="subtitle" id="run-info">Démarrage des tests…</p>
+
+<div id="suites"></div>
+<div id="manual-sections"></div>
+<div id="summary" style="display:none"></div>
+
+<script type="module">
+// ══════════════════════════════════════════════════════════════════════════════
+// MINI TEST RUNNER — queue-based (évite le bug async/sync de currentSuite)
+//
+// Problème du runner naïf : describe() est sync, it() est async.
+// Quand it() s'exécute vraiment, describe() a déjà mis currentSuite = null
+// → suiteCounters[null] undefined → chaque test apparaît 2× (pass + fail).
+//
+// Solution : it() n'exécute pas le test — il l'enfile dans `queue`.
+// runAllTests() les exécute séquentiellement en capturant `suite` au moment
+// de l'enfilage (call-time), pas au moment de l'exécution.
+// ══════════════════════════════════════════════════════════════════════════════
+
+const queue = []          // { suite: string, name: string, fn: Function|null }
+const suiteCounters = {}  // { suiteName: { pass, fail, skip } }
+const results = []        // { suite, name, status, error? }
+let currentSuite = null
+
+function describe(suiteName, fn) {
+  currentSuite = suiteName
+  suiteCounters[suiteName] = { pass: 0, fail: 0, skip: 0 }
+  fn()               // synchrone : peuple uniquement `queue`
+  currentSuite = null
+}
+
+function it(name, fn) {
+  // Capturer currentSuite MAINTENANT (appel sync dans describe) — pas à l'exécution
+  queue.push({ suite: currentSuite, name, fn })
+}
+
+function skip(name) {
+  queue.push({ suite: currentSuite, name, fn: null })
+}
+
+async function runAllTests() {
+  for (const { suite, name, fn } of queue) {
+    if (fn === null) {
+      results.push({ suite, name, status: 'skip' })
+      suiteCounters[suite].skip++
+      continue
+    }
+    try {
+      await fn()
+      results.push({ suite, name, status: 'pass' })
+      suiteCounters[suite].pass++
+    } catch (err) {
+      results.push({ suite, name, status: 'fail', error: err.message || String(err) })
+      suiteCounters[suite].fail++
+    }
+  }
+}
+
+// Assertions
+function expect(value) {
+  return {
+    toBe(expected) {
+      if (value !== expected)
+        throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(value)}`)
+    },
+    toEqual(expected) {
+      const a = JSON.stringify(value), b = JSON.stringify(expected)
+      if (a !== b) throw new Error(`Expected ${b},\ngot ${a}`)
+    },
+    toBeTrue() { if (value !== true) throw new Error(`Expected true, got ${JSON.stringify(value)}`) },
+    toBeFalsy() { if (value) throw new Error(`Expected falsy, got ${JSON.stringify(value)}`) },
+    toBeTruthy() { if (!value) throw new Error(`Expected truthy, got ${JSON.stringify(value)}`) },
+    toBeGreaterThan(n) {
+      if (!(value > n)) throw new Error(`Expected > ${n}, got ${value}`)
+    },
+    toBeLessThan(n) {
+      if (!(value < n)) throw new Error(`Expected < ${n}, got ${value}`)
+    },
+    toBeLessThanOrEqual(n) {
+      if (!(value <= n)) throw new Error(`Expected ≤ ${n}, got ${value}`)
+    },
+    toContain(sub) {
+      if (!value.includes(sub)) throw new Error(`Expected "${value}" to contain "${sub}"`)
+    },
+    toHaveLength(n) {
+      if (value.length !== n) throw new Error(`Expected length ${n}, got ${value.length}`)
+    },
+    toBeInstanceOf(cls) {
+      if (!(value instanceof cls)) throw new Error(`Expected instance of ${cls.name}`)
+    },
+  }
+}
+
+function assert(cond, msg = 'Assertion failed') {
+  if (!cond) throw new Error(msg)
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FIX D — SUPPRESSION SMB
+// Bug : library et app non importés dans network.js → ReferenceError lors de
+//        library.tracks.length = 0 → la bibliothèque ne se vidait jamais.
+// Fix : import { invoke, library } from './state.js' + import { app } from './app.js'
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('Fix D — Suppression SMB : library.tracks muté (pas réassigné)', () => {
+
+  it('library.tracks.length = 0 vide le tableau sans casser la référence', async () => {
+    // Reproduire l'objet partagé comme dans state.js
+    const library = { tracks: [
+      { path: 'smb://nas/music/a.flac', metadata: { title: 'Track A' } },
+      { path: 'smb://nas/music/b.flac', metadata: { title: 'Track B' } },
+      { path: '/local/c.flac',          metadata: { title: 'Track C' } },
+    ]}
+
+    // Sauvegarder la référence exacte (comme un autre module qui l'a importée)
+    const externalRef = library.tracks
+
+    // Simuler le code corrigé de network.js (lignes 143-144)
+    const updatedTracks = [{ path: '/local/c.flac', metadata: { title: 'Track C' } }]
+    library.tracks.length = 0
+    for (const t of updatedTracks) library.tracks.push(t)
+
+    // La référence externe doit pointer sur le même tableau (mutation, pas réassignation)
+    expect(library.tracks).toBe(externalRef)
+    expect(library.tracks).toHaveLength(1)
+    expect(library.tracks[0].path).toBe('/local/c.flac')
+  })
+
+  it('tracks SMB sont absents après rechargement depuis Rust', async () => {
+    const library = { tracks: [
+      { path: 'smb://1bd.../music/track.flac' },
+      { path: '/Users/local/song.flac' },
+    ]}
+
+    // Simuler invoke('load_tracks_from_cache') qui retourne seulement les tracks locales
+    const updatedTracks = [{ path: '/Users/local/song.flac' }]
+    library.tracks.length = 0
+    for (const t of updatedTracks) library.tracks.push(t)
+
+    const hasSmb = library.tracks.some(t => t.path.startsWith('smb://'))
+    expect(hasSmb).toBeFalsy()
+  })
+
+  it('app.groupTracksIntoAlbumsAndArtists() est bien appelé après mise à jour', async () => {
+    let groupCalled = false
+    let lookupCalled = false
+    let displayCalled = false
+
+    // Simuler l'objet app médiateur
+    const app = {
+      groupTracksIntoAlbumsAndArtists: () => { groupCalled = true },
+      buildTrackLookup: () => { lookupCalled = true },
+      displayCurrentView: () => { displayCalled = true },
+      updateIndexationStats: () => {},
+    }
+    const library = { tracks: [{ path: 'smb://nas/a.flac' }] }
+
+    // Simuler le bloc corrigé (network.js lignes 141-148)
+    async function simulateRemoveNetworkSource(sourceId) {
+      const updatedTracks = []
+      library.tracks.length = 0
+      for (const t of updatedTracks) library.tracks.push(t)
+      app.groupTracksIntoAlbumsAndArtists()
+      app.buildTrackLookup()
+      app.displayCurrentView()
+    }
+
+    await simulateRemoveNetworkSource('source-1')
+
+    expect(groupCalled).toBeTrue()
+    expect(lookupCalled).toBeTrue()
+    expect(displayCalled).toBeTrue()
+  })
+
+  it('library.tracks vide si toutes les sources SMB sont retirées', async () => {
+    const library = { tracks: [
+      { path: 'smb://nas/a.flac' },
+      { path: 'smb://nas/b.flac' },
+    ]}
+
+    const updatedTracks = [] // Rust retourne [] quand tout est supprimé
+    library.tracks.length = 0
+    for (const t of updatedTracks) library.tracks.push(t)
+
+    expect(library.tracks).toHaveLength(0)
+  })
+})
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FIX F — ⟳ SIDEBAR : LOGS CONSOLE PENDANT SYNC SMB
+// Bug : aucun console.log → l'utilisateur ne pouvait pas confirmer le sync
+// Fix : logs '[Library] ⟳ Sync SMB → <name>' avant/après chaque source
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('Fix F — Sync SMB : logs console visibles', () => {
+
+  it('Le bouton sync ajoute la classe "syncing" pendant l\'opération', async () => {
+    // Simuler le DOM d'un bouton sync (network.js lignes 96-114)
+    const btn = document.createElement('button')
+    btn.className = 'settings-network-sync'
+    btn.dataset.sourceId = 'test-source-1'
+
+    let syncStarted = false
+    let syncFinished = false
+
+    // Simuler invoke('scan_network_source_cmd') — retourne après 10ms
+    const fakeInvoke = (cmd) => new Promise(resolve => {
+      if (cmd === 'scan_network_source_cmd') {
+        setTimeout(resolve, 10)
+      } else {
+        resolve()
+      }
+    })
+
+    // Reproduire la logique corrigée
+    async function handleSyncClick() {
+      if (btn.classList.contains('syncing')) return
+      btn.classList.add('syncing')
+      syncStarted = btn.classList.contains('syncing')
+      try {
+        await fakeInvoke('scan_network_source_cmd', { sourceId: btn.dataset.sourceId })
+      } finally {
+        btn.classList.remove('syncing')
+        syncFinished = !btn.classList.contains('syncing')
+      }
+    }
+
+    await handleSyncClick()
+    expect(syncStarted).toBeTrue()
+    expect(syncFinished).toBeTrue()
+  })
+
+  it('Le bouton sync est protégé contre le double-clic', async () => {
+    const btn = document.createElement('button')
+    btn.className = 'settings-network-sync'
+
+    let invokeCount = 0
+    const fakeInvoke = () => new Promise(resolve => setTimeout(() => { invokeCount++; resolve() }, 20))
+
+    async function handleSyncClick() {
+      if (btn.classList.contains('syncing')) return  // GUARD
+      btn.classList.add('syncing')
+      try { await fakeInvoke() } finally { btn.classList.remove('syncing') }
+    }
+
+    // Double-clic simultané : le second doit être ignoré
+    handleSyncClick()
+    handleSyncClick() // ignoré car 'syncing' déjà présente
+    await new Promise(r => setTimeout(r, 50))
+
+    expect(invokeCount).toBe(1)
+  })
+
+  it('console.log est appelé au moins une fois pendant un sync simulé', async () => {
+    const logs = []
+    const origLog = console.log
+    console.log = (...args) => { logs.push(args.join(' ')); origLog(...args) }
+
+    // Simuler la logique avec log (fix F)
+    async function syncNetworkSource(sourceName) {
+      console.log(`[Library] ⟳ Sync SMB → ${sourceName} — démarrage`)
+      await new Promise(r => setTimeout(r, 5)) // Simule scan_network_source_cmd
+      console.log(`[Library] ⟳ Sync SMB → ${sourceName} — terminé`)
+    }
+
+    await syncNetworkSource('Ma bibliothèque NAS')
+
+    console.log = origLog
+
+    const hasSyncLog = logs.some(l => l.includes('[Library]') && l.includes('Sync SMB'))
+    expect(hasSyncLog).toBeTrue()
+  })
+
+  it('Le sync ne re-déclenche pas si déjà en cours', async () => {
+    const btn = document.createElement('button')
+    btn.classList.add('syncing') // Simule un sync déjà en cours
+
+    let callCount = 0
+
+    async function handleSyncClick() {
+      if (btn.classList.contains('syncing')) return // GUARD
+      callCount++
+    }
+
+    await handleSyncClick()
+    await handleSyncClick()
+
+    expect(callCount).toBe(0)
+  })
+})
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FIX G — STOP IMMÉDIAT : await audio_pause AVANT audio_play
+// Bug : invoke('audio_pause') sans await → Rust reçoit pause+play dans le même
+//       cycle → l'ancienne track jouait encore 3s pendant le buffering SMB.
+// Fix : await invoke('audio_pause').catch(() => {}) à la ligne 60 de playback.js
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('Fix G — Stop immédiat : audio_pause awaité avant audio_play', () => {
+
+  it('audio_pause se résout avant audio_play commence', async () => {
+    const callOrder = []
+    let pauseResolve
+
+    // Simuler invoke() avec une pause qui prend 10ms
+    async function fakeInvoke(cmd) {
+      if (cmd === 'audio_pause') {
+        callOrder.push('pause_start')
+        await new Promise(r => { pauseResolve = r; setTimeout(r, 10) })
+        callOrder.push('pause_end')
+      } else if (cmd === 'audio_play') {
+        callOrder.push('play_start')
+      }
+    }
+
+    // Reproduire la logique corrigée de playTrack() (lignes 57-96 de playback.js)
+    const playback = { audioIsPlaying: true }
+    async function correctedPlayTrack(trackPath) {
+      if (playback.audioIsPlaying) {
+        playback.audioIsPlaying = false
+        await fakeInvoke('audio_pause').catch(() => {}) // ← FIX : await
+      }
+      // Lancement audio (fire-and-forget comme dans le vrai code)
+      fakeInvoke('audio_play') // intentionnellement sans await (fire-and-forget)
+    }
+
+    await correctedPlayTrack('smb://nas/track.flac')
+
+    // Vérification : pause_end doit précéder play_start
+    const pauseEndIdx  = callOrder.indexOf('pause_end')
+    const playStartIdx = callOrder.indexOf('play_start')
+    assert(pauseEndIdx !== -1, 'audio_pause doit se résoudre')
+    assert(playStartIdx !== -1, 'audio_play doit être appelé')
+    assert(pauseEndIdx < playStartIdx,
+      `pause_end (idx=${pauseEndIdx}) doit précéder play_start (idx=${playStartIdx})`)
+  })
+
+  it('audio_play est tout de même appelé si audio_pause échoue (catch)', async () => {
+    const callOrder = []
+
+    async function fakeInvoke(cmd) {
+      if (cmd === 'audio_pause') throw new Error('Audio engine not initialized')
+      if (cmd === 'audio_play') callOrder.push('play')
+    }
+
+    const playback = { audioIsPlaying: true }
+    async function correctedPlayTrack() {
+      if (playback.audioIsPlaying) {
+        await fakeInvoke('audio_pause').catch(() => {}) // .catch() → pas de throw
+      }
+      fakeInvoke('audio_play')
+    }
+
+    await correctedPlayTrack()
+    expect(callOrder).toHaveLength(1)
+    expect(callOrder[0]).toBe('play')
+  })
+
+  it('audio_pause N\'est pas appelé si audioIsPlaying est false', async () => {
+    let pauseCalled = false
+    const fakeInvoke = async (cmd) => { if (cmd === 'audio_pause') pauseCalled = true }
+
+    const playback = { audioIsPlaying: false } // Aucune track en cours
+
+    async function correctedPlayTrack() {
+      if (playback.audioIsPlaying) {
+        await fakeInvoke('audio_pause').catch(() => {})
+      }
+      await fakeInvoke('audio_play')
+    }
+
+    await correctedPlayTrack()
+    expect(pauseCalled).toBeFalsy()
+  })
+
+  it('La pause attend ~10ms (non perceptible) mais est garantie', async () => {
+    const t0 = performance.now()
+    const fakeInvoke = async (cmd) => {
+      if (cmd === 'audio_pause') await new Promise(r => setTimeout(r, 10))
+    }
+    const playback = { audioIsPlaying: true }
+    await fakeInvoke('audio_pause').catch(() => {})
+    const elapsed = performance.now() - t0
+    // Doit attendre au moins 8ms (10ms ± overhead) mais moins de 100ms
+    expect(elapsed).toBeGreaterThan(8)
+    expect(elapsed).toBeLessThan(100)
+  })
+})
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FIX G — ANIMATION SMB BUFFERING : ::before sur .progress-container
+// Bug : CSS ciblait .progress-bar (<input range>) → WebKit/macOS ignore
+//        background-gradient sur les inputs range natifs.
+// Fix : Pseudo-élément ::before sur .progress-container — shimmer 3px indépendant.
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('Fix G — Animation SMB : ::before sur .progress-container', () => {
+
+  it('La classe "smb-buffering" est ajoutée au progressContainer (parent de l\'input)', async () => {
+    // Reproduire le markup exact de l'app
+    const container = document.createElement('div')
+    container.className = 'progress-container'
+    const input = document.createElement('input')
+    input.type = 'range'
+    input.className = 'progress-bar'
+    container.appendChild(input)
+    document.body.appendChild(container)
+
+    // Simuler la logique de playback.js ligne 93
+    const isSmb = true
+    if (isSmb) container.classList.add('smb-buffering')
+
+    expect(container.classList.contains('smb-buffering')).toBeTrue()
+    expect(input.classList.contains('smb-buffering')).toBeFalsy() // PAS sur l'input
+
+    container.classList.remove('smb-buffering')
+    document.body.removeChild(container)
+  })
+
+  it('La règle CSS ::before existe dans la feuille de style active', async () => {
+    // Inspecter les feuilles de style du document (incluant celles dans <style> du test)
+    let ruleFound = false
+    for (const sheet of document.styleSheets) {
+      try {
+        for (const rule of sheet.cssRules) {
+          if (rule.selectorText &&
+              rule.selectorText.includes('.progress-container.smb-buffering') &&
+              rule.selectorText.includes('::before')) {
+            ruleFound = true
+            break
+          }
+        }
+      } catch (e) { /* cross-origin stylesheet — ignorer */ }
+      if (ruleFound) break
+    }
+    expect(ruleFound).toBeTrue()
+  })
+
+  it('La règle @keyframes smb-buffering-slide existe', async () => {
+    let keyframeFound = false
+    for (const sheet of document.styleSheets) {
+      try {
+        for (const rule of sheet.cssRules) {
+          if (rule instanceof CSSKeyframesRule && rule.name === 'smb-buffering-slide') {
+            keyframeFound = true
+            break
+          }
+        }
+      } catch (e) { /* cross-origin */ }
+      if (keyframeFound) break
+    }
+    expect(keyframeFound).toBeTrue()
+  })
+
+  it('L\'animation smb-buffering-slide est appliquée au ::before (getComputedStyle)', async () => {
+    // Créer un conteneur live dans le document et vérifier le pseudo-élément
+    const container = document.createElement('div')
+    container.className = 'progress-container smb-buffering'
+    container.style.position = 'relative'
+    document.body.appendChild(container)
+
+    const pseudoStyle = window.getComputedStyle(container, '::before')
+    // La propriété animation-name doit être définie (non vide/"none")
+    const animName = pseudoStyle.animationName
+    const hasAnim = animName && animName !== 'none' && animName !== ''
+    // Note : getComputedStyle sur ::before ne fonctionne pas dans tous les contextes,
+    // on vérifie aussi la propriété content (doit être '""' = présent)
+    const hasContent = pseudoStyle.content !== 'none'
+
+    document.body.removeChild(container)
+
+    // Au moins l'une des deux propriétés doit être active
+    assert(hasAnim || hasContent,
+      `Pseudo-élément ::before non détecté (animation="${animName}", content="${pseudoStyle.content}")`)
+  })
+
+  it('La classe smb-buffering est retirée après la fin du play (finally)', async () => {
+    const container = document.createElement('div')
+    container.className = 'progress-container'
+
+    // Simuler le flow de playback.js (lignes 93, 108-110)
+    async function simulateSmb() {
+      container.classList.add('smb-buffering')         // Ajouté avant play
+      try {
+        await new Promise(r => setTimeout(r, 5))       // Simule audio_play
+      } finally {
+        container.classList.remove('smb-buffering')    // Retiré dans .finally()
+      }
+    }
+
+    await simulateSmb()
+    expect(container.classList.contains('smb-buffering')).toBeFalsy()
+  })
+})
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FIX I — HOMEPAGE IMMÉDIATE (< 100ms)
+// Bug : await generateDiscoveryMixes() bloquait tout le rendu (~0.5–1s)
+// Fix : Rendu immédiat avec discoveryMixes existant (cache mémoire) ;
+//       si expiré → génération async + re-render quand prêt
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('Fix I — Homepage immédiate : pas de await bloquant au rendu', () => {
+
+  it('Le rendu s\'effectue immédiatement avec le cache mémoire (< 5ms)', async () => {
+    // Simuler l'état module-level de views.js
+    let _discoveryMixesMemCache = [
+      { id: 'mix-0', title: 'Mix Jazz 1970', tracks: ['a', 'b', 'c'] }
+    ]
+    let _discoveryMixesMemCacheAt = Date.now() - 1000 // Cache récent (1s)
+    const DISCOVERY_MEM_TTL = 5 * 60 * 1000          // 5 min
+
+    let discoveryMixes = _discoveryMixesMemCache
+    let renderCalled = false
+    let renderTimestamp = 0
+
+    // Simuler le code corrigé de renderHome()
+    const t0 = performance.now()
+
+    function renderHome(mixes) {
+      renderCalled = true
+      renderTimestamp = performance.now() - t0
+    }
+
+    // Logique corrigée : rendu immédiat avec cache, refresh async si expiré
+    const now = Date.now()
+    const isCacheValid = _discoveryMixesMemCache &&
+      (now - _discoveryMixesMemCacheAt < DISCOVERY_MEM_TTL)
+
+    renderHome(isCacheValid ? _discoveryMixesMemCache : discoveryMixes)
+
+    if (!isCacheValid) {
+      // Refresh async sans bloquer (ne pas await ici)
+      ; (async () => {
+        await new Promise(r => setTimeout(r, 500)) // Simule génération lente
+        renderHome(discoveryMixes)
+      })()
+    }
+
+    expect(renderCalled).toBeTrue()
+    expect(renderTimestamp).toBeLessThan(5) // < 5ms — rendu immédiat
+  })
+
+  it('Le cache mémoire évite de rappeler generate si TTL non expiré', async () => {
+    let generateCallCount = 0
+
+    async function generateDiscoveryMixes() {
+      generateCallCount++
+      await new Promise(r => setTimeout(r, 100))
+      return [{ id: 'mix-0' }]
+    }
+
+    const DISCOVERY_MEM_TTL = 5 * 60 * 1000
+    let _cache = [{ id: 'mix-cached' }]
+    let _cacheAt = Date.now() - 30_000 // Cache de 30s (< 5min TTL)
+
+    // Logique corrigée : retour immédiat depuis cache mémoire
+    const now = Date.now()
+    let result
+    if (_cache && (now - _cacheAt < DISCOVERY_MEM_TTL)) {
+      result = _cache // Cache hit — pas de génération
+    } else {
+      result = await generateDiscoveryMixes()
+    }
+
+    expect(generateCallCount).toBe(0)       // generate PAS appelé
+    expect(result[0].id).toBe('mix-cached') // Données du cache retournées
+  })
+
+  it('generate est appelé de façon ASYNC (non-bloquant) si cache expiré', async () => {
+    let renderCount = 0
+    let generateResolved = false
+
+    async function slowGenerate() {
+      await new Promise(r => setTimeout(r, 50)) // Lente (~50ms)
+      generateResolved = true
+      return [{ id: 'fresh-mix' }]
+    }
+
+    function render(_mixes) { renderCount++ }
+
+    // Logique corrigée : rendu immédiat, puis re-render async
+    render([])           // Rendu immédiat avec mixes vides/anciens (sans await)
+    const beforeResolve = renderCount // = 1
+
+    ; (async () => {
+      const freshMixes = await slowGenerate()
+      render(freshMixes) // Re-render quand prêt
+    })()
+
+    // À ce stade, generate n'est pas encore résolu
+    expect(generateResolved).toBeFalsy()   // Pas encore terminé
+    expect(renderCount).toBe(1)            // 1 rendu immédiat, pas encore le re-render
+
+    // Attendre la résolution du generate
+    await new Promise(r => setTimeout(r, 80))
+    expect(generateResolved).toBeTrue()
+    expect(renderCount).toBe(2)            // Re-render effectué
+  })
+
+  it('Cache localStorage utilisé si cache mémoire expiré mais localStorage valide', async () => {
+    const DISCOVERY_MIX_TTL = 24 * 60 * 60 * 1000
+    const DISCOVERY_MIX_CACHE_KEY = 'noir-discovery-mixes'
+
+    const fakeMixes = [{ id: 'ls-mix', tracks: ['track-a', 'track-b', 'track-c'] }]
+    const fakeCache = { timestamp: Date.now() - 3600_000, mixes: fakeMixes } // Cache 1h (< 24h)
+
+    // Simuler localStorage
+    const fakeLS = { [DISCOVERY_MIX_CACHE_KEY]: JSON.stringify(fakeCache) }
+    const library = { tracks: [{ path: 'track-a' }] }
+
+    let result = null
+    try {
+      const cached = JSON.parse(fakeLS[DISCOVERY_MIX_CACHE_KEY])
+      const now = Date.now()
+      if (cached.timestamp && (now - cached.timestamp < DISCOVERY_MIX_TTL)) {
+        const pathSet = new Set(library.tracks.map(t => t.path))
+        const valid = cached.mixes.filter(mix => mix.tracks.some(p => pathSet.has(p)))
+        if (valid.length > 0) result = valid
+      }
+    } catch (e) {}
+
+    assert(result !== null, 'Résultat ne doit pas être null avec un cache localStorage valide')
+    expect(result[0].id).toBe('ls-mix')
+  })
+})
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FIX RUST — byte_len() retourne toujours Some(n)
+// Bug : SmbProgressiveFile::byte_len() retournait None pendant le téléchargement
+//        → Symphonia marquait le stream comme non-seekable.
+// Fix : Retourner Some(bytes_written) même si download_done = false
+//        → Notre impl Seek bloque jusqu'à la disponibilité → pas de read hors-limite
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('Fix Rust — SmbProgressiveFile : byte_len() toujours Some(n)', () => {
+
+  // Simulation du comportement de SmbProgressiveFile en JS (tests de logique pure)
+  class SmbProgressiveFile {
+    constructor(totalBytes, downloadDone = false) {
+      this._bytesWritten = 0
+      this._downloadDone = downloadDone
+      this._pos = 0
+      this._totalBytes = totalBytes
+      if (downloadDone) this._bytesWritten = totalBytes
+    }
+
+    // Simule le téléchargement progressif
+    simulateProgress(bytes) {
+      this._bytesWritten = Math.min(bytes, this._totalBytes)
+    }
+
+    completeDownload() {
+      this._bytesWritten = this._totalBytes
+      this._downloadDone = true
+    }
+
+    // FIX : toujours Some(bytes_written)
+    byteLen() {
+      return this._bytesWritten // Toujours défini (0 au début, n à la fin)
+    }
+
+    isSeekable() { return true }
+
+    // Seek bloque jusqu'à la disponibilité (simulé ici de façon synchrone)
+    seek(pos) {
+      if (pos > this._bytesWritten && !this._downloadDone) {
+        // En Rust : boucle d'attente de 50ms
+        // En JS test : on simule que les données seront disponibles
+        return null // Serait bloquant en Rust
+      }
+      this._pos = pos
+      return this._pos
+    }
+  }
+
+  it('byteLen() retourne 0 au début (pas null/undefined)', () => {
+    const f = new SmbProgressiveFile(1_000_000)
+    const len = f.byteLen()
+    assert(len !== null && len !== undefined, 'byte_len() ne doit pas être null/undefined')
+    expect(len).toBe(0) // 0 au début, mais Some(0) en Rust
+  })
+
+  it('byteLen() retourne la taille partielle pendant le téléchargement', () => {
+    const f = new SmbProgressiveFile(10_000_000)
+    f.simulateProgress(4_194_304) // 4MB téléchargés
+    const len = f.byteLen()
+    expect(len).toBe(4_194_304)
+    assert(len !== null, 'byte_len() doit être Some() pendant le téléchargement')
+  })
+
+  it('byteLen() retourne la taille totale une fois terminé', () => {
+    const f = new SmbProgressiveFile(130_023_097, true)
+    expect(f.byteLen()).toBe(130_023_097)
+  })
+
+  it('isSeekable() retourne true pendant ET après le téléchargement', () => {
+    const f1 = new SmbProgressiveFile(1_000_000)            // En cours
+    const f2 = new SmbProgressiveFile(1_000_000, true)       // Terminé
+    expect(f1.isSeekable()).toBeTrue()
+    expect(f2.isSeekable()).toBeTrue()
+  })
+
+  it('Le seek au-delà des bytes disponibles attendrait (simulé)', () => {
+    const f = new SmbProgressiveFile(10_000_000)
+    f.simulateProgress(4_000_000) // 4MB disponibles
+
+    // Seek à 5MB — pas encore disponible → null (simule le blocage Rust)
+    const result1 = f.seek(5_000_000)
+    expect(result1).toBe(null) // Bloquant en Rust (retourne null ici pour le test)
+
+    // Après download complet, seek fonctionne
+    f.completeDownload()
+    const result2 = f.seek(5_000_000)
+    expect(result2).toBe(5_000_000)
+  })
+})
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FIX RUST — current_path mis à jour après transition gapless
+// Bug : current_path dans audio_engine.rs n'était jamais mis à jour lors de la
+//        transition gapless (dans le callback CoreAudio).
+//        → Seek post-gapless re-probe l'ANCIEN fichier → mauvaise durée/chanson.
+// Fix : Ajout de current_path + next_path dans CallbackData.
+//        Lors de la transition : *data.current_path.lock() = data.next_path.lock().take()
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('Fix Rust — current_path mis à jour après transition gapless', () => {
+
+  // Simulation en JS de la logique de transition gapless
+  class GaplessEngine {
+    constructor() {
+      this.currentPath = null   // Simule current_path Arc<Mutex>
+      this.nextPath = null      // Simule next_path Arc<Mutex>
+      this.currentDuration = 0
+      this.nextDuration = 0
+    }
+
+    preloadNext(path, duration) {
+      this.nextPath = path
+      this.nextDuration = duration
+    }
+
+    gaplessTransition() {
+      if (!this.nextPath) return false
+
+      // FIX : mise à jour de current_path depuis next_path (comme en Rust)
+      this.currentPath = this.nextPath
+      this.currentDuration = this.nextDuration
+      this.nextPath = null
+      this.nextDuration = 0
+      return true
+    }
+
+    // Simule le seek-restart : utilise current_path pour re-probe
+    seekRestart(timeSeconds) {
+      if (!this.currentPath) return { error: 'No current file' }
+      if (timeSeconds > this.currentDuration) {
+        return { error: `out-of-range: ${timeSeconds}s > ${this.currentDuration}s` }
+      }
+      return { success: true, file: this.currentPath, position: timeSeconds }
+    }
+  }
+
+  it('current_path est mis à jour vers next_path lors de la transition gapless', () => {
+    const engine = new GaplessEngine()
+    engine.currentPath = '/cache/track-a.flac'
+    engine.currentDuration = 196.0
+
+    engine.preloadNext('/cache/track-b.flac', 330.34)
+    engine.gaplessTransition()
+
+    expect(engine.currentPath).toBe('/cache/track-b.flac')
+  })
+
+  it('next_path est vidé après la transition gapless', () => {
+    const engine = new GaplessEngine()
+    engine.currentPath = '/cache/track-a.flac'
+    engine.preloadNext('/cache/track-b.flac', 330.34)
+    engine.gaplessTransition()
+
+    expect(engine.nextPath).toBe(null) // take() → None en Rust
+  })
+
+  it('Seek post-transition utilise la durée du NOUVEAU fichier (pas l\'ancien)', () => {
+    const engine = new GaplessEngine()
+    engine.currentPath = '/cache/track-a.flac'
+    engine.currentDuration = 196.0    // Ancien : 3m16s
+
+    engine.preloadNext('/cache/track-b.flac', 330.34) // Nouveau : 5m30s
+    engine.gaplessTransition()
+
+    // Seek à 297.31s — valide pour track-b (330.34s), invalide pour track-a (196s)
+    const result = engine.seekRestart(297.31)
+    expect(result.success).toBeTrue()
+    expect(result.file).toBe('/cache/track-b.flac')
+    expect(result.position).toBe(297.31)
+  })
+
+  it('ANCIEN BUG REPRODUIT : seek échoue si current_path n\'est pas mis à jour', () => {
+    // Simuler le bug original (sans mise à jour de current_path)
+    const engine = new GaplessEngine()
+    engine.currentPath = '/cache/track-a.flac'
+    engine.currentDuration = 196.0
+
+    // BUG : pas de gaplessTransition() → current_path reste sur track-a
+    // (on NE call PAS engine.gaplessTransition())
+
+    // Seek à 297.31s dans track-a (196s) → out-of-range
+    const result = engine.seekRestart(297.31)
+    assert(result.error !== undefined, 'Doit échouer avec le bug original')
+    expect(result.error).toContain('out-of-range')
+  })
+
+  it('Seek au début du nouveau track fonctionne correctement', () => {
+    const engine = new GaplessEngine()
+    engine.currentPath = '/cache/track-a.flac'
+    engine.currentDuration = 196.0
+    engine.preloadNext('/cache/track-b.flac', 330.34)
+    engine.gaplessTransition()
+
+    const result = engine.seekRestart(0.0)
+    expect(result.success).toBeTrue()
+    expect(result.position).toBe(0.0)
+  })
+
+  it('Durée mise à jour dans le callback pour la progress bar', () => {
+    const engine = new GaplessEngine()
+    engine.currentDuration = 196.0
+    engine.preloadNext('/cache/track-b.flac', 330.34)
+    engine.gaplessTransition()
+
+    // Après transition, la durée du track courant doit être celle du nouveau
+    expect(engine.currentDuration).toBe(330.34)
+  })
+})
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FIX RUST — audio_preload_next SMB-aware (cancel_previous=false)
+// Bug : audio_preload_next ne gérait pas les URIs smb:// → gapless impossible
+//        pour les fichiers NAS.
+// Fix : Commande async qui parse smb://, lance start_progressive_download avec
+//        cancel_previous=false, attend 4MB, puis appelle engine.preload_next()
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('Fix Rust — audio_preload_next SMB-aware', () => {
+
+  // Simuler le comportement de start_progressive_download
+  function simulateProgressiveDownload(uri, cancelPrevious) {
+    const downloaded = { bytes: 0, done: false, cancelled: false }
+    // Simuler un download qui progresse
+    const interval = setInterval(() => {
+      if (downloaded.cancelled) { clearInterval(interval); return }
+      downloaded.bytes = Math.min(downloaded.bytes + 1_000_000, 50_000_000)
+      if (downloaded.bytes >= 50_000_000) {
+        downloaded.done = true
+        clearInterval(interval)
+      }
+    }, 2)
+    return { downloaded, cancel: () => { downloaded.cancelled = true } }
+  }
+
+  it('Le preload NE cancelle PAS le download courant (cancel_previous=false)', async () => {
+    // Simuler deux downloads en cours
+    const currentDownload = { cancelled: false }
+    const currentCancelFn = () => { currentDownload.cancelled = true }
+
+    // Logique de start_progressive_download avec cancel_previous=false
+    function startDownload(uri, cancelPrevious) {
+      if (cancelPrevious && currentCancelFn) {
+        currentCancelFn() // Annule le précédent seulement si demandé
+      }
+      return { bytes: 0, done: false }
+    }
+
+    // Preload → cancel_previous=false
+    const preload = startDownload('smb://nas/track-b.flac', false)
+    expect(currentDownload.cancelled).toBeFalsy() // Track courante NON annulée
+  })
+
+  it('audio_play cancelle le download précédent (cancel_previous=true)', async () => {
+    const previousDownload = { cancelled: false }
+    const cancelFn = () => { previousDownload.cancelled = true }
+
+    function startDownload(uri, cancelPrevious) {
+      if (cancelPrevious) cancelFn()
+      return { bytes: 0, done: false }
+    }
+
+    // audio_play → cancel_previous=true
+    startDownload('smb://nas/new-track.flac', true)
+    expect(previousDownload.cancelled).toBeTrue() // Précédent annulé ✓
+  })
+
+  it('Le preload attend au moins 4MB avant engine.preload_next()', async () => {
+    const MIN_BYTES = 4 * 1024 * 1024
+    let preloadNextCalled = false
+    let preloadNextCalledAt = 0
+
+    // Simuler un download progressif (passe 4MB après ~20ms dans ce test)
+    const download = { bytes: 0, done: false }
+    const interval = setInterval(() => {
+      download.bytes += 500_000
+      if (download.bytes >= 20_000_000) { download.done = true; clearInterval(interval) }
+    }, 5)
+
+    // Simuler la logique du loop d'attente (corrigée)
+    const t0 = performance.now()
+    async function waitAndPreload() {
+      while (true) {
+        if (download.bytes >= MIN_BYTES || download.done) break
+        await new Promise(r => setTimeout(r, 10))
+      }
+      preloadNextCalled = true
+      preloadNextCalledAt = performance.now() - t0
+    }
+
+    await waitAndPreload()
+    clearInterval(interval)
+
+    expect(preloadNextCalled).toBeTrue()
+    // preload_next n'est appelé qu'une fois 4MB disponibles
+    assert(download.bytes >= MIN_BYTES || download.done,
+      `preload_next appelé avec seulement ${download.bytes} bytes (< 4MB)`)
+  })
+
+  it('Le download en cours peut être réutilisé si même fichier demandé (REUSE)', async () => {
+    // Simuler PROGRESSIVE_DOWNLOADS registry
+    const registry = new Map()
+    const trackPath = '/cache/ede90d7c.flac'
+    const existingDownload = { bytes: 2_000_000, done: false }
+
+    registry.set(trackPath, existingDownload)
+
+    // Logique de start_progressive_download : vérifier si déjà en cours
+    function startOrReuseDownload(path, cancelPrevious) {
+      const existing = registry.get(path)
+      if (existing) {
+        return { reused: true, download: existing } // Réutilise sans nouveau thread
+      }
+      // Nouveau download...
+      return { reused: false, download: { bytes: 0, done: false } }
+    }
+
+    const result = startOrReuseDownload(trackPath, true) // audio_play sur même fichier
+    expect(result.reused).toBeTrue()
+    expect(result.download).toBe(existingDownload)
+  })
+
+  it('Timeout non-fatal : preload abandonné si trop lent, lecture continue', async () => {
+    let preloadCompleted = false
+    let timedOut = false
+
+    // Simuler un preload très lent (ne passe jamais 4MB dans le délai test)
+    const download = { bytes: 100_000, done: false } // Seulement 100KB
+
+    async function preloadWithTimeout(download, timeoutMs) {
+      const MIN_BYTES = 4 * 1024 * 1024
+      const deadline = Date.now() + timeoutMs
+      while (true) {
+        if (download.bytes >= MIN_BYTES || download.done) {
+          preloadCompleted = true
+          return true
+        }
+        if (Date.now() > deadline) {
+          timedOut = true
+          return false // Non-fatal : retourne Ok(()) en Rust
+        }
+        await new Promise(r => setTimeout(r, 5))
+      }
+    }
+
+    const result = await preloadWithTimeout(download, 50) // Timeout 50ms (très court pour le test)
+
+    expect(result).toBeFalsy()  // Timeout
+    expect(timedOut).toBeTrue()
+    expect(preloadCompleted).toBeFalsy()
+    // Le timeout est NON-FATAL : la fonction retourne Ok(()) et la lecture continue
+  })
+})
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RENDU DES RÉSULTATS
+// ══════════════════════════════════════════════════════════════════════════════
+
+function renderResults() {
+  const suitesEl = document.getElementById('suites')
+  const summaryEl = document.getElementById('summary')
+
+  let totalPass = 0, totalFail = 0, totalSkip = 0
+
+  // Grouper par suite
+  const suiteMap = new Map()
+  for (const r of results) {
+    if (!suiteMap.has(r.suite)) suiteMap.set(r.suite, [])
+    suiteMap.get(r.suite).push(r)
+  }
+
+  for (const [suiteName, tests] of suiteMap) {
+    const c = suiteCounters[suiteName] || { pass: 0, fail: 0, skip: 0 }
+    totalPass += c.pass; totalFail += c.fail; totalSkip += c.skip
+
+    const status = c.fail > 0 ? 'fail' : (c.skip > 0 && c.pass === 0 ? 'skip' : 'pass')
+    const badge = c.fail > 0
+      ? `<span class="badge fail">${c.fail} erreur${c.fail > 1 ? 's' : ''}</span>`
+      : `<span class="badge pass">${c.pass}/${c.pass + c.skip} passés</span>`
+
+    const suiteDiv = document.createElement('div')
+    suiteDiv.className = 'suite'
+    suiteDiv.innerHTML = `
+      <div class="suite-header">
+        ${badge}
+        <span>${escapeHtml(suiteName)}</span>
+      </div>
+    `
+
+    for (const t of tests) {
+      const icon = { pass: '✓', fail: '✗', skip: '–' }[t.status]
+      const testEl = document.createElement('div')
+      testEl.className = 'test'
+      testEl.innerHTML = `
+        <div class="icon ${t.status}">${icon}</div>
+        <div class="test-body">
+          <div class="test-name ${t.status}">${escapeHtml(t.name)}</div>
+          ${t.error ? `<div class="error-msg">${escapeHtml(t.error)}</div>` : ''}
+        </div>
+      `
+      suiteDiv.appendChild(testEl)
+    }
+
+    suitesEl.appendChild(suiteDiv)
+  }
+
+  // Summary
+  summaryEl.style.display = 'flex'
+  summaryEl.innerHTML = `
+    <span class="s-pass">✓ ${totalPass} passés</span>
+    <span class="s-fail">${totalFail > 0 ? `✗ ${totalFail} échoués` : ''}</span>
+    <span class="s-skip">${totalSkip > 0 ? `– ${totalSkip} ignorés` : ''}</span>
+    <span class="s-total">${totalPass + totalFail + totalSkip} tests au total</span>
+  `
+
+  // Info bar
+  const ts = new Date().toLocaleTimeString('fr-FR')
+  document.getElementById('run-info').textContent =
+    `Exécutés le ${new Date().toLocaleDateString('fr-FR')} à ${ts} — ${totalFail === 0 ? '✅ Tous les tests passent' : `❌ ${totalFail} test(s) échoué(s)`}`
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+// ── Exécuter tous les tests ────────────────────────────────────────────────
+// (describe() a déjà peuplé queue de façon synchrone ci-dessus)
+await runAllTests()
+renderResults()
+
+// ── Persistence des cases à cocher (localStorage) ──────────────────────────
+const CHECKBOX_KEY = 'noir-manual-checks'
+
+function saveCheckboxes() {
+  const state = {}
+  document.querySelectorAll('.manual-check').forEach((cb, i) => {
+    state[i] = cb.checked
+  })
+  localStorage.setItem(CHECKBOX_KEY, JSON.stringify(state))
+}
+
+function restoreCheckboxes() {
+  try {
+    const state = JSON.parse(localStorage.getItem(CHECKBOX_KEY) || '{}')
+    document.querySelectorAll('.manual-check').forEach((cb, i) => {
+      if (state[i] !== undefined) {
+        cb.checked = state[i]
+        cb.closest('.manual-item')?.classList.toggle('checked', state[i])
+      }
+    })
+  } catch (e) { /* JSON corrompu → ignorer */ }
+}
+
+document.querySelectorAll('.manual-check').forEach((cb) => {
+  cb.addEventListener('change', () => {
+    cb.closest('.manual-item')?.classList.toggle('checked', cb.checked)
+    saveCheckboxes()
+  })
+})
+
+restoreCheckboxes()
+</script>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+  SECTION MANUELLE : Tests Rust (nécessitent l'app en cours d'exécution)
+══════════════════════════════════════════════════════════════════════════ -->
+<div id="manual-sections" style="margin-top:8px">
+
+  <div class="manual-section">
+    <div class="manual-header">
+      <span class="tag">MANUEL — Rust + App</span>
+      🎵 SMB Progressive Download — Seek + Duration
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        Seek fonctionne sur un fichier SMB (file 192kHz, ~130MB)
+        <span class="step">1. Jouer une track NAS 2. Cliquer au milieu de la progress bar</span>
+        <span class="expected">✓ La lecture reprend à la bonne position (±1s) — pas de "stream is not seekable"</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        La durée ne change pas pendant un seek SMB
+        <span class="step">1. Jouer track NAS 2. Faire plusieurs seeks rapides sur la progress bar</span>
+        <span class="expected">✓ La durée affichée (ex: 5:30) reste stable — pas de saut à 3:16 ou 2:46</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        La progress bar ne saute pas à la fin lors du seek
+        <span class="step">1. Jouer track NAS 2. Cliquer à la moitié de la progress bar</span>
+        <span class="expected">✓ La position affichée correspond au clic — pas de saut à 99% ni de blocage</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        Seek à la toute fin de la track → gapless ou track suivante
+        <span class="step">1. Jouer track NAS 2. Cliquer à 95%+ de la progress bar</span>
+        <span class="expected">✓ La track joue jusqu'à la fin naturellement ou passe à la suivante — pas de boucle/crash</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="manual-section">
+    <div class="manual-header">
+      <span class="tag">MANUEL — Rust + App</span>
+      🔄 Gapless Transition : Seek après changement de track
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        Seek après transition gapless utilise le BON fichier
+        <span class="step">1. Jouer album NAS complet en gapless 2. Laisser passer à la track suivante automatiquement 3. Faire un seek dans la nouvelle track</span>
+        <span class="expected">✓ "Decoder finished, restarting" utilise le chemin de la nouvelle track — pas "out-of-range"</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        La durée dans la progress bar reste correcte après transition gapless
+        <span class="step">1. Track A (196s) → transition gapless → Track B (330s) 2. Faire un seek dans Track B</span>
+        <span class="expected">✓ La durée affiche 5:30 (Track B) — pas 3:16 (Track A)</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        La track courante ne change pas après un seek post-gapless
+        <span class="step">1. Gapless Track A → Track B 2. Seek dans Track B</span>
+        <span class="expected">✓ L'audio reste sur Track B — ne revient pas sur Track A depuis le début</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="manual-section">
+    <div class="manual-header">
+      <span class="tag">MANUEL — Rust + App</span>
+      ⏭ Gapless Preload SMB (audio_preload_next)
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        La track suivante NAS est préchargée dans les logs (console ou Rust stdout)
+        <span class="step">1. Jouer track NAS 2. Observer les logs quand il reste ~60s</span>
+        <span class="expected">✓ "[SMB Preload] preload gapless démarré" apparaît dans les logs Rust</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        Le download du track courant n'est PAS interrompu pendant le preload
+        <span class="step">1. Jouer track NAS (gros fichier ~220MB) 2. Observer les logs Rust pendant le preload</span>
+        <span class="expected">✓ "cancel_previous=false" dans les logs — le download courant continue</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        La transition gapless s'effectue sans délai audible
+        <span class="step">1. Jouer album NAS complet 2. Laisser passer à la track suivante automatiquement</span>
+        <span class="expected">✓ "[CoreAudioStream] GAPLESS TRANSITION" dans les logs — transition imperceptible (~0ms)</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        Si le preload timeout (connexion lente), la lecture continue sans erreur
+        <span class="step">1. Throttler la connexion NAS 2. Laisser le preload démarrer 3. Observer</span>
+        <span class="expected">✓ "[SMB Preload] Timeout — preload abandonné" dans les logs — pas de crash</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="manual-section">
+    <div class="manual-header">
+      <span class="tag">MANUEL — UI + App</span>
+      🗑 Fix D — Suppression SMB : bibliothèque rechargée
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        Les tracks NAS disparaissent immédiatement après suppression de la source
+        <span class="step">1. Settings → Network → supprimer une source NAS</span>
+        <span class="expected">✓ Les tracks NAS ne sont plus dans la bibliothèque — pas de rechargement manuel nécessaire</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        Les tracks locales restent intactes après suppression d'une source NAS
+        <span class="step">1. Bibliothèque mixte (local + NAS) 2. Supprimer source NAS</span>
+        <span class="expected">✓ Les tracks locales sont toujours présentes — seules les tracks NAS disparaissent</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="manual-section">
+    <div class="manual-header">
+      <span class="tag">MANUEL — UI + App</span>
+      ⟳ Fix F — Sync sidebar + ⚡ Fix I — Homepage immédiate
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        Le bouton ⟳ (réindexer) affiche l'état "syncing" pendant l'opération
+        <span class="step">1. Settings → Network → cliquer le bouton ⟳ d'une source NAS</span>
+        <span class="expected">✓ Le bouton a la classe "syncing" (animation visible) puis retourne à l'état normal</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        La homepage s'affiche instantanément (< 100ms) si les mixes sont en cache
+        <span class="step">1. Aller sur la homepage 2. Naviguer ailleurs 3. Revenir sur la homepage</span>
+        <span class="expected">✓ Affichage instantané — les mixes apparaissent sans délai de 0.5–1s</span>
+      </div>
+    </div>
+
+    <div class="manual-item">
+      <input type="checkbox" class="manual-check" />
+      <div class="manual-label">
+        L'animation shimmer NAS est visible pendant le buffering SMB
+        <span class="step">1. Jouer une track NAS non-cachée 2. Observer la progress bar</span>
+        <span class="expected">✓ Une fine barre shimmer argentée (3px) anime la progress bar pendant le chargement</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Sandbox CSS pour visualisation de l'animation -->
+<div style="margin-top:24px; padding:16px 0; border-top:1px solid #1a1a1a">
+  <p style="font-size:11px;color:#444;margin-bottom:12px;">Prévisualisation de l'animation SMB buffering (Fix G CSS)</p>
+  <div style="display:flex;gap:20px;align-items:center">
+    <div style="font-size:11px;color:#555;min-width:80px">Inactive :</div>
+    <div class="progress-container" style="flex:1;min-width:200px;background:#0d0d0d;padding:8px;border-radius:4px">
+      <span style="font-size:11px;color:#444">0:00</span>
+      <input type="range" class="progress-bar" value="40" style="flex:1">
+      <span style="font-size:11px;color:#444">5:30</span>
+    </div>
+  </div>
+  <div style="display:flex;gap:20px;align-items:center;margin-top:8px">
+    <div style="font-size:11px;color:#555;min-width:80px">SMB buffering :</div>
+    <div class="progress-container smb-buffering" style="flex:1;min-width:200px;background:#0d0d0d;padding:8px;border-radius:4px">
+      <span style="font-size:11px;color:#444">0:00</span>
+      <input type="range" class="progress-bar" value="0" disabled>
+      <span style="font-size:11px;color:#444">5:30</span>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

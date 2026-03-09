@@ -228,6 +228,12 @@ impl AudioEngine {
             .map_err(|e| e.to_string())
     }
 
+    /// Get the OS-level system default output device ID (bypasses manual selection)
+    /// Returns None if not supported on this platform.
+    pub fn system_default_device_id(&self) -> Option<String> {
+        self.backend.lock().system_default_device_id()
+    }
+
     /// Set the output device by ID
     pub fn set_output_device(&self, device_id: &str) -> Result<(), String> {
         self.backend
@@ -332,9 +338,12 @@ impl AudioEngine {
         loop {
             match command_rx.recv() {
                 Ok(AudioCommand::Play(path, start_position)) => {
+                    let start_time = std::time::Instant::now();
+                    // ── [TIMING ENG-0] Commande Play reçue par le thread audio ──
+                    println!("[SMB TIMING] ENG+0ms   — AudioCommand::Play received: {}",
+                        &path[..path.len().min(60)]);
                     #[cfg(debug_assertions)]
                     println!("=== Starting playback: {} at {:?}s ===", path, start_position);
-                    let start_time = std::time::Instant::now();
 
                     // Clear gapless preload (manual play cancels it)
                     *next_consumer.lock() = None;
@@ -360,6 +369,9 @@ impl AudioEngine {
                             println!("[AudioEngine] Previous stream stopped and dropped");
                         }
                     }
+                    // ── [TIMING ENG-1] Stream précédent arrêté ───────────────
+                    println!("[SMB TIMING] ENG+{}ms — previous stream stopped",
+                        start_time.elapsed().as_millis());
                     // Stop la session précédente (décodeur)
                     {
                         let mut session_guard = current_session_cmd.lock();
@@ -378,18 +390,24 @@ impl AudioEngine {
                         let _ = app.emit("playback_loading", true);
                     }
 
+                    // ── [TIMING ENG-2] Probe du fichier ──────────────────────
+                    println!("[SMB TIMING] ENG+{}ms — probe_audio_file START",
+                        start_time.elapsed().as_millis());
                     // 1. Probe le fichier pour obtenir le sample rate source
                     let source_info = match crate::audio_decoder::probe_audio_file(&path) {
                         Ok(info) => info,
                         Err(e) => {
                             eprintln!("Failed to probe file: {}", e);
                             if let Some(ref app) = app_handle {
-                                emit_error(app, "file_probe_failed", "Fichier audio illisible ou corrompu", &e);
+                                emit_error(app, "file_probe_failed", "Unreadable or corrupted audio file", &e);
                                 let _ = app.emit("playback_loading", false);
                             }
                             continue;
                         }
                     };
+                    println!("[SMB TIMING] ENG+{}ms — probe_audio_file DONE ({}Hz, {}ch, {:.1}s)",
+                        start_time.elapsed().as_millis(),
+                        source_info.sample_rate, source_info.channels, source_info.duration_seconds);
 
                     // 2. Get device ID from backend (PURE COREAUDIO - no CPAL)
                     let device_id = backend.lock().get_device_id();
@@ -404,6 +422,9 @@ impl AudioEngine {
                         }
                     }
 
+                    // ── [TIMING ENG-3] Préparation DAC ───────────────────────
+                    println!("[SMB TIMING] ENG+{}ms — prepare_for_streaming START ({}Hz)",
+                        start_time.elapsed().as_millis(), source_info.sample_rate);
                     // 3. Use backend to prepare device for streaming (changes sample rate if possible)
                     let stream_config = StreamConfig::stereo(source_info.sample_rate);
                     let (optimal_rate, is_bit_perfect) = {
@@ -426,11 +447,18 @@ impl AudioEngine {
 
                     let needs_resampling = !is_bit_perfect;
                     let target_rate = if needs_resampling { Some(optimal_rate) } else { None };
+                    // ── [TIMING ENG-4] DAC prêt ──────────────────────────────
+                    println!("[SMB TIMING] ENG+{}ms — prepare_for_streaming DONE ({}Hz→{}Hz, bit-perfect={}, resample={})",
+                        start_time.elapsed().as_millis(),
+                        source_info.sample_rate, optimal_rate, is_bit_perfect, needs_resampling);
 
                     #[cfg(debug_assertions)]
                     println!("Source: {}Hz, Output: {}Hz, Bit-Perfect: {}, Resampling: {}",
                         source_info.sample_rate, optimal_rate, is_bit_perfect, needs_resampling);
 
+                    // ── [TIMING ENG-5] Démarrage streaming + pre-roll ────────
+                    println!("[SMB TIMING] ENG+{}ms — start_streaming_with_config START (pre-roll wait…)",
+                        start_time.elapsed().as_millis());
                     // 3. Démarre le streaming avec le source rate ET le target rate
                     let session_result = start_streaming_with_config(
                         &path,
@@ -442,6 +470,9 @@ impl AudioEngine {
                     match session_result {
                         Ok(mut session) => {
                             let init_time = start_time.elapsed();
+                            // ── [TIMING ENG-6] Pre-roll atteint, session prête ──
+                            println!("[SMB TIMING] ENG+{}ms — start_streaming_with_config DONE (pre-roll ready in {:?})",
+                                start_time.elapsed().as_millis(), init_time);
                             #[cfg(debug_assertions)]
                             println!("Streaming session ready in {:?}", init_time);
 
@@ -484,6 +515,8 @@ impl AudioEngine {
                                     Arc::clone(&next_streaming_state),
                                     Arc::clone(&gapless_enabled),
                                     Arc::clone(&state.rms_energy),
+                                    Arc::clone(&current_path),
+                                    Arc::clone(&next_path),
                                 );
 
                                 match stream_result {
@@ -491,12 +524,15 @@ impl AudioEngine {
                                         if let Err(e) = s.start() {
                                             eprintln!("Failed to start stream: {}", e);
                                             if let Some(ref app) = app_handle {
-                                                emit_error(app, "stream_start_failed", "Erreur de lecture audio", &e);
+                                                emit_error(app, "stream_start_failed", "Audio playback error", &e);
                                             }
                                         } else {
                                             state.is_playing.store(true, Ordering::Relaxed);
                                             state.is_paused.store(false, Ordering::Relaxed);
                                             *current_stream.lock() = Some(s);
+                                        // ── [TIMING ENG-7] SON DÉMARRÉ ───────────────────────
+                                        println!("[SMB TIMING] ENG+{}ms — ✅ AUDIO STARTED (stream.start() OK) ← total engine: {}ms",
+                                            start_time.elapsed().as_millis(), start_time.elapsed().as_millis());
                                         #[cfg(debug_assertions)]
                                         println!("=== Playback started in {:?} ===", start_time.elapsed());
 
@@ -521,14 +557,14 @@ impl AudioEngine {
                                     Err(e) => {
                                         eprintln!("Failed to create audio stream: {}", e);
                                         if let Some(ref app) = app_handle {
-                                            emit_error(app, "stream_create_failed", "Impossible de créer le flux audio", &e);
+                                            emit_error(app, "stream_create_failed", "Failed to create audio stream", &e);
                                         }
                                     }
                                 }
                             } else {
                                 eprintln!("Failed to take consumer from session");
                                 if let Some(ref app) = app_handle {
-                                    emit_error(app, "decode_failed", "Erreur de décodage du fichier", "Consumer unavailable");
+                                    emit_error(app, "decode_failed", "File decoding error", "Consumer unavailable");
                                 }
                             }
 
@@ -539,7 +575,7 @@ impl AudioEngine {
                         Err(e) => {
                             eprintln!("Failed to start streaming: {}", e);
                             if let Some(ref app) = app_handle {
-                                emit_error(app, "decode_failed", "Erreur de décodage du fichier", &e);
+                                emit_error(app, "decode_failed", "File decoding error", &e);
                                 let _ = app.emit("playback_loading", false);
                             }
                         }
@@ -653,7 +689,7 @@ impl AudioEngine {
                                 Err(e) => {
                                     eprintln!("Failed to probe file: {}", e);
                                     if let Some(ref app) = app_handle {
-                                        emit_error(app, "seek_failed", "Erreur lors du repositionnement", &e);
+                                        emit_error(app, "seek_failed", "Seek error", &e);
                                         let _ = app.emit("playback_loading", false);
                                     }
                                     state.is_seeking.store(false, Ordering::Relaxed);
@@ -713,12 +749,14 @@ impl AudioEngine {
                                             Arc::clone(&next_streaming_state),
                                             Arc::clone(&gapless_enabled),
                                             Arc::clone(&state.rms_energy),
+                                            Arc::clone(&current_path),
+                                            Arc::clone(&next_path),
                                         ) {
                                             Ok(mut s) => {
                                                 if let Err(e) = s.start() {
                                                     eprintln!("Failed to restart stream: {}", e);
                                                     if let Some(ref app) = app_handle {
-                                                        emit_error(app, "stream_start_failed", "Erreur de lecture audio", &e);
+                                                        emit_error(app, "stream_start_failed", "Audio playback error", &e);
                                                     }
                                                 } else {
                                                     state.is_playing.store(true, Ordering::Relaxed);
@@ -742,7 +780,7 @@ impl AudioEngine {
                                             Err(e) => {
                                                 eprintln!("Failed to create restart stream: {}", e);
                                                 if let Some(ref app) = app_handle {
-                                                    emit_error(app, "stream_create_failed", "Impossible de créer le flux audio", &e);
+                                                    emit_error(app, "stream_create_failed", "Failed to create audio stream", &e);
                                                 }
                                             }
                                         }
@@ -754,7 +792,7 @@ impl AudioEngine {
                                 Err(e) => {
                                     eprintln!("Failed to restart for seek: {}", e);
                                     if let Some(ref app) = app_handle {
-                                        emit_error(app, "seek_failed", "Erreur lors du repositionnement", &e);
+                                        emit_error(app, "seek_failed", "Seek error", &e);
                                         let _ = app.emit("playback_loading", false);
                                     }
                                 }

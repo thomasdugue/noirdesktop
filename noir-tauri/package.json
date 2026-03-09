@@ -4,9 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@jest/globals": "^29",
+    "@tauri-apps/cli": "^2",
+    "jest": "^29"
   }
 }

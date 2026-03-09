@@ -1,13 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
+use std::sync::atomic::{AtomicU64, AtomicBool};
 use std::io::Cursor;
 use once_cell::sync::Lazy;
 use walkdir::WalkDir;
 use lofty::{Accessor, AudioFile, Probe, TaggedFileExt, MimeType, TagExt};
 use base64::{Engine as _, engine::general_purpose};
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use reqwest::Client;
 use rayon::prelude::*;
@@ -17,11 +20,17 @@ use percent_encoding::percent_decode_str;
 
 // === AUDIO ENGINE MODULES ===
 mod audio;
-mod audio_decoder;
+pub mod audio_decoder;
 mod audio_engine;
 mod resampler;
 mod eq;
 use audio_engine::AudioEngine;
+
+// === MEDIA CONTROLS (MPRemoteCommandCenter — media keys macOS) ===
+mod media_controls;
+
+// === NETWORK / NAS MODULES ===
+mod network;
 
 // Structure pour un fichier audio
 #[derive(Serialize, Deserialize, Clone)]
@@ -33,7 +42,7 @@ struct AudioTrack {
 
 // Structure pour un fichier audio avec métadonnées (scan rapide)
 #[derive(Serialize, Deserialize, Clone)]
-struct TrackWithMetadata {
+pub(crate) struct TrackWithMetadata {
     path: String,
     name: String,
     folder: String,
@@ -42,7 +51,7 @@ struct TrackWithMetadata {
 
 // Structure pour les métadonnées
 #[derive(Serialize, Deserialize, Clone)]
-struct Metadata {
+pub(crate) struct Metadata {
     title: String,
     artist: String,
     album: String,
@@ -103,10 +112,14 @@ struct PlaylistsData {
 }
 
 // Cache pour les pochettes "not found" sur Internet (évite les requêtes répétées)
+// Stocke un timestamp Unix (secondes) par entrée pour permettre un TTL de 30 jours.
+// Ancienne structure : HashMap<String, bool> → migration automatique via unwrap_or_default.
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct InternetCoverNotFoundCache {
-    entries: HashMap<String, bool>, // album_key -> true si déjà cherché sans succès
+    entries: HashMap<String, u64>, // album_key -> timestamp Unix (secs) du "not found"
 }
+
+const INTERNET_NOT_FOUND_TTL_SECS: u64 = 30 * 24 * 3600; // 30 jours
 
 // === HISTORIQUE D'ÉCOUTE ===
 // Structure pour une entrée d'écoute
@@ -156,7 +169,7 @@ struct LibraryStats {
 
 // === ÉVÉNEMENTS DE SCAN ===
 #[derive(Serialize, Clone)]
-struct ScanProgress {
+pub(crate) struct ScanProgress {
     phase: String,           // "scanning" | "loading_metadata" | "complete"
     current: usize,
     total: usize,
@@ -286,7 +299,7 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
 });
 
 // === CHEMINS DES FICHIERS ===
-fn get_data_dir() -> PathBuf {
+pub(crate) fn get_data_dir() -> PathBuf {
     let home = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     home.join("noir")
 }
@@ -336,7 +349,7 @@ fn load_config() -> Config {
 
 /// SECURITY: Write file with restricted permissions (0600 on Unix)
 /// Prevents other users on the system from reading sensitive data
-fn save_file_secure(path: &std::path::Path, content: &str) {
+pub(crate) fn save_file_secure(path: &std::path::Path, content: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok();
     }
@@ -395,7 +408,15 @@ fn load_internet_not_found_cache() -> InternetCoverNotFoundCache {
     let cache_path = get_data_dir().join("internet_not_found_cache.json");
     if cache_path.exists() {
         let content = fs::read_to_string(&cache_path).unwrap_or_default();
-        serde_json::from_str(&content).unwrap_or_default()
+        // unwrap_or_default() assure la migration depuis l'ancien format HashMap<String, bool>
+        let mut cache: InternetCoverNotFoundCache = serde_json::from_str(&content).unwrap_or_default();
+        // Purge les entrées expirées (TTL 30 jours)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        cache.entries.retain(|_, ts| now.saturating_sub(*ts) < INTERNET_NOT_FOUND_TTL_SECS);
+        cache
     } else {
         InternetCoverNotFoundCache::default()
     }
@@ -1798,8 +1819,14 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
         let config = load_config();
         let library_paths = config.library_paths;
 
-        if library_paths.is_empty() {
-            // Pas de bibliothèque configurée
+        // Vérifie s'il y a des sources réseau activées
+        let has_network_sources = NETWORK_SOURCES
+            .lock()
+            .map(|s| s.iter().any(|src| src.enabled))
+            .unwrap_or(false);
+
+        if library_paths.is_empty() && !has_network_sources {
+            // Aucune source locale ni réseau configurée
             let _ = app_handle.emit("scan_complete", ScanComplete {
                 stats: LibraryStats::default(),
                 new_tracks: 0,
@@ -1824,10 +1851,15 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
             let _ = app_handle.emit("library_paths_inaccessible", inaccessible_paths.clone());
         }
 
-        // Charge l'ancien cache pour comparaison
+        // Charge l'ancien cache pour comparaison — uniquement les tracks LOCAUX
+        // (exclure smb:// pour éviter que le diff détecte faussement des suppressions
+        // de tracks réseau → évite le reload inutile à chaque démarrage)
         let old_tracks: std::collections::HashSet<String> = {
             if let Ok(cache) = TRACKS_CACHE.lock() {
-                cache.tracks.iter().map(|t| t.path.clone()).collect()
+                cache.tracks.iter()
+                    .filter(|t| !t.path.starts_with("smb://"))
+                    .map(|t| t.path.clone())
+                    .collect()
             } else {
                 std::collections::HashSet::new()
             }
@@ -1872,6 +1904,10 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
             }
         }
 
+        // Les sources réseau sont scannées séparément via scan_network_source_cmd
+        // (déclenché par le bouton "Indexer" dans les settings ou après add_network_source)
+        // afin de ne pas bloquer le mutex SMB au démarrage de l'application.
+
         // Calcule les différences
         let new_tracks: std::collections::HashSet<String> =
             all_tracks.iter().map(|t| t.path.clone()).collect();
@@ -1879,27 +1915,37 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
         let added_count = new_tracks.difference(&old_tracks).count();
         let removed_count = old_tracks.difference(&new_tracks).count();
 
-        // Calcule les statistiques
-        let stats = calculate_library_stats(&all_tracks);
-
         // Sauvegarde le nouveau cache
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        if let Ok(mut cache) = TRACKS_CACHE.lock() {
+        // Calcule les statistiques APRÈS fusion local + SMB (pour l'onglet Indexation)
+        let stats = if let Ok(mut cache) = TRACKS_CACHE.lock() {
+            // Préserver les tracks réseau (smb://) — gérées par scan_network_source_cmd
+            // Ne PAS les écraser lors d'un scan local : l'utilisateur les retrouverait perdues
+            let smb_tracks: Vec<_> = cache.tracks
+                .drain(..)
+                .filter(|t| t.path.starts_with("smb://"))
+                .collect();
             cache.tracks = all_tracks;
+            cache.tracks.extend(smb_tracks);
             cache.last_scan_timestamp = now;
+            // Stats sur le total (local + SMB) → onglet Indexation correct
+            let s = calculate_library_stats(&cache.tracks);
             save_tracks_cache(&cache);
-        }
+            s
+        } else {
+            calculate_library_stats(&all_tracks)
+        };
 
         // Sauvegarde les autres caches
         if let Ok(cache) = METADATA_CACHE.lock() {
             save_metadata_cache_to_file(&cache);
         }
 
-        println!("Background scan complete in {:?}: {} tracks, {} new, {} removed",
+        println!("Background scan complete in {:?}: {} tracks (local+SMB), {} new, {} removed",
             start.elapsed(), stats.total_tracks, added_count, removed_count);
 
         // Émet la fin du scan
@@ -2174,9 +2220,77 @@ fn get_added_dates() -> HashMap<String, u64> {
     }
 }
 
+/// Parse un URI SMB en (source_id, share, remote_path)
+/// Format : smb://{source_id}/{share}/{remote_path}
+fn parse_smb_uri(uri: &str) -> Option<(String, String, String)> {
+    let without_scheme = uri.strip_prefix("smb://")?;
+    let mut parts = without_scheme.splitn(3, '/');
+    let source_id = parts.next()?.to_string();
+    let share = parts.next()?.to_string();
+    let remote_path = format!("/{}", parts.next().unwrap_or(""));
+    Some((source_id, share, remote_path))
+}
+
+/// Obtient la pochette d'un fichier SMB réseau (via cache ou extraction)
+fn get_cover_smb(smb_path: &str) -> Option<String> {
+    // Vérifie le cache mémoire en premier
+    {
+        if let Ok(cache) = COVER_CACHE.lock() {
+            if let Some(cached_file) = cache.entries.get(smb_path) {
+                if Path::new(cached_file).exists() {
+                    let filename = Path::new(cached_file).file_name()?.to_str()?;
+                    return Some(format!("noir://localhost/covers/{}", filename));
+                }
+            }
+        }
+    }
+
+    let (source_id, share, remote_path) = parse_smb_uri(smb_path)?;
+
+    // Guard : ne tenter la connexion SMB que si un mot de passe est déjà en cache mémoire.
+    // Évite de déclencher une dialog Keychain macOS au démarrage quand l'utilisateur
+    // n'a pas encore cliqué sur ⟳ (Réindexer). Le Keychain sera accédé explicitement
+    // lors du premier scan_network_source_cmd.
+    let has_session_password = network::credentials::has_password_in_session(&source_id);
+    if !has_session_password {
+        return None;
+    }
+
+    let source = {
+        let sources = NETWORK_SOURCES.lock().ok()?;
+        sources.iter().find(|s| s.id == source_id).cloned()?
+    };
+
+    // retrieve_password trouvera le mot de passe dans le cache mémoire (pas de Keychain)
+    let password = network::credentials::retrieve_password(&source_id).unwrap_or_default();
+    // store_credentials au lieu de connect() : évite de dropper la connexion SMB existante
+    // ensure_connection() (appelé par read_file_head) crée/réutilise la connexion share-level
+    network::smb::store_credentials(
+        &source.credentials.username,
+        &password,
+        source.credentials.domain.as_deref(),
+        source.credentials.is_guest,
+    );
+
+    let cover_abs = network::scanner::extract_smb_cover_abs(&source, &share, &remote_path)?;
+    let filename = Path::new(&cover_abs).file_name()?.to_str()?.to_string();
+
+    // Met à jour le cache mémoire avec le chemin absolu
+    if let Ok(mut cache) = COVER_CACHE.lock() {
+        cache.entries.insert(smb_path.to_string(), cover_abs);
+    }
+
+    Some(format!("noir://localhost/covers/{}", filename))
+}
+
 // Obtenir la pochette (depuis le cache ou lecture fichier)
 #[tauri::command]
 fn get_cover(path: &str) -> Option<String> {
+    // Délègue aux fonctions SMB pour les paths réseau
+    if path.starts_with("smb://") {
+        return get_cover_smb(path);
+    }
+
     let start = std::time::Instant::now();
 
     // Vérifie le cache mémoire des pochettes
@@ -2417,10 +2531,17 @@ async fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
     // Clé unique pour cet album
     let album_key = format!("{}|||{}", artist.to_lowercase(), album.to_lowercase());
 
-    // Vérifie si déjà marqué comme "not found"
+    // Vérifie si déjà marqué comme "not found" et non expiré
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     if let Ok(cache) = INTERNET_NOT_FOUND_CACHE.lock() {
-        if cache.entries.contains_key(&album_key) {
-            return None;
+        if let Some(&ts) = cache.entries.get(&album_key) {
+            if now_secs.saturating_sub(ts) < INTERNET_NOT_FOUND_TTL_SECS {
+                return None; // Encore dans le TTL → on ne refait pas la recherche
+            }
+            // TTL expiré → l'entrée sera écrasée si toujours not found
         }
     }
 
@@ -2444,9 +2565,13 @@ async fn fetch_internet_cover(artist: String, album: String) -> Option<String> {
         }
     }
 
-    // Marque comme "not found" pour ne pas refaire la recherche
+    // Marque comme "not found" avec timestamp pour le TTL de 30 jours
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     if let Ok(mut cache) = INTERNET_NOT_FOUND_CACHE.lock() {
-        cache.entries.insert(album_key, true);
+        cache.entries.insert(album_key, now);
     }
 
     None
@@ -2935,12 +3060,88 @@ fn emit_frontend_error(code: &str, message: &str, details: &str) {
 }
 
 /// Joue un fichier audio (non-bloquant)
+/// Pour les paths SMB : téléchargement progressif en arrière-plan (retourne après 4MB dispo)
 /// La durée sera envoyée via l'événement playback_progress
 #[tauri::command]
-fn audio_play(path: String) -> Result<(), String> {
-    // Vérifie que le fichier existe avant de passer au moteur
+async fn audio_play(path: String) -> Result<(), String> {
+    // Gestion des fichiers réseau SMB : téléchargement progressif puis play local
+    if path.starts_with("smb://") {
+        use std::sync::atomic::Ordering as AOrdering;
+
+        // ── [TIMING T0] Entrée audio_play SMB ──────────────────────────────
+        let t0 = std::time::Instant::now();
+        println!("[SMB TIMING] T+0ms — audio_play SMB PROGRESSIVE start: {}",
+            &path[..path.len().min(80)]);
+
+        // 1. Parse URI (rapide, synchrone)
+        let (source_id, share, remote_path) = parse_smb_uri(&path)
+            .ok_or_else(|| format!("Invalid SMB URI: {}", path))?;
+
+        // 2. Récupérer source et credentials (synchrone, verrous courts)
+        let source = {
+            let sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+            sources.iter().find(|s| s.id == source_id)
+                .cloned()
+                .ok_or_else(|| format!("Network source not found: {}", source_id))?
+        };
+
+        let password = network::credentials::retrieve_password(&source.id).unwrap_or_default();
+        network::smb::store_credentials(
+            &source.credentials.username,
+            &password,
+            source.credentials.domain.as_deref(),
+            source.credentials.is_guest,
+        );
+        println!("[SMB TIMING] T+{}ms — credentials ready", t0.elapsed().as_millis());
+
+        // 3. Démarrer le téléchargement progressif en arrière-plan (retourne immédiatement)
+        // cancel_previous = true : annule le download précédent → libère CONNECTION mutex en ~2ms
+        let (temp_path, bytes_written, download_done) =
+            network::scanner::start_progressive_download(&source, &share, &remote_path, true)?;
+        println!("[SMB TIMING] T+{}ms — progressive download started, waiting for 4MB…",
+            t0.elapsed().as_millis());
+
+        // 4. Attendre que 4MB soient disponibles (couvre les métadonnées FLAC + pochette embarquée)
+        // Timeout 15s pour les connexions très lentes. À 36 MB/s LAN, 4MB ≈ 111ms.
+        let min_bytes: u64 = 4 * 1024 * 1024; // 4 MB
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let available = bytes_written.load(AOrdering::Acquire);
+            let done = download_done.load(AOrdering::Acquire);
+            if available >= min_bytes || done {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                return Err(format!("Timeout: SMB download too slow for {}", path));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let available = bytes_written.load(AOrdering::Acquire);
+        println!("[SMB TIMING] T+{}ms — {}MB disponibles → engine.play()",
+            t0.elapsed().as_millis(), available / (1024 * 1024));
+
+        // Vérifier que le download n'a pas échoué immédiatement (0 bytes → fichier introuvable)
+        if available == 0 {
+            return Err(format!("SMB download failed for: {}", path));
+        }
+
+        // 5. Démarrer la lecture depuis le fichier local (peut encore être en cours de DL)
+        let temp_str = temp_path.to_string_lossy().to_string();
+        if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+            if let Some(ref engine) = *engine_guard {
+                let result = engine.play(&temp_str);
+                println!("[SMB TIMING] T+{}ms — engine.play() command sent ← TOTAL: {}ms",
+                    t0.elapsed().as_millis(), t0.elapsed().as_millis());
+                return result;
+            }
+        }
+        return Err("Audio engine not initialized".to_string());
+    }
+
+    // Comportement existant pour fichiers locaux
     if !Path::new(&path).exists() {
-        emit_frontend_error("file_not_found", "Fichier introuvable", &path);
+        emit_frontend_error("file_not_found", "File not found", &path);
         return Err(format!("File not found: {}", path));
     }
     if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
@@ -3022,9 +3223,75 @@ fn audio_get_state() -> Result<AudioPlaybackState, String> {
     Err("Audio engine not initialized".to_string())
 }
 
-/// Précharge le prochain track pour gapless playback
+/// Précharge le prochain track pour gapless playback.
+/// Pour les tracks SMB : télécharge progressivement vers un fichier temp, attend 4MB,
+/// puis passe le chemin local à l'engine — identique à audio_play sans annuler le download courant.
 #[tauri::command]
-fn audio_preload_next(path: String) -> Result<(), String> {
+async fn audio_preload_next(path: String) -> Result<(), String> {
+    if path.starts_with("smb://") {
+        use std::sync::atomic::Ordering as AOrdering;
+
+        println!("[SMB Preload] preload gapless démarré: {}", &path[..path.len().min(80)]);
+
+        // 1. Parse URI
+        let (source_id, share, remote_path) = parse_smb_uri(&path)
+            .ok_or_else(|| format!("Invalid SMB URI (preload): {}", path))?;
+
+        // 2. Récupérer source et credentials
+        let source = {
+            let sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+            sources.iter().find(|s| s.id == source_id)
+                .cloned()
+                .ok_or_else(|| format!("Network source not found (preload): {}", source_id))?
+        };
+
+        let password = network::credentials::retrieve_password(&source.id).unwrap_or_default();
+        network::smb::store_credentials(
+            &source.credentials.username,
+            &password,
+            source.credentials.domain.as_deref(),
+            source.credentials.is_guest,
+        );
+
+        // 3. Démarrer le download du prochain track SANS annuler le download du track courant.
+        // cancel_previous = false : le track courant continue de se télécharger.
+        // CURRENT_DOWNLOAD_CANCEL est tout de même mis à jour → un futur audio_play pourra
+        // annuler ce preload si l'utilisateur change de track.
+        let (temp_path, bytes_written, download_done) =
+            network::scanner::start_progressive_download(&source, &share, &remote_path, false)?;
+
+        // 4. Attendre que 4MB soient disponibles (ou que le download soit complet).
+        // Timeout de 30s pour les connexions lentes. Le download peut attendre que le
+        // track courant libère le CONNECTION mutex, d'où un timeout plus long qu'audio_play.
+        let min_bytes: u64 = 4 * 1024 * 1024; // 4 MB
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let available = bytes_written.load(AOrdering::Acquire);
+            let done = download_done.load(AOrdering::Acquire);
+            if available >= min_bytes || done {
+                println!("[SMB Preload] {} MB disponibles → engine.preload_next()",
+                    available / (1024 * 1024));
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                // Timeout non-fatal : le gapless ne sera pas disponible mais la lecture continue
+                println!("[SMB Preload] Timeout — preload abandonné pour: {}", path);
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // 5. Envoyer le chemin du fichier temp à l'engine pour le preload gapless
+        let temp_str = temp_path.to_string_lossy().to_string();
+        if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+            if let Some(ref engine) = *engine_guard {
+                return engine.preload_next(&temp_str);
+            }
+        }
+        return Err("Audio engine not initialized".to_string());
+    }
+
+    // Comportement existant pour fichiers locaux
     if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
         if let Some(ref engine) = *engine_guard {
             return engine.preload_next(&path);
@@ -3091,6 +3358,22 @@ fn set_audio_device(device_id: String) -> Result<(), String> {
         }
     }
     Err("Audio engine not initialized".to_string())
+}
+
+/// Récupère l'ID du device de sortie par défaut du système macOS
+/// (sans tenir compte du manual_device_id de Noir)
+///
+/// Utilisé par le polling JS pour détecter quand l'utilisateur change
+/// le périphérique de sortie dans les Préférences Système, ou lorsque
+/// macOS bascule automatiquement (casque branché, etc.)
+#[tauri::command]
+fn get_system_default_device_id() -> Option<String> {
+    if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+        if let Some(ref engine) = *engine_guard {
+            return engine.system_default_device_id();
+        }
+    }
+    None
 }
 
 /// Récupère le sample rate actuel du device
@@ -3383,6 +3666,524 @@ fn get_top_artists(limit: usize) -> Vec<TopArtist> {
     }
 }
 
+// === FEEDBACK ===
+
+/// Token GitHub injecté à la compilation.
+/// Set via : export NOIR_GITHUB_FEEDBACK_TOKEN=ghp_...
+/// Permet de créer des issues sur thomasdugue/noir-feedback sans exposer
+/// le token dans le code source.
+const FEEDBACK_GITHUB_TOKEN: Option<&str> = option_env!("NOIR_GITHUB_FEEDBACK_TOKEN");
+const FEEDBACK_GITHUB_REPO: &str = "thomasdugue/noir-feedback";
+
+#[derive(Deserialize)]
+struct FeedbackContext {
+    app_version: String,
+    current_view: String,
+    library_size: u32,
+    is_playing: bool,
+    timestamp: String,
+}
+
+#[derive(Deserialize)]
+struct FeedbackPayload {
+    #[serde(rename = "type")]
+    feedback_type: String,
+    title: String,
+    description: String,
+    severity: Option<String>,
+    email: Option<String>,
+    context: FeedbackContext,
+}
+
+/// Formate le corps de l'issue GitHub en Markdown à partir du payload.
+fn format_github_issue_body(payload: &FeedbackPayload) -> String {
+    let type_emoji = match payload.feedback_type.as_str() {
+        "bug"     => "🐛",
+        "feature" => "✨",
+        "ux"      => "🎨",
+        _         => "💬",
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+
+    lines.push(format!("{} **{}**", type_emoji, payload.feedback_type.to_uppercase()));
+
+    if let Some(ref sev) = payload.severity {
+        lines.push(format!("**Severity:** {}", sev));
+    }
+
+    lines.push(String::new());
+    lines.push("---".to_string());
+    lines.push(String::new());
+    lines.push(payload.description.clone());
+
+    if let Some(ref email) = payload.email {
+        if !email.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("**Contact:** {}", email));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("---".to_string());
+    lines.push(String::new());
+    lines.push("**App context:**".to_string());
+    lines.push(format!("- Version: `{}`", payload.context.app_version));
+    lines.push(format!("- View: `{}`", payload.context.current_view));
+    lines.push(format!("- Library: {} tracks", payload.context.library_size));
+    lines.push(format!("- Playing: {}", payload.context.is_playing));
+    lines.push(format!("- Timestamp: {}", payload.context.timestamp));
+
+    lines.join("\n")
+}
+
+/// Crée une GitHub Issue sur noir-feedback via l'API GitHub.
+/// Retourne l'URL de l'issue créée, ou une erreur.
+async fn create_github_feedback_issue(token: &str, payload: &FeedbackPayload) -> Result<String, String> {
+    let type_emoji = match payload.feedback_type.as_str() {
+        "bug"     => "🐛",
+        "feature" => "✨",
+        "ux"      => "🎨",
+        _         => "💬",
+    };
+
+    let issue_title = format!("{} {}", type_emoji, payload.title);
+    let issue_body  = format_github_issue_body(payload);
+
+    // Labels : toujours "beta" + label du type
+    let type_label = match payload.feedback_type.as_str() {
+        "bug"     => "bug",
+        "feature" => "enhancement",
+        "ux"      => "ux",
+        _         => "feedback",
+    };
+    let labels = vec!["beta", type_label];
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("https://api.github.com/repos/{}/issues", FEEDBACK_GITHUB_REPO))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "Noir-Desktop-Feedback/1.0")
+        .json(&serde_json::json!({
+            "title":  issue_title,
+            "body":   issue_body,
+            "labels": labels,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("GitHub API {} — {}", status, text));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+
+    let issue_url = json["html_url"].as_str().unwrap_or("").to_string();
+    println!("[FEEDBACK] GitHub issue created: {}", issue_url);
+    Ok(issue_url)
+}
+
+// === MEDIA CONTROLS COMMANDS ===
+
+/// Met à jour les métadonnées de la track en cours dans MPNowPlayingInfoCenter.
+/// Appelé depuis JS à chaque changement de track.
+#[tauri::command]
+fn update_media_metadata(title: String, artist: String, album: String) {
+    media_controls::update_metadata(&title, &artist, &album);
+}
+
+/// Met à jour l'état play/pause dans MPNowPlayingInfoCenter.
+/// Appelé depuis JS quand l'état de lecture change.
+#[tauri::command]
+fn update_media_playback_state(is_playing: bool) {
+    media_controls::update_playback_state(is_playing);
+}
+
+/// Quitte l'application proprement (utilisé par le bouton "Quitter Noir" dans Settings).
+/// Sur macOS, la croix rouge cache la fenêtre — cette commande permet de vraiment quitter.
+#[tauri::command]
+fn quit_app(app_handle: tauri::AppHandle) {
+    app_handle.exit(0);
+}
+
+#[tauri::command]
+async fn submit_feedback(payload: FeedbackPayload) -> Result<String, String> {
+    // === 1. Sauvegarde locale (toujours, en backup) ===
+    let data_dir = get_data_dir();
+    let feedback_dir = data_dir.join("feedback");
+    fs::create_dir_all(&feedback_dir).map_err(|e| e.to_string())?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let filename = format!("feedback_{}.json", timestamp);
+    let filepath = feedback_dir.join(&filename);
+
+    let feedback_json = serde_json::json!({
+        "type": payload.feedback_type,
+        "title": payload.title,
+        "description": payload.description,
+        "severity": payload.severity,
+        "email": payload.email,
+        "context": {
+            "app_version": payload.context.app_version,
+            "current_view": payload.context.current_view,
+            "library_size": payload.context.library_size,
+            "is_playing": payload.context.is_playing,
+            "timestamp": payload.context.timestamp,
+        },
+        "saved_at": timestamp.to_string(),
+    });
+
+    let json_string = serde_json::to_string_pretty(&feedback_json).map_err(|e| e.to_string())?;
+    fs::write(&filepath, &json_string).map_err(|e| e.to_string())?;
+    println!("[FEEDBACK] Saved locally: {:?}", filepath);
+
+    // === 2. Envoi vers GitHub Issues ===
+    // Le token est injecté à la compilation via NOIR_GITHUB_FEEDBACK_TOKEN.
+    // Sans token (mode dev sans env var), le feedback est conservé en local seulement.
+    match FEEDBACK_GITHUB_TOKEN {
+        Some(token) if !token.is_empty() => {
+            match create_github_feedback_issue(token, &payload).await {
+                Ok(issue_url) => {
+                    println!("[FEEDBACK] Issue créée : {}", issue_url);
+                    Ok(issue_url)
+                }
+                Err(e) => {
+                    // L'envoi GitHub a échoué mais la sauvegarde locale a réussi.
+                    // On retourne une erreur pour que le JS affiche un toast d'avertissement.
+                    eprintln!("[FEEDBACK] GitHub issue creation failed: {}", e);
+                    Err(format!("Feedback saved locally but GitHub upload failed: {}", e))
+                }
+            }
+        }
+        _ => {
+            // Pas de token — mode dev ou build sans token configuré.
+            println!("[FEEDBACK] No NOIR_GITHUB_FEEDBACK_TOKEN — saved locally only.");
+            Ok(format!("Feedback saved locally: {}", filename))
+        }
+    }
+}
+
+// =====================================================================
+// === NETWORK / NAS — TAURI COMMANDS ===
+// =====================================================================
+
+/// Global network sources list
+static NETWORK_SOURCES: Lazy<Mutex<Vec<network::NetworkSource>>> = Lazy::new(|| {
+    Mutex::new(network::load_network_sources())
+});
+
+/// Registry des téléchargements progressifs SMB en cours.
+/// Clé : PathBuf du fichier temporaire local.
+/// Valeur : (bytes_écrits, téléchargement_terminé).
+/// Alimenté par scanner::start_progressive_download, lu par audio_decoder::open_media_source
+/// pour créer un SmbProgressiveFile qui bloque sur reads/seeks jusqu'à la disponibilité.
+pub(crate) static PROGRESSIVE_DOWNLOADS: Lazy<Mutex<HashMap<PathBuf, (Arc<AtomicU64>, Arc<AtomicBool>)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Découvrir les NAS sur le réseau local via mDNS/Bonjour
+#[tauri::command]
+async fn discover_nas_devices(app_handle: tauri::AppHandle) -> Result<Vec<network::DiscoveredNas>, String> {
+    // Lancer la découverte dans un thread bloquant (mDNS est synchrone)
+    let handle = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        network::discovery::discover_nas_devices(Some(&handle))
+    })
+    .await
+    .map_err(|e| format!("Discovery task failed: {}", e))?
+}
+
+/// Connecter à un host SMB (test de connexion)
+#[tauri::command]
+async fn smb_connect(
+    host: String,
+    username: String,
+    password: String,
+    domain: Option<String>,
+    is_guest: bool,
+) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        network::smb::connect(&host, &username, &password, domain.as_deref(), is_guest)
+    })
+    .await
+    .map_err(|e| format!("SMB connect task failed: {}", e))?
+}
+
+/// Lister les shares disponibles sur un host SMB
+#[tauri::command]
+async fn smb_list_shares(host: String) -> Result<Vec<network::SmbShare>, String> {
+    tokio::task::spawn_blocking(move || {
+        network::smb::list_shares(&host)
+    })
+    .await
+    .map_err(|e| format!("SMB list shares task failed: {}", e))?
+}
+
+/// Naviguer dans un dossier d'un share SMB
+#[tauri::command]
+async fn smb_browse(host: String, share: String, path: String) -> Result<Vec<network::SmbEntry>, String> {
+    tokio::task::spawn_blocking(move || {
+        network::smb::browse(&host, &share, &path)
+    })
+    .await
+    .map_err(|e| format!("SMB browse task failed: {}", e))?
+}
+
+/// Ajouter une source réseau (NAS/SMB share)
+#[tauri::command]
+fn add_network_source(
+    name: String,
+    host: String,
+    share: String,
+    path: String,
+    username: String,
+    password: String,
+    domain: Option<String>,
+    is_guest: bool,
+) -> Result<network::NetworkSource, String> {
+    let source_id = uuid::Uuid::new_v4().to_string();
+
+    // Stocker le mot de passe dans le Keychain (sauf mode guest)
+    if !is_guest && !password.is_empty() {
+        network::credentials::store_password(&source_id, &password)?;
+    }
+
+    let source = network::NetworkSource {
+        id: source_id,
+        name,
+        host,
+        share,
+        remote_path: path,
+        credentials: network::SmbCredentials {
+            username,
+            domain,
+            is_guest,
+        },
+        enabled: true,
+        last_connected: None,
+        last_scan: None,
+    };
+
+    // Ajouter à la liste et persister
+    let mut sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+    sources.push(source.clone());
+    network::save_network_sources(&sources)?;
+
+    Ok(source)
+}
+
+/// Supprimer une source réseau
+#[tauri::command]
+fn remove_network_source(source_id: String) -> Result<ScanComplete, String> {
+    // Supprimer le mot de passe du Keychain + cache mémoire
+    let _ = network::credentials::delete_password(&source_id);
+
+    // Supprimer de la liste des sources
+    let mut sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+    sources.retain(|s| s.id != source_id);
+    network::save_network_sources(&sources)?;
+
+    // Nettoyer les tracks SMB de cette source dans TRACKS_CACHE
+    // → la librairie se met à jour immédiatement côté frontend
+    let stats = if let Ok(mut cache) = TRACKS_CACHE.lock() {
+        let prefix = format!("smb://{}/", source_id);
+        cache.tracks.retain(|t| !t.path.starts_with(&prefix));
+        save_tracks_cache(&cache);
+        calculate_library_stats(&cache.tracks)
+    } else {
+        LibraryStats::default()
+    };
+
+    // Aussi nettoyer COVER_CACHE pour cette source
+    if let Ok(mut cover_cache) = COVER_CACHE.lock() {
+        let prefix = format!("smb://{}/", source_id);
+        cover_cache.entries.retain(|k, _| !k.starts_with(&prefix));
+        save_cover_cache_to_file(&cover_cache);
+    }
+
+    // Retourner les stats mises à jour pour que le frontend puisse actualiser l'UI
+    Ok(ScanComplete {
+        stats,
+        new_tracks: 0,
+        removed_tracks: 0,
+    })
+}
+
+/// Récupérer la liste des sources réseau
+#[tauri::command]
+fn get_network_sources() -> Result<Vec<network::NetworkSource>, String> {
+    let sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+    Ok(sources.clone())
+}
+
+/// Activer/désactiver une source réseau
+#[tauri::command]
+fn toggle_network_source(source_id: String, enabled: bool) -> Result<(), String> {
+    let mut sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+    if let Some(source) = sources.iter_mut().find(|s| s.id == source_id) {
+        source.enabled = enabled;
+        network::save_network_sources(&sources)?;
+        Ok(())
+    } else {
+        Err(format!("Network source not found: {}", source_id))
+    }
+}
+
+/// Mettre à jour les credentials d'une source réseau
+#[tauri::command]
+fn update_network_source_credentials(
+    source_id: String,
+    username: String,
+    password: String,
+    domain: Option<String>,
+) -> Result<(), String> {
+    // Mettre à jour le Keychain
+    if !password.is_empty() {
+        network::credentials::store_password(&source_id, &password)?;
+    }
+
+    // Mettre à jour la source
+    let mut sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+    if let Some(source) = sources.iter_mut().find(|s| s.id == source_id) {
+        source.credentials.username = username;
+        source.credentials.domain = domain;
+        network::save_network_sources(&sources)?;
+        Ok(())
+    } else {
+        Err(format!("Network source not found: {}", source_id))
+    }
+}
+
+/// Obtenir le statut de connexion de toutes les sources réseau
+#[tauri::command]
+fn get_network_status() -> Result<HashMap<String, String>, String> {
+    let sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+    let mut status_map = HashMap::new();
+    for source in sources.iter() {
+        let connected = network::smb::is_connected(&source.host);
+        status_map.insert(
+            source.id.clone(),
+            if connected { "connected".to_string() } else { "disconnected".to_string() },
+        );
+    }
+    Ok(status_map)
+}
+
+/// Reconnecter manuellement une source réseau
+#[tauri::command]
+async fn reconnect_network_source(source_id: String) -> Result<(), String> {
+    let source = {
+        let sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+        sources.iter().find(|s| s.id == source_id).cloned()
+            .ok_or_else(|| format!("Network source not found: {}", source_id))?
+    };
+
+    // Récupérer le mot de passe UNIQUEMENT depuis le cache session (jamais le Keychain ici).
+    // Au démarrage à froid, le cache est vide → on saute silencieusement la reconnexion.
+    // Cela évite la dialog macOS "Autoriser l'accès au trousseau" à chaque lancement.
+    // Le Keychain n'est accédé qu'explicitement, lors d'un scan déclenché par l'utilisateur
+    // (bouton ⟳ → scan_network_source_cmd → retrieve_password → stocke dans le cache).
+    let password = if source.credentials.is_guest {
+        String::new()
+    } else {
+        if !network::credentials::has_password_in_session(&source.id) {
+            println!("[RECONNECT] Skipping {} — no session credentials (Keychain not accessed at startup)", source.name);
+            return Ok(());
+        }
+        network::credentials::retrieve_password(&source.id).unwrap_or_default()
+    };
+
+    tokio::task::spawn_blocking(move || {
+        network::smb::connect(
+            &source.host,
+            &source.credentials.username,
+            &password,
+            source.credentials.domain.as_deref(),
+            source.credentials.is_guest,
+        )
+    })
+    .await
+    .map_err(|e| format!("Reconnect task failed: {}", e))??;
+
+    Ok(())
+}
+
+/// Scanner manuellement une source réseau (bouton "Sync" dans Settings)
+#[tauri::command]
+async fn scan_network_source_cmd(source_id: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let source = {
+        let sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+        sources.iter().find(|s| s.id == source_id)
+            .cloned()
+            .ok_or_else(|| format!("Network source not found: {}", source_id))?
+    };
+
+    let password = network::credentials::retrieve_password(&source_id).unwrap_or_default();
+
+    tokio::task::spawn_blocking(move || {
+        // Connexion SMB
+        if let Err(e) = network::smb::connect(
+            &source.host,
+            &source.credentials.username,
+            &password,
+            source.credentials.domain.as_deref(),
+            source.credentials.is_guest,
+        ) {
+            println!("[Network Scan] Connection failed for {}: {}", source.name, e);
+            return;
+        }
+
+        let mut net_cache = network::load_network_scan_cache();
+        match network::scanner::scan_network_source(&source, &mut net_cache, &app_handle) {
+            Ok((net_tracks, cover_mappings)) => {
+                let _ = network::save_network_scan_cache(&net_cache);
+                let new_count = net_tracks.len();
+
+                // Pré-peupler COVER_CACHE avec les pochettes extraites pendant le scan
+                // → get_cover_smb() trouvera tout dans le cache : 0 connexion SMB par pochette
+                if let Ok(mut cover_cache) = COVER_CACHE.lock() {
+                    for (smb_uri, cover_abs_path) in cover_mappings {
+                        cover_cache.entries.insert(smb_uri, cover_abs_path);
+                    }
+                    // Persister sur disque pour survivre aux rechargements
+                    save_cover_cache_to_file(&cover_cache);
+                }
+
+                // Merge dans TRACKS_CACHE : remplace les tracks de cette source
+                if let Ok(mut cache) = TRACKS_CACHE.lock() {
+                    let prefix = format!("smb://{}/", source.id);
+                    cache.tracks.retain(|t| !t.path.starts_with(&prefix));
+                    cache.tracks.extend(net_tracks);
+                    save_tracks_cache(&cache);
+
+                    let stats = calculate_library_stats(&cache.tracks);
+                    let _ = app_handle.emit("scan_complete", ScanComplete {
+                        stats,
+                        new_tracks: new_count,
+                        removed_tracks: 0,
+                    });
+                }
+            }
+            Err(e) => println!("[Network Scan] Error for {}: {}", source.name, e),
+        }
+    }).await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Helper pour les réponses HTTP du protocol handler noir://
 /// Évite les .unwrap() répétés (safe mais meilleure hygiène de code)
 fn noir_response(status: tauri::http::StatusCode, body: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
@@ -3461,6 +4262,21 @@ pub fn run() {
                 }
             }
         })
+        .on_window_event(|window, event| {
+            // Sur macOS : la croix rouge cache la fenêtre au lieu de quitter l'app.
+            // L'app reste dans le dock et peut être rappelée. Pour quitter vraiment :
+            // Settings → "Quitter Noir" ou Cmd+Q (géré par le menu macOS natif).
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                #[cfg(target_os = "macos")]
+                {
+                    window.hide().unwrap_or(());
+                    api.prevent_close();
+                }
+                // Sur Windows/Linux : comportement par défaut (ferme + quitte)
+                #[cfg(not(target_os = "macos"))]
+                let _ = api;
+            }
+        })
         .setup(|app| {
             // Initialise l'Audio Engine avec l'AppHandle pour les événements
             let app_handle = app.handle().clone();
@@ -3470,7 +4286,7 @@ pub fn run() {
                 *handle_guard = Some(app_handle.clone());
             }
 
-            let engine = AudioEngine::new(Some(app_handle));
+            let engine = AudioEngine::new(Some(app_handle.clone()));
 
             // Charge les paramètres EQ sauvegardés
             load_eq_settings(&engine.eq_state);
@@ -3480,6 +4296,12 @@ pub fn run() {
             }
 
             println!("Audio Engine initialized!");
+
+            // Enregistre Noir comme propriétaire de MPRemoteCommandCenter
+            // → les media keys (F7/F8/F9 / touches multimédia) sont routées vers Noir
+            //   même quand Apple Music tourne en arrière-plan.
+            media_controls::init_media_controls(app_handle);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3534,6 +4356,7 @@ pub fn run() {
             refresh_audio_devices,
             get_current_audio_device,
             set_audio_device,
+            get_system_default_device_id,
             get_audio_sample_rate,
             set_exclusive_mode,
             is_exclusive_mode,
@@ -3558,8 +4381,41 @@ pub fn run() {
             trigger_genre_enrichment,
             reset_genre_enrichment,
             // Metadata Writing
-            write_metadata
+            write_metadata,
+            // Feedback
+            submit_feedback,
+            // Network / NAS (SMB Library Sync)
+            discover_nas_devices,
+            smb_connect,
+            smb_list_shares,
+            smb_browse,
+            add_network_source,
+            remove_network_source,
+            get_network_sources,
+            toggle_network_source,
+            update_network_source_credentials,
+            get_network_status,
+            reconnect_network_source,
+            scan_network_source_cmd,
+            // Media Controls (MPRemoteCommandCenter / media keys)
+            update_media_metadata,
+            update_media_playback_state,
+            // Application
+            quit_app
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            // Sur macOS : clic sur l'icône Dock → réaffiche la fenêtre cachée.
+            // Sans ce handler, la fenêtre reste invisible après hide() jusqu'au redémarrage.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+                if !has_visible_windows {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        window.show().unwrap_or(());
+                        window.set_focus().unwrap_or(());
+                    }
+                }
+            }
+        });
 }

@@ -1,7 +1,7 @@
 // playlists.js — Gestion des playlists et des favoris pour Noir Desktop
 // Inclut: playlists CRUD, favoris, sidebar, modal, tri, drag reorder, menu contextuel
 
-import { library, favorites, ui, contextMenu, dom } from './state.js'
+import { library, favorites, ui, contextMenu, dom, caches, queue, playback } from './state.js'
 import { invoke } from './state.js'
 import { app } from './app.js'
 import { formatTime, escapeHtml, showToast } from './utils.js'
@@ -21,6 +21,24 @@ let playlistSortMode = 'manual'    // 'manual', 'recent', 'az', 'za'
 let confirmModalResolve = null
 
 // === FAVORIS ===
+
+/**
+ * Retourne le nombre RÉEL de favoris = intersection favorites.tracks ∩ library.tracks.
+ * Évite d'afficher des compteurs stale quand favorites contient des paths orphelins.
+ */
+// Retourne une playlist par son ID (utilisé par playback.js pour repeat-all / prev)
+export function getPlaylistById(id) {
+  return playlists.find(p => p.id === id) || null
+}
+
+export function getValidFavoritesCount() {
+  if (library.tracks.length === 0) return favorites.tracks.size
+  let count = 0
+  for (const path of favorites.tracks) {
+    if (library.tracksByPath?.has(path)) count++
+  }
+  return count
+}
 
 // Charge les favoris depuis le backend
 export async function loadFavorites() {
@@ -75,13 +93,14 @@ export async function toggleFavorite(trackPath, buttonEl) {
   }
 }
 
+
 // Genere le HTML du bouton favori pour une track
 export function getFavoriteButtonHtml(trackPath) {
   const isFavorite = favorites.tracks.has(trackPath)
   return `
     <button class="track-favorite-btn ${isFavorite ? 'active' : ''}"
             data-track-path="${trackPath}"
-            title="${isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}">
+            title="${isFavorite ? 'Remove from favorites' : 'Add to favorites'}">
       <svg width="14" height="14" viewBox="0 0 24 24"
            fill="${isFavorite ? 'currentColor' : 'none'}"
            stroke="currentColor" stroke-width="2">
@@ -106,12 +125,128 @@ export async function loadPlaylists() {
 }
 
 // Met a jour l'affichage des playlists dans la sidebar
+// === PLAYLIST THUMBNAIL 2×2 ===
+
+/**
+ * Retourne jusqu'à `limit` paths de tracks (1 par album unique si la librairie est chargée)
+ * pour construire le thumbnail de playlist.
+ * Résilient : si library.tracks est vide (init pas encore terminée), retourne les premiers
+ * paths bruts sans déduplication — les covers se chargeront quand même via get_cover.
+ * Synchrone — les URLs sont chargées après par loadPlaylistThumbs().
+ */
+function getPlaylistAlbumPaths(playlist, limit = 4) {
+  const seenAlbums = new Set()
+  const paths = []
+
+  for (const path of playlist.trackPaths) {
+    if (paths.length >= limit) break
+    const track = library.tracks.find(t => t.path === path)
+
+    if (track) {
+      // Librairie chargée : déduplique par album (1 cover par album)
+      const albumKey = `${track.metadata?.artist || ''}::${track.metadata?.album || ''}`
+      if (seenAlbums.has(albumKey)) continue
+      seenAlbums.add(albumKey)
+    }
+    // Librairie pas encore chargée : prend le path directement sans dédup
+    // (acceptable en attendant le rebuild post-init)
+    paths.push(path)
+  }
+
+  return paths
+}
+
+/**
+ * Construit le HTML du thumbnail playlist avec un layout adaptatif selon le nombre de covers.
+ * - 0 paths : icône ♪ centrée sur fond sombre
+ * - 1 path  : image pleine résolution (carré unique, pas de grille)
+ * - 2 paths : deux images côte à côte (split vertical)
+ * - 3-4 paths : grille 2×2 ; le 4e slot répète le 1er si seulement 3 covers
+ * Utilise des <div> (pas <img>) pour éviter le rendu "broken image" du navigateur.
+ * Le background-image est injecté async par loadPlaylistThumbs().
+ * `size`: 'small' (sidebar 28×28) | 'large' (header 96×96)
+ */
+function buildPlaylistThumbHtml(paths, size = 'small') {
+  const sizeClass = size === 'large' ? 'playlist-cover-grid-lg' : 'playlist-cover-grid-sm'
+  const count = paths.length
+
+  // 0 covers : placeholder musical
+  if (count === 0) {
+    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-empty"><span class="playlist-cover-note-icon">♪</span></div>`
+  }
+
+  // 1 cover : image pleine (une seule colonne)
+  if (count === 1) {
+    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-single"><div class="playlist-cover-cell" data-cover-path="${paths[0]}"></div></div>`
+  }
+
+  // 2 covers : côte à côte (2 colonnes, 1 rangée pleine hauteur)
+  if (count === 2) {
+    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-duo"><div class="playlist-cover-cell" data-cover-path="${paths[0]}"></div><div class="playlist-cover-cell" data-cover-path="${paths[1]}"></div></div>`
+  }
+
+  // 3-4 covers : grille 2×2 ; répète le 1er pour le 4e slot si nécessaire
+  const cells = []
+  for (let i = 0; i < 4; i++) {
+    const p = paths[i] || paths[0] // le 4e slot répète le 1er si seulement 3 covers
+    cells.push(`<div class="playlist-cover-cell" data-cover-path="${p}"></div>`)
+  }
+  return `<div class="${sizeClass} playlist-cover-grid">${cells.join('')}</div>`
+}
+
+/**
+ * Charge de manière asynchrone les thumbnails pour toutes les cellules [data-cover-path]
+ * dans `containerEl`. Chaîne de fallback :
+ *   1. thumbnailCache / coverCache (mémoire)
+ *   2. get_cover_thumbnail (cache disque, instantané si pré-généré)
+ *   3. get_cover (extrait depuis le fichier audio si besoin — toujours fiable)
+ * Fire-and-forget : appelé après le rendu HTML (innerHTML ou appendChild).
+ */
+async function loadPlaylistThumbs(containerEl) {
+  const cells = containerEl.querySelectorAll('[data-cover-path]')
+  for (const cell of cells) {
+    const path = cell.dataset.coverPath
+    if (!path || !cell.isConnected) continue
+
+    // 1. Cache mémoire (thumbnailCache ou coverCache)
+    let url = caches.thumbnailCache.get(path) || caches.coverCache.get(path)
+
+    if (!url) {
+      try {
+        // 2. Thumbnail pré-généré sur disque (cache-only, rapide)
+        url = await invoke('get_cover_thumbnail', { path })
+
+        // 3. Fallback : get_cover extrait la cover depuis le fichier audio
+        //    (génère et cache automatiquement ; toujours fiable si la track a une cover)
+        if (!url) {
+          url = await invoke('get_cover', { path })
+        }
+
+        if (url) {
+          caches.thumbnailCache.set(path, url)
+          caches.coverCache.set(path, url)
+        }
+      } catch (_) { /* cover non disponible, garder placeholder */ }
+    }
+
+    if (url && cell.isConnected) {
+      // Support img (compat) et div (nouveau comportement)
+      if (cell.tagName === 'IMG') {
+        cell.src = url
+      } else {
+        cell.style.backgroundImage = `url('${url}')`
+      }
+      cell.classList.add('has-cover')
+    }
+  }
+}
+
 export function updatePlaylistsSidebar() {
   const container = document.getElementById('playlists-list')
   if (!container) return
 
   if (playlists.length === 0) {
-    container.innerHTML = '<div class="playlists-empty">Aucune playlist</div>'
+    container.innerHTML = '<div class="playlists-empty">No playlists</div>'
     return
   }
 
@@ -122,28 +257,33 @@ export function updatePlaylistsSidebar() {
     return 0
   })
 
-  // Genere le HTML des playlists avec icone coeur pour favoris
+  // Genere le HTML des playlists avec icone coeur pour favoris, thumbnail 2x2 pour les autres
   container.innerHTML = sortedPlaylists.map((playlist, index) => {
     const isFavorites = playlist.id === 'favorites'
-    const icon = isFavorites
-      ? `<svg class="playlist-icon-heart" viewBox="0 0 24 24" fill="currentColor">
+    let icon
+    if (isFavorites) {
+      icon = `<svg class="playlist-icon-heart" viewBox="0 0 24 24" fill="currentColor">
            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
          </svg>`
-      : `<svg viewBox="0 0 24 24" fill="currentColor">
-           <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
-         </svg>`
+    } else {
+      const albumPaths = getPlaylistAlbumPaths(playlist)
+      icon = buildPlaylistThumbHtml(albumPaths, 'small')
+    }
 
     return `
       <div class="playlist-item ${selectedPlaylistId === playlist.id ? 'active' : ''} ${isFavorites ? 'playlist-favorites' : ''}"
            data-playlist-id="${playlist.id}"
            data-playlist-index="${index}"
-           data-is-system="${playlist.isSystem || false}">
+           data-is-system="${playlist.isSystem || false}"
+           data-tooltip="${escapeHtml(playlist.name)}">
         ${icon}
         <span class="playlist-item-name">${playlist.name}</span>
-        <span class="playlist-item-count">${playlist.trackPaths.length}</span>
       </div>
     `
   }).join('')
+
+  // Chargement async des covers (thumbnailCache souvent vide au render initial)
+  loadPlaylistThumbs(container).catch(() => {})
 }
 
 // Initialise les event listeners de la sidebar des playlists (appele une seule fois)
@@ -352,9 +492,11 @@ export function displayPlaylistView(playlist) {
   const albumsGridDiv = dom.albumsGridDiv
   const albumsViewDiv = dom.albumsViewDiv
 
-  // Vide le contenu
+  // Vide le contenu + supprime l'index alphabétique (inutile en vue playlist)
   albumsGridDiv.textContent = ''
   albumsViewDiv.classList.remove('hidden')
+  const existingNav = document.querySelector('.alphabet-nav')
+  if (existingNav) existingNav.remove()
   // closeAlbumDetail is not yet in app.js mediator -- call it via DOM approach
   const albumDetail = document.getElementById('album-detail')
   if (albumDetail) albumDetail.classList.add('hidden')
@@ -363,8 +505,9 @@ export function displayPlaylistView(playlist) {
   const header = document.createElement('div')
   header.className = 'playlist-view-header'
 
-  const trackCount = playlist.trackPaths.length
-  let playlistTracks = playlist.trackPaths
+  // Pour les favoris, utiliser favorites.tracks (source de vérité JS) au lieu de playlist.trackPaths
+  const sourcePaths = playlist.id === 'favorites' ? [...favorites.tracks] : playlist.trackPaths
+  let playlistTracks = sourcePaths
     .map((path, idx) => {
       const track = library.tracks.find(t => t.path === path)
       if (track) {
@@ -373,6 +516,7 @@ export function displayPlaylistView(playlist) {
       return null
     })
     .filter(Boolean)
+  const trackCount = playlistTracks.length
 
   // Applique le tri selon le mode selectionne
   if (playlistSortMode === 'az') {
@@ -395,21 +539,33 @@ export function displayPlaylistView(playlist) {
 
   const totalDuration = playlistTracks.reduce((acc, t) => acc + (t.metadata?.duration || 0), 0)
 
+  // Thumbnail 2×2 pour la vue détail (chargement async des covers)
+  const albumPaths = getPlaylistAlbumPaths(playlist)
+  const coverUrls = albumPaths  // alias pour la compatibilité ci-dessous
+  const coverHtml = playlist.id === 'favorites'
+    ? `<div class="playlist-cover-grid-lg playlist-cover-grid playlist-cover-favorites">
+         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+       </div>`
+    : buildPlaylistThumbHtml(albumPaths, 'large')
+
   header.innerHTML = `
-    <div class="playlist-header-info">
-      <h2>${playlist.name}</h2>
-      <p>${trackCount} titre${trackCount > 1 ? 's' : ''} • ${formatTime(totalDuration)}</p>
+    <div class="playlist-header-left">
+      ${coverHtml}
+      <div class="playlist-header-info">
+        <h2>${playlist.name}</h2>
+        <p>${playlist.id === 'favorites' ? getValidFavoritesCount() : trackCount} track${(playlist.id === 'favorites' ? getValidFavoritesCount() : trackCount) > 1 ? 's' : ''} • ${formatTime(totalDuration)}</p>
+      </div>
     </div>
     <div class="playlist-header-buttons">
       <div class="playlist-sort-dropdown">
-        <button class="btn-sort-playlist" title="Trier">
+        <button class="btn-sort-playlist" title="Sort">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/>
           </svg>
-          <span class="sort-label">Tri</span>
+          <span class="sort-label">Sort</span>
         </button>
         <div class="sort-menu hidden">
-          <button class="sort-option ${playlistSortMode === 'manual' ? 'active' : ''}" data-sort="manual">Manuel</button>
+          <button class="sort-option ${playlistSortMode === 'manual' ? 'active' : ''}" data-sort="manual">Manual</button>
           <button class="sort-option ${playlistSortMode === 'recent' ? 'active' : ''}" data-sort="recent">Recently Added</button>
           <button class="sort-option ${playlistSortMode === 'az' ? 'active' : ''}" data-sort="az">A-Z</button>
           <button class="sort-option ${playlistSortMode === 'za' ? 'active' : ''}" data-sort="za">Z-A</button>
@@ -419,10 +575,20 @@ export function displayPlaylistView(playlist) {
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         Play
       </button>
+      <button class="btn-export-playlist" title="Export M3U" ${trackCount === 0 ? 'disabled' : ''}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+      </button>
     </div>
   `
 
   albumsGridDiv.appendChild(header)
+
+  // Chargement async des covers dans la vue détail
+  loadPlaylistThumbs(header).catch(() => {})
 
   // Liste des tracks avec drag & drop
   const tracksContainer = document.createElement('div')
@@ -430,7 +596,7 @@ export function displayPlaylistView(playlist) {
   tracksContainer.id = 'playlist-tracks-container'
 
   if (trackCount === 0) {
-    tracksContainer.innerHTML = '<div class="playlist-empty-message">Cette playlist est vide.<br>Ajoutez des morceaux avec le bouton + ou le clic droit.</div>'
+    tracksContainer.innerHTML = '<div class="playlist-empty-message">This playlist is empty.<br>Add tracks with the + button or right-click.</div>'
   } else {
     // Genere le HTML des tracks (sans event listeners individuels)
     tracksContainer.innerHTML = playlistTracks.map((track, index) => {
@@ -442,11 +608,11 @@ export function displayPlaylistView(playlist) {
         <div class="playlist-track-item" data-index="${index}" data-track-path="${track.path}">
           <span class="playlist-track-number">${index + 1}</span>
           <div class="playlist-track-info">
-            <span class="playlist-track-title">${title}</span>
-            <span class="playlist-track-artist">${artist}</span>
+            <span class="playlist-track-title">${escapeHtml(title)}</span>
+            <span class="playlist-track-artist">${escapeHtml(artist)}</span>
           </div>
           <span class="playlist-track-duration">${duration}</span>
-          <button class="playlist-track-remove" title="Retirer de la playlist">
+          <button class="playlist-track-remove" title="Remove from playlist">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
             </svg>
@@ -478,16 +644,15 @@ export function displayPlaylistView(playlist) {
       trackItem.classList.add('selected')
     })
 
-    // Double-clic = jouer la track
+    // Double-clic = jouer la track dans le contexte de la playlist
     tracksContainer.addEventListener('dblclick', (e) => {
       if (e.target.closest('button')) return
 
       const trackItem = e.target.closest('.playlist-track-item')
       if (!trackItem) return
 
-      const trackPath = trackItem.dataset.trackPath
-      const globalIndex = library.tracks.findIndex(t => t.path === trackPath)
-      if (globalIndex !== -1) app.playTrack(globalIndex)
+      const clickedIndex = parseInt(trackItem.dataset.index, 10)
+      playTrackInPlaylist(playlist, clickedIndex)
     })
 
     // EVENT DELEGATION : Un seul listener pour les clics droits
@@ -525,6 +690,10 @@ export function displayPlaylistView(playlist) {
     playPlaylist(playlist)
   })
 
+  header.querySelector('.btn-export-playlist')?.addEventListener('click', () => {
+    exportPlaylistM3u(playlist.id)
+  })
+
   // Event listeners pour le tri
   const sortBtn = header.querySelector('.btn-sort-playlist')
   const sortMenu = header.querySelector('.sort-menu')
@@ -552,24 +721,38 @@ export function displayPlaylistView(playlist) {
   }
 }
 
-// Joue une playlist
-function playPlaylist(playlist) {
+// Joue une track spécifique dans le contexte d'une playlist
+// Construit la queue avec les tracks restantes et set le contexte 'playlist'
+function playTrackInPlaylist(playlist, startIndex) {
   const playlistTracks = playlist.trackPaths
     .map(path => library.tracks.find(t => t.path === path))
     .filter(Boolean)
 
-  if (playlistTracks.length > 0) {
-    // Joue le premier track
-    const firstTrack = playlistTracks[0]
-    const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
-    if (globalIndex !== -1) {
-      app.playTrack(globalIndex)
-      // Ajoute le reste a la queue
-      for (let i = 1; i < playlistTracks.length; i++) {
-        app.addToQueue(playlistTracks[i])
-      }
-    }
+  if (startIndex < 0 || startIndex >= playlistTracks.length) return
+
+  const track = playlistTracks[startIndex]
+  const globalIndex = library.tracks.findIndex(t => t.path === track.path)
+  if (globalIndex === -1) return
+
+  // Vider la queue et remplir avec les tracks APRÈS celle cliquée
+  // Push direct dans queue.items (sans toast par track)
+  app.clearQueue()
+  for (let i = startIndex + 1; i < playlistTracks.length; i++) {
+    queue.items.push(playlistTracks[i])
   }
+  app.updateQueueDisplay()
+  app.updateQueueIndicators()
+
+  // Setter le contexte playlist AVANT playTrack (playTrack préserve 'playlist')
+  playback.playbackContext = 'playlist'
+  playback.currentPlaylistId = playlist.id
+
+  app.playTrack(globalIndex)
+}
+
+// Joue une playlist depuis le début (bouton Play)
+function playPlaylist(playlist) {
+  playTrackInPlaylist(playlist, 0)
 }
 
 // === CREATION / RENOMMAGE PLAYLIST ===
@@ -729,9 +912,9 @@ export async function deletePlaylist(playlistId) {
 
   // Demander confirmation avant suppression
   const confirmed = await showConfirmModal(
-    'Supprimer la playlist ?',
+    'Delete playlist?',
     `The playlist "${playlist?.name}" will be permanently deleted.`,
-    'Supprimer'
+    'Delete'
   )
 
   if (!confirmed) return
@@ -762,7 +945,7 @@ export async function deletePlaylist(playlistId) {
 
 // === MODALE DE CONFIRMATION ===
 
-export function showConfirmModal(title, message, confirmText = 'Supprimer') {
+export function showConfirmModal(title, message, confirmText = 'Delete') {
   return new Promise((resolve) => {
     confirmModalResolve = resolve
 
@@ -895,7 +1078,7 @@ export function showAddToPlaylistMenu(e, track) {
   let menuContent = ''
 
   if (playlists.length === 0) {
-    menuContent = '<div style="padding: 10px 14px; color: #555; font-size: 12px;">Aucune playlist</div>'
+    menuContent = '<div style="padding: 10px 14px; color: #555; font-size: 12px;">No playlists</div>'
   } else {
     playlists.forEach(playlist => {
       menuContent += `
@@ -985,7 +1168,7 @@ export function showAddToPlaylistMenuMulti(tracksToAdd) {
   let menuContent = ''
 
   if (playlists.length === 0) {
-    menuContent = '<div style="padding: 10px 14px; color: #555; font-size: 12px;">Aucune playlist</div>'
+    menuContent = '<div style="padding: 10px 14px; color: #555; font-size: 12px;">No playlists</div>'
   } else {
     playlists.forEach(playlist => {
       menuContent += `
@@ -1066,7 +1249,7 @@ export function showPlaylistSubmenu() {
   list.innerHTML = ''
 
   if (playlists.length === 0) {
-    list.innerHTML = '<div style="padding: 8px 14px; color: #555; font-size: 12px;">Aucune playlist</div>'
+    list.innerHTML = '<div style="padding: 8px 14px; color: #555; font-size: 12px;">No playlists</div>'
   } else {
     playlists.forEach(playlist => {
       const item = document.createElement('button')
@@ -1267,6 +1450,44 @@ function initConfirmModalListeners() {
   })
 }
 
+// === CRÉATION PLAYLIST DEPUIS UN ALBUM (drag zone vide) ===
+
+/**
+ * Crée une nouvelle playlist avec le nom de l'album et toutes ses tracks triées par disc/track.
+ * Appelée par drag.js quand un album est droppé dans la zone vide de la sidebar playlists.
+ */
+export async function createPlaylistFromAlbum(albumKey) {
+  const album = library.albums[albumKey]
+  if (!album || !album.tracks?.length) return
+
+  try {
+    // Crée la playlist
+    const newPlaylist = await invoke('create_playlist', { name: album.album })
+    playlists.push(newPlaylist)
+
+    // Ajoute les tracks triées par disc puis track number
+    const sortedTracks = [...album.tracks].sort((a, b) => {
+      const discA = a.metadata?.disc || 1
+      const discB = b.metadata?.disc || 1
+      if (discA !== discB) return discA - discB
+      return (a.metadata?.track || 0) - (b.metadata?.track || 0)
+    })
+
+    for (const track of sortedTracks) {
+      await invoke('add_track_to_playlist', {
+        playlistId: newPlaylist.id,
+        trackPath: track.path
+      })
+    }
+
+    await loadPlaylists()
+    showToast(`Playlist "${album.album}" created (${sortedTracks.length} tracks)`)
+  } catch (e) {
+    console.error('[PLAYLIST] Error creating playlist from album:', e)
+    showToast('Error creating playlist')
+  }
+}
+
 // === REGISTER WITH APP MEDIATOR ===
 
 app.loadPlaylists = loadPlaylists
@@ -1274,6 +1495,7 @@ app.loadFavorites = loadFavorites
 app.toggleFavorite = toggleFavorite
 app.getFavoriteButtonHtml = getFavoriteButtonHtml
 app.updatePlaylistsSidebar = updatePlaylistsSidebar
+app.createPlaylistFromAlbum = createPlaylistFromAlbum
 app.addTrackToPlaylist = addTrackToPlaylist
 app.showAddToPlaylistMenu = showAddToPlaylistMenu
 app.showAddToPlaylistMenuMulti = showAddToPlaylistMenuMulti
