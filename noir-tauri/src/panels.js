@@ -1087,10 +1087,15 @@ export function enterTrackEditMode(track) {
   if (firstInput) firstInput.focus()
 }
 
-async function saveTrackMetadata(track, orig) {
+function saveTrackMetadata(track, orig) {
+  // Feedback IMMÉDIAT sur le bouton Save
   const saveBtn = document.getElementById('track-edit-save')
-  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving...' }
+  if (saveBtn) {
+    saveBtn.disabled = true
+    saveBtn.innerHTML = `<span class="btn-spinner"></span>Saving...`
+  }
 
+  // Lire les valeurs des champs (DOM encore présent)
   const newTitle   = document.getElementById('edit-title')?.value.trim()
   const newArtist  = document.getElementById('edit-artist')?.value.trim()
   const newAlbum   = document.getElementById('edit-album')?.value.trim()
@@ -1098,39 +1103,59 @@ async function saveTrackMetadata(track, orig) {
   const newTrackStr = document.getElementById('edit-track-num')?.value.trim()
   const newGenre   = document.getElementById('edit-genre')?.value.trim()
 
-  // Envoyer uniquement les champs modifiés (non-vides et différents de l'original)
   const payload = {
     path:        track.path,
-    title:       (newTitle   && newTitle   !== orig.origTitle)   ? newTitle   : null,
-    artist:      (newArtist  && newArtist  !== orig.origArtist)  ? newArtist  : null,
-    album:       (newAlbum   && newAlbum   !== orig.origAlbum)   ? newAlbum   : null,
-    year:        (newYearStr && newYearStr !== orig.origYear)     ? parseInt(newYearStr,  10) : null,
-    trackNumber: (newTrackStr && newTrackStr !== orig.origTrack) ? parseInt(newTrackStr, 10) : null,
-    genre:       (newGenre   && newGenre   !== orig.origGenre)   ? newGenre   : null,
+    title:       newTitle   !== orig.origTitle   ? newTitle   : null,
+    artist:      newArtist  !== orig.origArtist  ? newArtist  : null,
+    album:       newAlbum   !== orig.origAlbum   ? newAlbum   : null,
+    year:        newYearStr !== orig.origYear     ? (newYearStr ? parseInt(newYearStr,  10) : null) : null,
+    trackNumber: newTrackStr !== orig.origTrack  ? (newTrackStr ? parseInt(newTrackStr, 10) : null) : null,
+    genre:       newGenre   !== orig.origGenre   ? newGenre   : null,
   }
 
-  try {
-    await invoke('write_metadata', payload)
-    // Muter track.metadata en place (pattern state.js — ne pas réassigner)
-    if (payload.title)       track.metadata.title  = payload.title
-    if (payload.artist)      track.metadata.artist = payload.artist
-    if (payload.album)       track.metadata.album  = payload.album
-    if (payload.year)        track.metadata.year   = payload.year
-    if (payload.trackNumber) track.metadata.track  = payload.trackNumber
-    if (payload.genre)       track.metadata.genre  = payload.genre
-    // Reconstruire l'index artistes/albums pour refléter les nouvelles métadonnées
+  // Forcer le repaint du spinner AVANT de continuer
+  requestAnimationFrame(() => { requestAnimationFrame(() => {
+
+    // 1. Mise à jour locale IMMÉDIATE (optimiste)
+    if (payload.title  != null) track.metadata.title  = payload.title
+    if (payload.artist != null) track.metadata.artist = payload.artist
+    if (payload.album  != null) track.metadata.album  = payload.album
+    if (payload.year   != null) track.metadata.year   = payload.year
+    if (payload.trackNumber != null) track.metadata.track = payload.trackNumber
+    if (payload.genre  != null) track.metadata.genre  = payload.genre
+
+    // 2. Rebuild index + refresh vue
     app.groupTracksIntoAlbumsAndArtists()
+    app.buildTrackLookup?.()
     app.invalidateHomeCache?.()
-    if (['artists', 'albums', 'home'].includes(ui.currentView)) {
-      app.displayCurrentView()
+    app.displayCurrentView()
+
+    // Mettre à jour le player bar si la track en cours est celle éditée
+    const currentPlaying = playback.currentTrackIndex >= 0 ? library.tracks[playback.currentTrackIndex] : null
+    if (currentPlaying?.path === track.path) {
+      if (dom.trackNameEl) dom.trackNameEl.textContent = track.metadata?.title || track.name
+      if (dom.trackFolderEl) dom.trackFolderEl.textContent = track.metadata?.artist || track.folder
+      invoke('update_media_metadata', {
+        title: track.metadata?.title || track.name || '',
+        artist: track.metadata?.artist || '',
+        album: track.metadata?.album || ''
+      }).catch(() => {})
     }
-    showToast('Metadata saved')
+
+    if (ui.isQueuePanelOpen) app.updateQueueDisplay?.()
+
+    // Ré-afficher le panneau info avec les nouvelles valeurs
     showTrackInfoPanel(track)
-  } catch (err) {
-    console.error('write_metadata error:', err)
-    showToast(`Error: ${err}`, 'error')
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save' }
-  }
+
+    // 3. Écriture NAS en arrière-plan (fire-and-forget)
+    invoke('write_metadata', payload)
+      .then(() => showToast('Metadata saved'))
+      .catch(err => {
+        console.error('write_metadata error:', err)
+        showToast(`Error saving to NAS: ${err}`, 'error')
+      })
+
+  }) })
 }
 
 // ============================================================================
@@ -1216,57 +1241,149 @@ export function showBulkEditModal(tracks) {
   })
 }
 
-async function saveBulkMetadata(tracks, modal) {
-  const saveBtn = document.getElementById('bulk-edit-save')
-  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving...' }
+function saveBulkMetadata(tracks, modal) {
+  const n = tracks.length
 
-  const newArtist  = document.getElementById('bulk-artist')?.value.trim() || null
-  const newAlbum   = document.getElementById('bulk-album')?.value.trim()  || null
+  // Feedback IMMÉDIAT sur le bouton Save (avant toute opération async)
+  const saveBtn = document.getElementById('bulk-edit-save')
+  const cancelBtn = document.getElementById('bulk-edit-cancel')
+  if (saveBtn) {
+    saveBtn.disabled = true
+    saveBtn.innerHTML = `<span class="btn-spinner"></span>Preparing...`
+  }
+  if (cancelBtn) cancelBtn.disabled = true
+  // Désactiver les inputs pour empêcher les modifications pendant le lancement
+  modal.querySelectorAll('input, .bulk-edit-close').forEach(el => { el.disabled = true; el.style.pointerEvents = 'none' })
+
+  // Lire les valeurs des champs immédiatement (DOM encore présent)
+  const newArtist  = document.getElementById('bulk-artist')?.value.trim()
+  const newAlbum   = document.getElementById('bulk-album')?.value.trim()
   const newYearStr = document.getElementById('bulk-year')?.value.trim()
   const newYear    = newYearStr ? parseInt(newYearStr, 10) : null
-  const newGenre   = document.getElementById('bulk-genre')?.value.trim()  || null
+  const newGenre   = document.getElementById('bulk-genre')?.value.trim()
   const autoNum    = document.getElementById('bulk-autonumber')?.checked
 
-  let saved = 0
-  let errors = 0
+  const artistPayload = newArtist != null && newArtist !== '' ? newArtist : null
+  const albumPayload  = newAlbum  != null && newAlbum  !== '' ? newAlbum  : null
+  const genrePayload  = newGenre  != null && newGenre  !== '' ? newGenre  : null
 
-  for (let i = 0; i < tracks.length; i++) {
-    const t = tracks[i]
-    const trackNumber = autoNum ? i + 1 : null
-    try {
-      await invoke('write_metadata', {
-        path: t.path,
-        title: null,
-        artist: newArtist,
-        album: newAlbum,
-        year: newYear,
-        trackNumber,
-        genre: newGenre,
-      })
-      if (newArtist)   t.metadata.artist = newArtist
-      if (newAlbum)    t.metadata.album  = newAlbum
-      if (newYear)     t.metadata.year   = newYear
-      if (newGenre)    t.metadata.genre  = newGenre
-      if (trackNumber) t.metadata.track  = trackNumber
-      saved++
-    } catch (err) {
-      console.error(`write_metadata error for ${t.path}:`, err)
-      errors++
-    }
-  }
+  // Forcer le repaint du bouton (spinner visible) AVANT de continuer
+  // Sans ce double-rAF, le navigateur ne peint jamais le spinner car
+  // tout le code synchrone s'exécute dans le même frame.
+  requestAnimationFrame(() => { requestAnimationFrame(() => {
 
-  // Reconstruire l'index artistes/albums pour refléter les nouvelles métadonnées
-  app.groupTracksIntoAlbumsAndArtists()
-  app.invalidateHomeCache?.()
-  app.displayCurrentView()
-
+  // Fermer le modal d'édition → remplacé par le modal de progression
   modal.remove()
 
-  if (errors === 0) {
-    showToast(`${saved} track${saved > 1 ? 's' : ''} updated`)
-  } else {
-    showToast(`${saved}/${tracks.length} tracks updated (${errors} error${errors > 1 ? 's' : ''})`, 'error')
-  }
+  // Afficher le modal de progression bloquant
+  let cancelled = false
+  const progressOverlay = document.createElement('div')
+  progressOverlay.id = 'bulk-progress-overlay'
+  progressOverlay.className = 'bulk-edit-overlay'
+  progressOverlay.innerHTML = `
+    <div class="bulk-progress-dialog">
+      <div class="bulk-progress-header">
+        <h2 class="bulk-edit-title">Writing metadata to NAS</h2>
+      </div>
+      <div class="bulk-progress-body">
+        <div class="bulk-progress-status" id="bulk-progress-status">Preparing...</div>
+        <div class="bulk-progress-bar-track">
+          <div class="bulk-progress-bar-fill" id="bulk-progress-fill"></div>
+        </div>
+        <div class="bulk-progress-detail" id="bulk-progress-detail">0 / ${n} tracks</div>
+      </div>
+      <div class="bulk-progress-footer">
+        <button class="track-info-cancel-btn" id="bulk-progress-cancel">Cancel</button>
+      </div>
+    </div>
+  `
+  document.body.appendChild(progressOverlay)
+
+  const statusEl = document.getElementById('bulk-progress-status')
+  const fillEl   = document.getElementById('bulk-progress-fill')
+  const detailEl = document.getElementById('bulk-progress-detail')
+  document.getElementById('bulk-progress-cancel').addEventListener('click', () => { cancelled = true })
+
+  // Écriture séquentielle sur le NAS avec mise à jour de la progression
+  ;(async () => {
+    let saved = 0, errors = 0
+    for (let i = 0; i < tracks.length; i++) {
+      if (cancelled) break
+      const t = tracks[i]
+      const trackNumber = autoNum ? i + 1 : null
+      const pct = Math.round(((i) / n) * 100)
+      if (statusEl) statusEl.textContent = `Writing track ${i + 1} of ${n}...`
+      if (fillEl)   fillEl.style.width = `${pct}%`
+      if (detailEl) detailEl.textContent = `${i} / ${n} tracks saved`
+
+      try {
+        await invoke('write_metadata', {
+          path: t.path,
+          title: null,
+          artist: artistPayload,
+          album: albumPayload,
+          year: newYear,
+          trackNumber,
+          genre: genrePayload,
+        })
+        // Mise à jour locale après écriture réussie
+        if (artistPayload != null) t.metadata.artist = artistPayload
+        if (albumPayload  != null) t.metadata.album  = albumPayload
+        if (newYear       != null) t.metadata.year   = newYear
+        if (genrePayload  != null) t.metadata.genre  = genrePayload
+        if (trackNumber   != null) t.metadata.track  = trackNumber
+        saved++
+      } catch (err) {
+        console.error(`write_metadata error for ${t.path}:`, err)
+        errors++
+      }
+
+      // Yield au thread JS pour que le navigateur puisse repeindre la progression
+      await new Promise(r => setTimeout(r, 0))
+    }
+
+    // Remplir la barre à 100%
+    if (fillEl) fillEl.style.width = '100%'
+
+    // Rebuild index + refresh vue
+    try {
+      app.groupTracksIntoAlbumsAndArtists()
+      app.buildTrackLookup?.()
+      app.invalidateHomeCache?.()
+      app.displayCurrentView()
+      const currentPlaying = playback.currentTrackIndex >= 0 ? library.tracks[playback.currentTrackIndex] : null
+      if (currentPlaying) {
+        const editedCurrent = tracks.find(t => t.path === currentPlaying.path)
+        if (editedCurrent) {
+          if (dom.trackNameEl) dom.trackNameEl.textContent = editedCurrent.metadata?.title || editedCurrent.name
+          if (dom.trackFolderEl) dom.trackFolderEl.textContent = editedCurrent.metadata?.artist || editedCurrent.folder
+          invoke('update_media_metadata', {
+            title: editedCurrent.metadata?.title || editedCurrent.name || '',
+            artist: editedCurrent.metadata?.artist || '',
+            album: editedCurrent.metadata?.album || ''
+          }).catch(() => {})
+        }
+      }
+      if (ui.isQueuePanelOpen) app.updateQueueDisplay?.()
+    } catch (err) {
+      console.error('post-save refresh error:', err)
+    }
+
+    // Fermer le modal de progression
+    progressOverlay.remove()
+
+    // Toast final
+    if (cancelled) {
+      const skipped = n - saved - errors
+      showToast(`${saved} saved, ${skipped} cancelled${errors ? `, ${errors} error${errors > 1 ? 's' : ''}` : ''}`)
+    } else if (errors === 0) {
+      showToast(`${saved} track${saved > 1 ? 's' : ''} saved`)
+    } else {
+      showToast(`${saved}/${n} saved (${errors} error${errors > 1 ? 's' : ''})`, 'error')
+    }
+  })()
+
+  }) }) // fin double requestAnimationFrame
 }
 
 // Close the track info panel

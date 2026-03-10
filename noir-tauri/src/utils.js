@@ -271,16 +271,33 @@ export function hideLoading() {
 
 // === TOAST NOTIFICATIONS ===
 
-export function showToast(message, duration = 3000) {
+let _toastTimeout
+
+/**
+ * Affiche un toast notification.
+ * @param {string} message - Le message à afficher
+ * @param {string|null} type - 'error' pour un style rouge, null sinon
+ * @param {number} duration - Durée en ms (0 = persistant, défaut 3000)
+ */
+export function showToast(message, type, duration) {
   const toast = document.getElementById('toast')
   if (!toast) return
 
+  clearTimeout(_toastTimeout)
   toast.textContent = message
   toast.classList.add('show')
+  toast.classList.toggle('toast-error', type === 'error')
 
-  setTimeout(() => {
-    toast.classList.remove('show')
-  }, duration)
+  // Rétro-compatibilité : si type est un nombre, c'est l'ancien usage (message, duration)
+  if (typeof type === 'number') {
+    duration = type
+    toast.classList.remove('toast-error')
+  }
+
+  const ms = duration ?? 3000
+  if (ms !== 0) {
+    _toastTimeout = setTimeout(() => toast.classList.remove('show'), ms)
+  }
 }
 
 // === HTML HELPERS ===

@@ -4,7 +4,7 @@ use pavao::{SmbClient, SmbCredentials, SmbDirentType, SmbOpenOptions, SmbOptions
 use super::{SmbShare, SmbEntry};
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
-use std::io::Read;
+use std::io::{Read, Write};
 
 /// Connexion SMB active (pavao utilise un contexte global singleton)
 struct ActiveConnection {
@@ -347,6 +347,45 @@ pub fn read_file(host: &str, share: &str, path: &str) -> Result<Vec<u8>, String>
         t_smb.elapsed().as_millis(), bytes, read_ms, speed_kbps);
 
     Ok(data)
+}
+
+/// Écrit un fichier complet vers un share SMB (overwrite)
+/// Utilisé pour la sauvegarde de métadonnées : on modifie le fichier localement puis on le ré-uploade.
+pub fn write_file(host: &str, share: &str, path: &str, data: &[u8]) -> Result<(), String> {
+    let t_smb = std::time::Instant::now();
+    println!("[SMB WRITE] start: {}/{}{} ({} bytes)", host, share, path, data.len());
+
+    let stored = {
+        let creds = LAST_CREDENTIALS.lock().map_err(|e| format!("Lock error: {}", e))?;
+        creds.clone().ok_or_else(|| format!("No credentials stored for {}", host))?
+    };
+
+    let mut conn = CONNECTION.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    ensure_connection_with_guard(
+        &mut *conn,
+        host, share,
+        &stored.username, &stored.password,
+        stored.workgroup.as_deref(), stored.is_guest,
+    )?;
+
+    let active = conn.as_ref()
+        .ok_or_else(|| format!("No active connection to {}", host))?;
+
+    let clean_path = path.trim_start_matches('/');
+    let file_path = format!("/{}", clean_path);
+
+    // Ouvrir en write + truncate pour écraser le contenu existant
+    let mut file = active.client.open_with(
+        &file_path,
+        SmbOpenOptions::default().write(true).truncate(true).create(true),
+    ).map_err(|e| format!("Failed to open SMB file for writing {}: {}", file_path, e))?;
+
+    file.write_all(data)
+        .map_err(|e| format!("Failed to write SMB file {}: {}", file_path, e))?;
+
+    println!("[SMB WRITE] done: {} bytes in {}ms", data.len(), t_smb.elapsed().as_millis());
+    Ok(())
 }
 
 /// Lit les premiers N bytes d'un fichier SMB (pour extraction metadata)
