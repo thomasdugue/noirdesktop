@@ -1162,7 +1162,12 @@ fn init_cache() -> bool {
 // Sauvegarde tous les caches sur disque
 #[tauri::command]
 fn save_all_caches() {
-    // Sauvegarde toujours (plus fiable)
+    // TRACKS_CACHE — critique pour persister les modifications de métadonnées
+    // entre les sessions (write_metadata sauvegarde immédiatement, mais ce filet de sécurité
+    // garantit que le cache est persisté même si d'autres chemins de code l'ont modifié)
+    if let Ok(cache) = TRACKS_CACHE.lock() {
+        save_tracks_cache(&cache);
+    }
     if let Ok(cache) = METADATA_CACHE.lock() {
         save_metadata_cache_to_file(&cache);
     }
@@ -2131,6 +2136,11 @@ fn refresh_metadata(path: &str) -> Metadata {
 // Écrire les métadonnées d'un fichier audio et invalider son cache
 // Supporte les fichiers locaux ET les fichiers réseau (SMB/NAS) :
 // pour SMB, le fichier est téléchargé → modifié → ré-uploadé
+//
+// IMPORTANT: Le TRACKS_CACHE est mis à jour EN PREMIER (avant toute I/O NAS)
+// pour garantir la persistance même si l'utilisateur quitte l'app rapidement
+// ou si l'écriture NAS échoue. Cela permet au pattern fire-and-forget côté JS
+// de fonctionner correctement : le cache disque a toujours les bonnes métadonnées.
 #[tauri::command]
 fn write_metadata(
     path: String,
@@ -2143,7 +2153,31 @@ fn write_metadata(
 ) -> Result<(), String> {
     let is_smb = path.starts_with("smb://");
 
-    // Pour les fichiers SMB : télécharger vers un fichier temporaire local
+    // ═══════════════════════════════════════════════════════════════════════
+    // ÉTAPE 1 : Mettre à jour TRACKS_CACHE + METADATA_CACHE IMMÉDIATEMENT
+    // Avant toute I/O fichier ou NAS — garantit la persistance même si
+    // l'app quitte avant la fin de l'écriture NAS
+    // ═══════════════════════════════════════════════════════════════════════
+    if let Ok(mut cache) = METADATA_CACHE.lock() {
+        cache.entries.remove(&path);
+    }
+    if let Ok(mut cache) = TRACKS_CACHE.lock() {
+        if let Some(track) = cache.tracks.iter_mut().find(|t| t.path == path) {
+            if let Some(ref v) = title        { track.metadata.title  = v.clone(); }
+            if let Some(ref v) = artist       { track.metadata.artist = v.clone(); }
+            if let Some(ref v) = album        { track.metadata.album  = v.clone(); }
+            if let Some(v) = year             { track.metadata.year   = Some(v); }
+            if let Some(v) = track_number     { track.metadata.track  = v; }
+            if let Some(ref v) = genre        { track.metadata.genre  = Some(v.clone()); }
+        }
+        save_tracks_cache(&cache);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ÉTAPE 2 : Écriture effective des tags dans le fichier
+    // Pour SMB : download → modify → upload (peut être lent)
+    // Pour local : modification directe sur disque
+    // ═══════════════════════════════════════════════════════════════════════
     let local_path = if is_smb {
         let (source_id, share, remote_path) = parse_smb_uri(&path)
             .ok_or_else(|| format!("Invalid SMB URI: {}", path))?;
@@ -2274,24 +2308,6 @@ fn write_metadata(
         if cache_path.exists() {
             let _ = std::fs::write(&cache_path, &modified_data);
         }
-    }
-
-    // Invalider METADATA_CACHE pour ce path
-    if let Ok(mut cache) = METADATA_CACHE.lock() {
-        cache.entries.remove(&path);
-    }
-
-    // Mettre à jour TRACKS_CACHE
-    if let Ok(mut cache) = TRACKS_CACHE.lock() {
-        if let Some(track) = cache.tracks.iter_mut().find(|t| t.path == path) {
-            if let Some(ref v) = title        { track.metadata.title  = v.clone(); }
-            if let Some(ref v) = artist       { track.metadata.artist = v.clone(); }
-            if let Some(ref v) = album        { track.metadata.album  = v.clone(); }
-            if let Some(v) = year             { track.metadata.year   = Some(v); }
-            if let Some(v) = track_number     { track.metadata.track  = v; }
-            if let Some(ref v) = genre        { track.metadata.genre  = Some(v.clone()); }
-        }
-        save_tracks_cache(&cache);
     }
 
     Ok(())
