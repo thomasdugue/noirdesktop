@@ -339,6 +339,7 @@ const loadQueue = []
 
 let thumbnailGenerationQueue = []
 let thumbnailGenerationRunning = false
+let thumbnailSmbRetried = false
 
 export function loadThumbnailAsync(path, imgElement, artist = null, album = null) {
   return new Promise((resolve) => {
@@ -481,7 +482,17 @@ async function processThumnailGenerationQueue() {
     console.log(`[THUMBNAIL] Generating ${batch.length} thumbnails in background...`)
     try {
       const generated = await invoke('generate_thumbnails_batch', { paths: batch })
-      console.log(`[THUMBNAIL] Generated ${generated} thumbnails`)
+      console.log(`[THUMBNAIL] Generated ${generated}/${batch.length} thumbnails`)
+
+      // Re-queue SMB paths qui ont echoue pour un 2e essai (COVER_CACHE sera peuple)
+      if (generated < batch.length && !thumbnailSmbRetried) {
+        const smbRetries = batch.filter(p => p.startsWith('smb://') && !thumbnailGenerationQueue.includes(p))
+        if (smbRetries.length > 0) {
+          console.log(`[THUMBNAIL] Re-queuing ${smbRetries.length} SMB paths for retry...`)
+          thumbnailGenerationQueue.push(...smbRetries)
+          thumbnailSmbRetried = true
+        }
+      }
 
       for (const path of batch) {
         caches.thumbnailCache.delete(path)
@@ -494,7 +505,9 @@ async function processThumnailGenerationQueue() {
   thumbnailGenerationRunning = false
 
   if (thumbnailGenerationQueue.length > 0) {
-    setTimeout(processThumnailGenerationQueue, 100)
+    // Delai plus long pour les retries SMB (laisser le temps au COVER_CACHE de se peupler)
+    const delay = thumbnailSmbRetried ? 5000 : 100
+    setTimeout(processThumnailGenerationQueue, delay)
   }
 }
 

@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "noir-tauri-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["@tauri-apps/cli", "dev"],
+      "port": 1420,
+      "cwd": "noir-tauri"
+    }
+  ]
+}
