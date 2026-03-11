@@ -197,22 +197,14 @@ body.sidebar-resizing * {
 .sidebar-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 16px 20px;
+  padding: 20px 20px;
   border-bottom: 1px solid #222;
 }
 
 .app-logo {
-  height: 18px;
+  height: 28px;
   width: auto;
   flex-shrink: 0;
-}
-
-.sidebar-header h2 {
-  font-size: 18px;
-  font-weight: 400;
-  color: #fff;
-  letter-spacing: -0.5px;
 }
 
 /* === MODULE INDEXATION (en bas de sidebar) === */
@@ -6993,7 +6985,6 @@ body:not(.player-visible) .track-info-panel {
   transition: width 0.2s ease;
 }
 
-.sidebar-header h2,
 .nav-item span,
 .search-container {
   transition: opacity 0.2s ease;
@@ -7019,18 +7010,14 @@ body:not(.player-visible) .track-info-panel {
   }
 
   .sidebar-header {
-    padding: 12px 0;
-    justify-content: center;
-    gap: 0;
-  }
-
-  .sidebar-header h2 {
-    display: none;
+    padding: 14px 10px;
+    overflow: hidden;
   }
 
   .app-logo {
-    width: 18px;
-    height: 18px;
+    height: 22px;
+    width: auto;
+    flex-shrink: 0;
   }
 
   .sidebar-nav {
