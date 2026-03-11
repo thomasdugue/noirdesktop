@@ -177,19 +177,19 @@ function buildPlaylistThumbHtml(paths, size = 'small') {
 
   // 1 cover : image pleine (une seule colonne)
   if (count === 1) {
-    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-single"><div class="playlist-cover-cell" data-cover-path="${paths[0]}"></div></div>`
+    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-single"><div class="playlist-cover-cell" data-cover-path="${escapeHtml(paths[0])}"></div></div>`
   }
 
   // 2 covers : côte à côte (2 colonnes, 1 rangée pleine hauteur)
   if (count === 2) {
-    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-duo"><div class="playlist-cover-cell" data-cover-path="${paths[0]}"></div><div class="playlist-cover-cell" data-cover-path="${paths[1]}"></div></div>`
+    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-duo"><div class="playlist-cover-cell" data-cover-path="${escapeHtml(paths[0])}"></div><div class="playlist-cover-cell" data-cover-path="${escapeHtml(paths[1])}"></div></div>`
   }
 
   // 3-4 covers : grille 2×2 ; répète le 1er pour le 4e slot si nécessaire
   const cells = []
   for (let i = 0; i < 4; i++) {
     const p = paths[i] || paths[0] // le 4e slot répète le 1er si seulement 3 covers
-    cells.push(`<div class="playlist-cover-cell" data-cover-path="${p}"></div>`)
+    cells.push(`<div class="playlist-cover-cell" data-cover-path="${escapeHtml(p)}"></div>`)
   }
   return `<div class="${sizeClass} playlist-cover-grid">${cells.join('')}</div>`
 }

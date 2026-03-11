@@ -1373,13 +1373,19 @@ export async function displayHomeView() {
 
       const coverPath = (album && album.coverPath) ? album.coverPath : entry.path
       if (img && placeholder) {
+        // Handlers onload/onerror pour s'assurer que le placeholder est géré
+        // même si l'image noir:// échoue après que loadThumbnailAsync ait mis display:block
+        img.onload = () => {
+          img.style.display = 'block'
+          placeholder.style.display = 'none'
+        }
+        img.onerror = () => {
+          img.style.display = 'none'
+          placeholder.style.display = 'flex'
+        }
         const cachedCover = caches.coverCache.get(coverPath) || caches.thumbnailCache.get(coverPath)
         if (!loadCachedImage(img, placeholder, cachedCover)) {
-          app.loadThumbnailAsync(coverPath, img, entry.artist, entry.album).then(() => {
-            if (img.isConnected && img.style.display === 'block') {
-              placeholder.style.display = 'none'
-            }
-          })
+          app.loadThumbnailAsync(coverPath, img, entry.artist, entry.album)
         }
       }
 
