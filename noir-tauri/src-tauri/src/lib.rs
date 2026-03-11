@@ -2386,7 +2386,13 @@ fn get_cover_bytes_internal(path: &str) -> Option<Vec<u8>> {
         }
     }
 
-    // Pas en cache, lit depuis le fichier audio
+    // SMB paths : impossible de lire avec Probe::open() (ne supporte que le FS local)
+    // On ne peut compter que sur COVER_CACHE (peuplé par get_cover_smb)
+    if path.starts_with("smb://") {
+        return None;
+    }
+
+    // Pas en cache, lit depuis le fichier audio (local seulement)
     if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
         if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
             if let Some(picture) = tag.pictures().first() {
