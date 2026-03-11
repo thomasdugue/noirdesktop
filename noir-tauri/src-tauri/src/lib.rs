@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, AtomicBool};
 use std::io::Cursor;
 use once_cell::sync::Lazy;
 use walkdir::WalkDir;
-use lofty::{Accessor, AudioFile, Probe, TaggedFileExt, MimeType, TagExt};
+use lofty::{Accessor, AudioFile, Probe, TaggedFileExt, MimeType, TagExt, TagType};
 use base64::{Engine as _, engine::general_purpose};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -1162,7 +1162,12 @@ fn init_cache() -> bool {
 // Sauvegarde tous les caches sur disque
 #[tauri::command]
 fn save_all_caches() {
-    // Sauvegarde toujours (plus fiable)
+    // TRACKS_CACHE — critique pour persister les modifications de métadonnées
+    // entre les sessions (write_metadata sauvegarde immédiatement, mais ce filet de sécurité
+    // garantit que le cache est persisté même si d'autres chemins de code l'ont modifié)
+    if let Ok(cache) = TRACKS_CACHE.lock() {
+        save_tracks_cache(&cache);
+    }
     if let Ok(cache) = METADATA_CACHE.lock() {
         save_metadata_cache_to_file(&cache);
     }
@@ -2129,6 +2134,13 @@ fn refresh_metadata(path: &str) -> Metadata {
 }
 
 // Écrire les métadonnées d'un fichier audio et invalider son cache
+// Supporte les fichiers locaux ET les fichiers réseau (SMB/NAS) :
+// pour SMB, le fichier est téléchargé → modifié → ré-uploadé
+//
+// IMPORTANT: Le TRACKS_CACHE est mis à jour EN PREMIER (avant toute I/O NAS)
+// pour garantir la persistance même si l'utilisateur quitte l'app rapidement
+// ou si l'écriture NAS échoue. Cela permet au pattern fire-and-forget côté JS
+// de fonctionner correctement : le cache disque a toujours les bonnes métadonnées.
 #[tauri::command]
 fn write_metadata(
     path: String,
@@ -2139,52 +2151,16 @@ fn write_metadata(
     track_number: Option<u32>,
     genre: Option<String>,
 ) -> Result<(), String> {
-    // SECURITY: Validate that the path is within a configured library path
-    let config = load_config();
-    let canonical_path = Path::new(&path).canonicalize()
-        .map_err(|e| format!("Cannot resolve path: {}", e))?;
-    let is_in_library = config.library_paths.iter().any(|lib_path| {
-        if let Ok(canonical_lib) = Path::new(lib_path).canonicalize() {
-            canonical_path.starts_with(&canonical_lib)
-        } else {
-            false
-        }
-    });
-    if !is_in_library {
-        return Err("Security: file is not within any configured library path".to_string());
-    }
+    let is_smb = path.starts_with("smb://");
 
-    let mut tagged_file = Probe::open(&path)
-        .map_err(|e| format!("Cannot open file: {}", e))?
-        .read()
-        .map_err(|e| format!("Cannot read tags: {}", e))?;
-
-    // Fallback vers first_tag_mut pour les fichiers sans primary tag (AIFF, WAV non-tagués…)
-    // NLL : vérification immutable d'abord (borrow relâché après is_some()), puis borrow mut
-    let tag = if tagged_file.primary_tag().is_some() {
-        tagged_file.primary_tag_mut()
-    } else {
-        tagged_file.first_tag_mut()
-    }.ok_or_else(|| "No tag found in this file".to_string())?;
-
-    // Utiliser ref pour conserver les valeurs après set_* (nécessaire pour la mise à jour du cache)
-    if let Some(ref v) = title        { tag.set_title(v.clone()); }
-    if let Some(ref v) = artist       { tag.set_artist(v.clone()); }
-    if let Some(ref v) = album        { tag.set_album(v.clone()); }
-    if let Some(v) = year             { tag.set_year(v); }
-    if let Some(v) = track_number     { tag.set_track(v); }
-    if let Some(ref v) = genre        { tag.set_genre(v.clone()); }
-
-    tag.save_to_path(&path)
-        .map_err(|e| format!("Error saving: {}", e))?;
-
-    // Invalider METADATA_CACHE pour ce path
+    // ═══════════════════════════════════════════════════════════════════════
+    // ÉTAPE 1 : Mettre à jour TRACKS_CACHE + METADATA_CACHE IMMÉDIATEMENT
+    // Avant toute I/O fichier ou NAS — garantit la persistance même si
+    // l'app quitte avant la fin de l'écriture NAS
+    // ═══════════════════════════════════════════════════════════════════════
     if let Ok(mut cache) = METADATA_CACHE.lock() {
         cache.entries.remove(&path);
     }
-
-    // Mettre à jour TRACKS_CACHE pour éviter que load_tracks_from_cache retourne
-    // des données obsolètes (ex: genre_enrichment_complete recharge les tracks)
     if let Ok(mut cache) = TRACKS_CACHE.lock() {
         if let Some(track) = cache.tracks.iter_mut().find(|t| t.path == path) {
             if let Some(ref v) = title        { track.metadata.title  = v.clone(); }
@@ -2195,6 +2171,143 @@ fn write_metadata(
             if let Some(ref v) = genre        { track.metadata.genre  = Some(v.clone()); }
         }
         save_tracks_cache(&cache);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ÉTAPE 2 : Écriture effective des tags dans le fichier
+    // Pour SMB : download → modify → upload (peut être lent)
+    // Pour local : modification directe sur disque
+    // ═══════════════════════════════════════════════════════════════════════
+    let local_path = if is_smb {
+        let (source_id, share, remote_path) = parse_smb_uri(&path)
+            .ok_or_else(|| format!("Invalid SMB URI: {}", path))?;
+
+        // Récupérer les credentials et les stocker pour ensure_connection
+        let source = {
+            let sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+            sources.iter().find(|s| s.id == source_id)
+                .cloned()
+                .ok_or_else(|| format!("Network source not found: {}", source_id))?
+        };
+        let password = network::credentials::retrieve_password(&source.id).unwrap_or_default();
+        network::smb::store_credentials(
+            &source.credentials.username,
+            &password,
+            source.credentials.domain.as_deref(),
+            source.credentials.is_guest,
+        );
+
+        // Cache-first : vérifier si le fichier est déjà dans smb_buffer/
+        let ext = Path::new(&remote_path).extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("tmp");
+        let smb_buffer = get_data_dir().join("smb_buffer");
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        path.hash(&mut h);
+        let cache_path = smb_buffer.join(format!("{:x}.{}", h.finish(), ext));
+
+        let data = if cache_path.exists() && cache_path.metadata().map(|m| m.len() > 1_000_000).unwrap_or(false) {
+            // Cache hit : utiliser le fichier déjà téléchargé
+            println!("[write_metadata] Using cached file: {}", cache_path.display());
+            std::fs::read(&cache_path)
+                .map_err(|e| format!("Cannot read cached file: {}", e))?
+        } else {
+            // Cache miss : télécharger depuis le NAS
+            println!("[write_metadata] Downloading from NAS: {}/{}{}", source.host, share, remote_path);
+            network::smb::read_file(&source.host, &share, &remote_path)?
+        };
+
+        // Écrire dans un fichier temporaire
+        let temp_path = std::env::temp_dir().join(format!("noir_meta_{}.{}", std::process::id(), ext));
+        std::fs::write(&temp_path, &data)
+            .map_err(|e| format!("Cannot write temp file: {}", e))?;
+
+        temp_path.to_string_lossy().to_string()
+    } else {
+        // SECURITY: Validate that the path is within a configured library path
+        let config = load_config();
+        let canonical_path = Path::new(&path).canonicalize()
+            .map_err(|e| format!("Cannot resolve path: {}", e))?;
+        let is_in_library = config.library_paths.iter().any(|lib_path| {
+            if let Ok(canonical_lib) = Path::new(lib_path).canonicalize() {
+                canonical_path.starts_with(&canonical_lib)
+            } else {
+                false
+            }
+        });
+        if !is_in_library {
+            return Err("Security: file is not within any configured library path".to_string());
+        }
+        path.clone()
+    };
+
+    // Ouvrir et modifier les tags sur le fichier local (ou temp)
+    let mut tagged_file = Probe::open(&local_path)
+        .map_err(|e| format!("Cannot open file: {}", e))?
+        .read()
+        .map_err(|e| format!("Cannot read tags: {}", e))?;
+
+    // Fallback : créer un tag si le fichier n'en a aucun
+    let has_primary = tagged_file.primary_tag().is_some();
+    let has_any = has_primary || tagged_file.first_tag().is_some();
+    if !has_any {
+        let tag_type = match tagged_file.file_type() {
+            lofty::FileType::Flac => TagType::VorbisComments,
+            lofty::FileType::Mp4 => TagType::Mp4Ilst,
+            _ => TagType::Id3v2,
+        };
+        tagged_file.insert_tag(lofty::Tag::new(tag_type));
+    }
+    let tag = if tagged_file.primary_tag().is_some() {
+        tagged_file.primary_tag_mut().unwrap()
+    } else {
+        tagged_file.first_tag_mut()
+            .ok_or_else(|| "No tag found in this file".to_string())?
+    };
+
+    if let Some(ref v) = title        { tag.set_title(v.clone()); }
+    if let Some(ref v) = artist       { tag.set_artist(v.clone()); }
+    if let Some(ref v) = album        { tag.set_album(v.clone()); }
+    if let Some(v) = year             { tag.set_year(v); }
+    if let Some(v) = track_number     { tag.set_track(v); }
+    if let Some(ref v) = genre        { tag.set_genre(v.clone()); }
+
+    tag.save_to_path(&local_path)
+        .map_err(|e| format!("Error saving tags: {}", e))?;
+
+    // Pour SMB : ré-uploader le fichier modifié vers le NAS
+    if is_smb {
+        let (source_id, share, remote_path) = parse_smb_uri(&path).unwrap();
+        let source = {
+            let sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
+            sources.iter().find(|s| s.id == source_id).cloned()
+                .ok_or_else(|| format!("Network source not found: {}", source_id))?
+        };
+
+        let modified_data = std::fs::read(&local_path)
+            .map_err(|e| format!("Cannot read modified temp file: {}", e))?;
+
+        // Upload vers le NAS
+        network::smb::write_file(&source.host, &share, &remote_path, &modified_data)?;
+
+        // Nettoyer le fichier temporaire
+        let _ = std::fs::remove_file(&local_path);
+
+        // Mettre à jour le cache smb_buffer s'il existe
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let smb_buffer = get_data_dir().join("smb_buffer");
+        let ext = Path::new(&remote_path).extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("tmp");
+        let mut h2 = DefaultHasher::new();
+        path.hash(&mut h2);
+        let cache_path = smb_buffer.join(format!("{:x}.{}", h2.finish(), ext));
+        if cache_path.exists() {
+            let _ = std::fs::write(&cache_path, &modified_data);
+        }
     }
 
     Ok(())
