@@ -1383,15 +1383,21 @@ export async function displayHomeView() {
 
       const coverPath = (album && album.coverPath) ? album.coverPath : entry.path
       if (img && placeholder) {
+        // Handlers onload/onerror pour s'assurer que le placeholder est géré
+        // même si l'image noir:// échoue après que loadThumbnailAsync ait mis display:block
+        img.onload = () => {
+          img.style.display = 'block'
+          placeholder.style.display = 'none'
+        }
+        img.onerror = () => {
+          img.style.display = 'none'
+          placeholder.style.display = 'flex'
+        }
         // Essayer le cache avec coverPath, puis avec entry.path en fallback
         const cachedCover = caches.coverCache.get(coverPath) || caches.thumbnailCache.get(coverPath)
           || (coverPath !== entry.path && (caches.coverCache.get(entry.path) || caches.thumbnailCache.get(entry.path)))
         if (!loadCachedImage(img, placeholder, cachedCover)) {
-          app.loadThumbnailAsync(coverPath, img, entry.artist, entry.album).then(() => {
-            if (img.isConnected && img.style.display === 'block') {
-              placeholder.style.display = 'none'
-            }
-          })
+          app.loadThumbnailAsync(coverPath, img, entry.artist, entry.album)
         }
       }
 
