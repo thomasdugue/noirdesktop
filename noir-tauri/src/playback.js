@@ -1490,6 +1490,16 @@ let _lastKnownSystemDefault = null
 // The sync uses this to decide if a restart is actually needed.
 let _audioStreamDeviceId = null
 
+// Cooldown: suppress system-device-sync after Noir itself triggers a device switch.
+// When selectAudioDevice() calls set_audio_device → set_system_default_device in Rust,
+// macOS reports a "new" default. Without this cooldown, the sync loop misinterprets
+// that Noir-initiated change as an external change, triggering another switch → infinite loop.
+// The 10s window is intentionally generous: macOS audio daemon can take several seconds
+// to stabilize after a device switch, and the sync polls every 5s. Any genuine external
+// change (user plugs headphones) during cooldown will be picked up on the next poll after
+// cooldown expires (max ~15s delay — acceptable trade-off vs. infinite oscillation).
+let _deviceSwitchCooldownUntil = 0
+
 export function setAudioStreamDeviceId(id) {
   _audioStreamDeviceId = id
 }
@@ -1520,8 +1530,17 @@ function startSystemDeviceSync() {
 
       // Sync uniquement si le système a changé depuis le dernier cycle
       if (systemDefaultId !== _lastKnownSystemDefault) {
-        console.log('[AUDIO-OUTPUT] System default changed externally:', _lastKnownSystemDefault, '→', systemDefaultId)
         _lastKnownSystemDefault = systemDefaultId
+
+        // Skip if we're in a cooldown period after a Noir-initiated device switch.
+        // When selectAudioDevice → set_audio_device → set_system_default_device changes
+        // the macOS default, we must NOT react to that change here (it's not external).
+        if (Date.now() < _deviceSwitchCooldownUntil) {
+          console.log('[AUDIO-OUTPUT] System default changed but within cooldown, ignoring (Noir-initiated switch)')
+          return
+        }
+
+        console.log('[AUDIO-OUTPUT] System default changed externally:', systemDefaultId)
 
         // Restart only if audio stream is not already on the new system default.
         // Use _audioStreamDeviceId (last device passed to audio_play), NOT
@@ -1673,6 +1692,12 @@ export async function selectAudioDevice(deviceId, deviceName) {
   dom.audioOutputBtn.classList.remove('active')
 
   try {
+    // Activate cooldown BEFORE the Rust call: set_audio_device will call
+    // set_system_default_device, which changes the macOS default. The sync loop
+    // must ignore this Noir-initiated change for the next 10s to prevent a
+    // feedback loop (Noir switches → macOS reports new default → sync switches back).
+    _deviceSwitchCooldownUntil = Date.now() + 10000
+
     console.log('[AUDIO-OUTPUT] Calling set_audio_device...')
     await invoke('set_audio_device', { deviceId })
     console.log('[AUDIO-OUTPUT] Device preference changed successfully')
