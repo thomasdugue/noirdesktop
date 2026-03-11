@@ -1351,8 +1351,18 @@ export async function displayHomeView() {
 
 
     for (const entry of uniqueTracks) {
+      // Lookup album : d'abord par clé directe, puis par scan artiste+album
       const albumKey = entry.album || 'Unknown Album'
-      const album = library.albums[albumKey]
+      let album = library.albums[albumKey]
+      if (!album && entry.album && entry.artist) {
+        for (const key of Object.keys(library.albums)) {
+          const a = library.albums[key]
+          if (a.album === entry.album && (a.artist === entry.artist || a.isVariousArtists)) {
+            album = a
+            break
+          }
+        }
+      }
 
       const item = document.createElement('div')
       item.className = 'recent-track-item'
@@ -1373,7 +1383,9 @@ export async function displayHomeView() {
 
       const coverPath = (album && album.coverPath) ? album.coverPath : entry.path
       if (img && placeholder) {
+        // Essayer le cache avec coverPath, puis avec entry.path en fallback
         const cachedCover = caches.coverCache.get(coverPath) || caches.thumbnailCache.get(coverPath)
+          || (coverPath !== entry.path && (caches.coverCache.get(entry.path) || caches.thumbnailCache.get(entry.path)))
         if (!loadCachedImage(img, placeholder, cachedCover)) {
           app.loadThumbnailAsync(coverPath, img, entry.artist, entry.album).then(() => {
             if (img.isConnected && img.style.display === 'block') {
