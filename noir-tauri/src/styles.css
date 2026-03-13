@@ -99,7 +99,9 @@
 .track-item-name,
 .album-page-artist,
 .album-page-meta,
-.artist-page-meta {
+.artist-page-meta,
+.carousel-artist,
+.artist-carousel-item .carousel-artist {
   font-family: var(--font-sans);
 }
 
