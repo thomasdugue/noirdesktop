@@ -57,7 +57,7 @@
 
   /* Typographie */
   --font-body: 'Geist Mono', 'SF Mono', 'Monaco', 'Menlo', monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
 
   /* Spacing scale */
   --sp-xs: 4px;
