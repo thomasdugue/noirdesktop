@@ -57,6 +57,7 @@
 
   /* Typographie */
   --font-body: 'Geist Mono', 'SF Mono', 'Monaco', 'Menlo', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
 
   /* Spacing scale */
   --sp-xs: 4px;
@@ -75,6 +76,31 @@
 
   /* Couleur accent vert */
   --color-green: #4ade80;
+}
+
+/* ============================================
+   TYPOGRAPHIE MÉTADONNÉES — sans-serif pour
+   les noms de tracks/artistes/albums dans le
+   contenu. Geist Mono conservé pour les titres
+   de page et les éléments UI/navigation.
+   ============================================ */
+.album-title,
+.album-artist,
+.tracks-list-title,
+.tracks-list-artist,
+.tracks-list-album,
+.track-title,
+.track-info .track-artist,
+.recent-track-title,
+.recent-track-artist,
+.recent-track-album,
+.search-result-title,
+.search-result-subtitle,
+.track-item-name,
+.album-page-artist,
+.album-page-meta,
+.artist-page-meta {
+  font-family: var(--font-sans);
 }
 
 /* Reset et base */
