@@ -2051,11 +2051,20 @@ export function updateHomeNowPlayingSection() {
   const img = resumeTile.querySelector('.resume-cover-img')
   const placeholder = resumeTile.querySelector('.resume-cover-placeholder')
   if (img && placeholder) {
-    app.loadThumbnailAsync(currentTrack.path, img, artist, albumName).then(() => {
-      if (img.isConnected && img.style.display === 'block') {
-        placeholder.style.display = 'none'
-      }
-    })
+    // Assign handlers directly to handle onload/onerror reliably
+    img.onload = () => {
+      img.style.display = 'block'
+      placeholder.style.display = 'none'
+    }
+    img.onerror = () => {
+      img.style.display = 'none'
+      placeholder.style.display = 'flex'
+    }
+    // Try cache first, then async load
+    const cachedCover = caches.coverCache.get(currentTrack.path) || caches.thumbnailCache.get(currentTrack.path)
+    if (!loadCachedImage(img, placeholder, cachedCover)) {
+      app.loadThumbnailAsync(currentTrack.path, img, artist, albumName)
+    }
   }
 }
 
