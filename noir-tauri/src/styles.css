@@ -57,6 +57,7 @@
 
   /* Typographie */
   --font-body: 'Geist Mono', 'SF Mono', 'Monaco', 'Menlo', monospace;
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
 
   /* Spacing scale */
   --sp-xs: 4px;
@@ -75,6 +76,33 @@
 
   /* Couleur accent vert */
   --color-green: #4ade80;
+}
+
+/* ============================================
+   TYPOGRAPHIE MÉTADONNÉES — sans-serif pour
+   les noms de tracks/artistes/albums dans le
+   contenu. Geist Mono conservé pour les titres
+   de page et les éléments UI/navigation.
+   ============================================ */
+.album-title,
+.album-artist,
+.tracks-list-title,
+.tracks-list-artist,
+.tracks-list-album,
+.track-title,
+.track-info .track-artist,
+.recent-track-title,
+.recent-track-artist,
+.recent-track-album,
+.search-result-title,
+.search-result-subtitle,
+.track-item-name,
+.album-page-artist,
+.album-page-meta,
+.artist-page-meta,
+.carousel-artist,
+.artist-carousel-item .carousel-artist {
+  font-family: var(--font-sans);
 }
 
 /* Reset et base */
@@ -197,22 +225,14 @@ body.sidebar-resizing * {
 .sidebar-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 16px 20px;
+  padding: 20px 20px;
   border-bottom: 1px solid #222;
 }
 
 .app-logo {
-  height: 18px;
+  height: 28px;
   width: auto;
   flex-shrink: 0;
-}
-
-.sidebar-header h2 {
-  font-size: 18px;
-  font-weight: 400;
-  color: #fff;
-  letter-spacing: -0.5px;
 }
 
 /* === MODULE INDEXATION (en bas de sidebar) === */
@@ -6993,7 +7013,6 @@ body:not(.player-visible) .track-info-panel {
   transition: width 0.2s ease;
 }
 
-.sidebar-header h2,
 .nav-item span,
 .search-container {
   transition: opacity 0.2s ease;
@@ -7019,18 +7038,14 @@ body:not(.player-visible) .track-info-panel {
   }
 
   .sidebar-header {
-    padding: 12px 0;
-    justify-content: center;
-    gap: 0;
-  }
-
-  .sidebar-header h2 {
-    display: none;
+    padding: 14px 10px;
+    overflow: hidden;
   }
 
   .app-logo {
-    width: 18px;
-    height: 18px;
+    height: 22px;
+    width: auto;
+    flex-shrink: 0;
   }
 
   .sidebar-nav {
