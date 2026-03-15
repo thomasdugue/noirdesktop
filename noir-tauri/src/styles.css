@@ -8914,6 +8914,23 @@ body:not(.player-visible) .track-info-panel {
   animation: dapFadeIn 0.25s ease;
 }
 
+/* Tab content transition */
+@keyframes dapTabIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.dap-tab-enter {
+  animation: dapTabIn 0.18s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dap-fade-in,
+  .dap-tab-enter {
+    animation: none;
+  }
+}
+
 /* --- Shared Buttons --- */
 
 .dap-btn-primary {
@@ -9029,6 +9046,12 @@ body:not(.player-visible) .track-info-panel {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   margin-bottom: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.dap-dest-bar:hover {
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .dap-dest-icon {
@@ -9042,7 +9065,7 @@ body:not(.player-visible) .track-info-panel {
 }
 
 .dap-dest-path {
-  font-size: 11.5px;
+  font-size: 12px;
   font-family: 'Geist Mono', monospace;
   color: var(--color-text-muted);
   white-space: nowrap;
@@ -9051,7 +9074,7 @@ body:not(.player-visible) .track-info-panel {
 }
 
 .dap-dest-space {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-text-faint);
   margin-top: 2px;
 }
@@ -9096,7 +9119,7 @@ body:not(.player-visible) .track-info-panel {
 
 .dap-sync-tab {
   padding: 8px 18px;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--color-text-faint);
   cursor: pointer;
@@ -9184,7 +9207,7 @@ body:not(.player-visible) .track-info-panel {
 }
 
 .dap-select-all-label {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--color-text-faint);
 }
@@ -9243,6 +9266,15 @@ body:not(.player-visible) .track-info-panel {
   flex-shrink: 0;
   background: var(--color-bg-surface);
   object-fit: cover;
+  overflow: hidden;
+  position: relative;
+}
+
+.dap-alb-art-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 4px;
 }
 
 .dap-alb-info {
@@ -9251,7 +9283,7 @@ body:not(.player-visible) .track-info-panel {
 }
 
 .dap-alb-name {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -9260,7 +9292,7 @@ body:not(.player-visible) .track-info-panel {
 }
 
 .dap-alb-artist {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--color-text-muted);
 }
 
@@ -9349,7 +9381,7 @@ body:not(.player-visible) .track-info-panel {
 /* Track number (for Tracks tab) */
 .dap-track-num {
   width: 28px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-family: 'Geist Mono', monospace;
   color: var(--color-text-faint);
   text-align: center;
@@ -9393,10 +9425,6 @@ body:not(.player-visible) .track-info-panel {
   gap: 5px;
 }
 
-.dap-dest-details.collapsed {
-  display: none;
-}
-
 .dap-det-row {
   display: flex;
   justify-content: space-between;
@@ -9405,13 +9433,13 @@ body:not(.player-visible) .track-info-panel {
 }
 
 .dap-det-label {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--color-text-faint);
   flex-shrink: 0;
 }
 
 .dap-det-val {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
   font-family: 'Geist Mono', monospace;
   color: var(--color-text-muted);
@@ -9442,6 +9470,49 @@ body:not(.player-visible) .track-info-panel {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.dap-det-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 24px;
+}
+
+.dap-det-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dap-det-col-title {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--color-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+  opacity: 0.6;
+}
+
+.dap-det-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--color-border);
+  font-size: 10.5px;
+  color: var(--color-text-faint);
+}
+
+.dap-det-footer strong {
+  font-weight: 600;
+  color: var(--color-text-muted);
+  font-family: 'Geist Mono', monospace;
+}
+
+.dap-det-footer-sep {
+  opacity: 0.35;
 }
 
 .dap-det-separator {
@@ -9651,6 +9722,101 @@ body:not(.player-visible) .track-info-panel {
   margin-bottom: 14px;
 }
 
+/* Animated DAP completion icon */
+@keyframes dapCompleteFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes dapCompleteGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0), 0 4px 20px rgba(0, 0, 0, 0.3); }
+  50% { box-shadow: 0 0 24px 6px rgba(255, 255, 255, 0.06), 0 4px 20px rgba(0, 0, 0, 0.3); }
+}
+
+@keyframes dapCheckDraw {
+  from { stroke-dashoffset: 20; opacity: 0; }
+  to { stroke-dashoffset: 0; opacity: 1; }
+}
+
+@keyframes dapParticle {
+  0% { transform: translate(0, 0) scale(1); opacity: 0.7; }
+  100% { opacity: 0; }
+}
+
+.dap-complete-dap-icon {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  margin-bottom: 18px;
+  animation: dapCompleteFloat 3s ease-in-out infinite, dapCompleteGlow 3s ease-in-out infinite;
+}
+
+.dap-complete-dap-icon svg {
+  color: #fff;
+}
+
+.dap-complete-dap-icon .dap-check-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 22px;
+  height: 22px;
+  background: #4ade80;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-bg);
+}
+
+.dap-complete-dap-icon .dap-check-badge svg {
+  color: #0a0a0a;
+}
+
+.dap-complete-dap-icon .dap-check-badge .dap-check-path {
+  stroke-dasharray: 20;
+  animation: dapCheckDraw 0.5s ease-out 0.3s both;
+}
+
+/* Micro-particles emanating from DAP icon */
+.dap-particle {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+  animation: dapParticle var(--dur, 1.8s) ease-out var(--delay, 0s) infinite;
+  transform-origin: center;
+  --tx: 0px;
+  --ty: -30px;
+}
+
+@keyframes dapParticle {
+  0% { transform: translate(0, 0) scale(1); opacity: 0.6; }
+  100% { transform: translate(var(--tx), var(--ty)) scale(0); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dap-complete-dap-icon {
+    animation: none;
+  }
+  .dap-complete-dap-icon .dap-check-badge .dap-check-path {
+    animation: none;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  .dap-particle {
+    display: none;
+  }
+}
+
 .dap-complete-title {
   font-size: 18px;
   font-weight: 600;
@@ -9659,7 +9825,7 @@ body:not(.player-visible) .track-info-panel {
 }
 
 .dap-complete-subtitle {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--color-text-faint);
   margin-bottom: 24px;
 }
@@ -9674,7 +9840,7 @@ body:not(.player-visible) .track-info-panel {
   display: flex;
   justify-content: space-between;
   padding: 5px 0;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .dap-complete-row span:first-child {
@@ -9698,12 +9864,23 @@ body:not(.player-visible) .track-info-panel {
 }
 
 .dap-eject-msg {
-  margin-top: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
   padding: 10px 18px;
   background: rgba(74, 222, 128, 0.08);
   border-radius: 5px;
   font-size: 12px;
   color: #4ade80;
+}
+
+.dap-complete-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  margin-top: 32px;
 }
 
 /* --- Screen 7: Disconnected --- */
@@ -9993,86 +10170,151 @@ body:not(.player-visible) .track-info-panel {
 }
 
 /* ============================================================
-   DAP SYNC TOP BAR — replaces search bar in DAP sync view
+   DAP SYNC TOP BAR — hides search bar, keeps feedback/settings
    ============================================================ */
 
 .dap-sync-bar {
+  display: none; /* Empty bar — just triggers search-bar-inner hide */
+}
+
+.dap-sync-bar:not(.hidden) {
   display: flex;
+  flex: 0;
+  min-width: 0;
+}
+
+/* Sync button inside the dest-bar */
+.dap-dest-sync-btn {
+  display: inline-flex;
   align-items: center;
-  flex: 1;
-  min-width: 0;
-}
-
-.dap-topbar-inner {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  flex: 1;
-  min-width: 0;
-}
-
-.dap-topbar-stats {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 3px 32px;
-  flex: 1;
-  min-width: 0;
-}
-
-.dap-topbar-stat {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.dap-topbar-label {
+  gap: 5px;
+  padding: 6px 18px;
+  border-radius: 6px;
+  font-family: 'Geist Mono', monospace;
   font-size: 11px;
-  color: var(--color-text-faint);
-  flex-shrink: 0;
-  font-family: 'Geist Mono', monospace;
-  white-space: nowrap;
-}
-
-.dap-topbar-val {
-  font-size: 11px;
-  color: #bbb;
-  font-family: 'Geist Mono', monospace;
-  white-space: nowrap;
-}
-
-.dap-topbar-val.g { color: #4ade80; }
-.dap-topbar-val.r { color: #f87171; }
-
-.dap-topbar-sync-btn {
-  padding: 7px 16px;
-  border-radius: 5px;
-  font-family: 'Geist Mono', monospace;
-  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  border: none;
-  background: #fff;
-  color: #0a0a0a;
-  transition: background 0.15s;
+  border: 1px solid #333;
+  background: transparent;
+  color: #888;
+  transition: all 0.2s ease;
   flex-shrink: 0;
   white-space: nowrap;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
 
-.dap-topbar-sync-btn:hover:not(:disabled) {
-  background: #e0e0e0;
+.dap-dest-sync-btn:hover:not(:disabled) {
+  background: #fff;
+  color: #0a0a0a;
+  border-color: #fff;
 }
 
-.dap-topbar-sync-btn:disabled {
-  opacity: 0.4;
+.dap-dest-sync-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.dap-dest-sync-btn:disabled {
+  opacity: 0.25;
   cursor: not-allowed;
 }
 
-/* Separator between DAP bar and search-bar-actions (Feedback / Settings) */
-.dap-sync-bar:not(.hidden) ~ .search-bar-actions {
-  margin-left: 0;
-  padding-left: 20px;
-  border-left: 1px solid #2a2a2a;
+/* Pulse animation when changes are pending */
+.dap-dest-sync-btn.has-changes {
+  color: #fff;
+  border-color: #fff;
+  animation: syncBtnPulse 2.5s ease-in-out infinite;
+}
+
+.dap-dest-sync-btn.has-changes:hover {
+  background: #fff;
+  color: #0a0a0a;
+  animation: none;
+}
+
+@keyframes syncBtnPulse {
+  0%, 100% { border-color: rgba(255, 255, 255, 0.3); color: rgba(255, 255, 255, 0.6); }
+  50% { border-color: rgba(255, 255, 255, 0.8); color: #fff; }
+}
+
+/* Gear button in dest-bar */
+.dap-dest-gear {
+  background: none;
+  border: none;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: color 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.dap-dest-gear:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+  opacity: 1;
+}
+
+/* Details panel — smooth expand/collapse */
+.dap-dest-details {
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.25s ease, margin 0.3s ease;
+  max-height: 300px;
+  opacity: 1;
+  margin-bottom: 14px;
+}
+
+.dap-dest-details.collapsed {
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-width: 0;
+}
+
+/* Detail panel groups */
+.dap-det-group {
+  margin-bottom: 2px;
+}
+
+.dap-det-group-title {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--color-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 4px;
+  opacity: 0.7;
+}
+
+.dap-det-divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: 6px 0;
+  opacity: 0.5;
+}
+
+/* Storage bar in detail panel */
+.dap-storage-bar-detail {
+  height: 4px;
+  margin-top: 2px;
+  border-radius: 2px;
+}
+
+/* Error message in panel */
+.dap-sum-error {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  border-radius: 4px;
+  color: #f87171;
+  font-size: 11px;
 }
 
 /* ============================================================
@@ -10132,6 +10374,11 @@ body:not(.player-visible) .track-info-panel {
   justify-content: center;
   align-items: center;
   margin-bottom: 24px;
+}
+
+.dap-trf-anim-wrap svg {
+  width: 96px;
+  height: 96px;
 }
 
 .dap-trf-icon {
