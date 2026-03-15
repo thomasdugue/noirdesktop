@@ -1341,12 +1341,18 @@ export async function displayHomeView() {
     const maxTracks = 6
     const uniqueTracks = []
     const seenTracks = new Set()
+    const seenAlbums = new Set()
     for (const entry of recentTracks) {
-      if (entry && entry.path && !seenTracks.has(entry.path)) {
-        seenTracks.add(entry.path)
-        uniqueTracks.push(entry)
-        if (uniqueTracks.length >= maxTracks) break
-      }
+      if (!entry || !entry.path || seenTracks.has(entry.path)) continue
+      // Déduplication par album : clé composite artiste+album pour éviter les doublons visuels
+      const albumDedup = entry.album
+        ? `${(entry.artist || '').trim()}|||${entry.album.trim()}`
+        : null
+      if (albumDedup && seenAlbums.has(albumDedup)) continue
+      seenTracks.add(entry.path)
+      if (albumDedup) seenAlbums.add(albumDedup)
+      uniqueTracks.push(entry)
+      if (uniqueTracks.length >= maxTracks) break
     }
 
 

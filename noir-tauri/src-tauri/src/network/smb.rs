@@ -458,16 +458,42 @@ pub fn read_file_to_temp_progressive(
         stored.workgroup.as_deref(), stored.is_guest,
     )?;
 
-    let active = conn.as_ref()
-        .ok_or_else(|| format!("No active connection to {}", host))?;
-
     let clean_path = path.trim_start_matches('/');
     let file_path = format!("/{}", clean_path);
 
-    let mut smb_file = active.client.open_with(
-        &file_path,
-        SmbOpenOptions::default().read(true),
-    ).map_err(|e| format!("Failed to open SMB file {}: {}", file_path, e))?;
+    // Tentative d'ouverture — si échec (connexion périmée/stale), retry avec reconnexion fraîche.
+    // On teste d'abord l'ouverture et on capture le résultat comme bool + message d'erreur.
+    // Le SmbFile du premier essai doit être droppé avant de pouvoir muter conn pour le retry.
+    let first_open_err = {
+        let active = conn.as_ref()
+            .ok_or_else(|| format!("No active connection to {}", host))?;
+        match active.client.open_with(&file_path, SmbOpenOptions::default().read(true)) {
+            Ok(_f) => {
+                // Succès — on ne peut pas retourner le SmbFile ici car il borrowe conn.
+                // On le marque comme None pour signaler le succès.
+                None
+            }
+            Err(e) => Some(format!("{}", e)),
+        }
+    };
+    // Le SmbFile temporaire est droppé ici → conn est libre pour mutation.
+
+    if let Some(err_msg) = first_open_err {
+        println!("[SMB Progressive] open_with failed ({}), retrying with fresh connection…", err_msg);
+        *conn = None;
+        ensure_connection_with_guard(
+            &mut *conn,
+            host, share,
+            &stored.username, &stored.password,
+            stored.workgroup.as_deref(), stored.is_guest,
+        )?;
+    }
+
+    // Ouvrir le fichier (soit premier succès, soit après reconnexion)
+    let active = conn.as_ref()
+        .ok_or_else(|| format!("No active connection to {}", host))?;
+    let mut smb_file = active.client.open_with(&file_path, SmbOpenOptions::default().read(true))
+        .map_err(|e| format!("Failed to open SMB file {}: {}", file_path, e))?;
 
     // Créer ou tronquer le fichier temporaire local
     let mut tmp = std::fs::File::create(temp_path)
@@ -483,7 +509,7 @@ pub fn read_file_to_temp_progressive(
             break;
         }
         let n = smb_file.read(&mut buf)
-            .map_err(|e| format!("SMB read error: {}", e))?;
+            .map_err(|e| format!("SMB read error after {} bytes: {}", total, e))?;
         if n == 0 { break; }
 
         tmp.write_all(&buf[..n])
