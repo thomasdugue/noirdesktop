@@ -1159,6 +1159,21 @@ fn init_cache() -> bool {
         let fresh_cache = load_tracks_cache();
         println!("[init_cache] Reloading tracks cache from disk: {} tracks found", fresh_cache.tracks.len());
         *cache = fresh_cache;
+
+        // DÉFENSE EN PROFONDEUR : filtre les tracks exclues par l'utilisateur
+        // Filet de sécurité au cas où tracks_cache.json contiendrait encore des tracks
+        // qui ont été supprimées (crash avant save, race condition, etc.)
+        let config = load_config();
+        if !config.excluded_paths.is_empty() {
+            let excluded: std::collections::HashSet<&String> = config.excluded_paths.iter().collect();
+            let before = cache.tracks.len();
+            cache.tracks.retain(|t| !excluded.contains(&t.path));
+            let removed = before - cache.tracks.len();
+            if removed > 0 {
+                println!("[init_cache] Filtered out {} excluded tracks from cache", removed);
+                save_tracks_cache(&cache);
+            }
+        }
     }
 
     true
@@ -1935,16 +1950,37 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
+        // Snapshot METADATA_CACHE AVANT de locker TRACKS_CACHE
+        // pour capturer les user edits qui ont pu arriver pendant le scan.
+        // Si write_metadata() a mis à jour METADATA_CACHE après que le scan
+        // ait lu les fichiers, ce snapshot contient les valeurs les plus récentes.
+        let meta_snapshot: HashMap<String, Metadata> = METADATA_CACHE.lock()
+            .map(|c| c.entries.clone())
+            .unwrap_or_default();
+
         // Calcule les statistiques APRÈS fusion local + SMB (pour l'onglet Indexation)
         let stats = if let Ok(mut cache) = TRACKS_CACHE.lock() {
             // Préserver les tracks réseau (smb://) — gérées par scan_network_source_cmd
             // Ne PAS les écraser lors d'un scan local : l'utilisateur les retrouverait perdues
+            // IMPORTANT: Filtre aussi par excluded_paths pour ne jamais ramener une track supprimée
             let smb_tracks: Vec<_> = cache.tracks
                 .drain(..)
-                .filter(|t| t.path.starts_with("smb://"))
+                .filter(|t| t.path.starts_with("smb://") && !excluded_paths.contains(&t.path))
                 .collect();
             cache.tracks = all_tracks;
             cache.tracks.extend(smb_tracks);
+
+            // Re-appliquer les métadonnées depuis METADATA_CACHE snapshot.
+            // Cela corrige la race condition où write_metadata() a mis à jour
+            // METADATA_CACHE après que le scan ait lu les fichiers avec les anciennes
+            // métadonnées. Sans cette étape, cache.tracks = all_tracks écraserait
+            // les user edits avec les données stale lues depuis les fichiers.
+            for track in cache.tracks.iter_mut() {
+                if let Some(meta) = meta_snapshot.get(&track.path) {
+                    track.metadata = meta.clone();
+                }
+            }
+
             cache.last_scan_timestamp = now;
             // Stats sur le total (local + SMB) → onglet Indexation correct
             let s = calculate_library_stats(&cache.tracks);
@@ -2172,7 +2208,22 @@ fn write_metadata(
     // l'app quitte avant la fin de l'écriture NAS
     // ═══════════════════════════════════════════════════════════════════════
     if let Ok(mut cache) = METADATA_CACHE.lock() {
-        cache.entries.remove(&path);
+        // CRITIQUE : UPDATE l'entrée au lieu de la supprimer.
+        // La suppression créait une fenêtre où le background scan pouvait
+        // re-insérer les anciennes métadonnées depuis le fichier audio
+        // (avant que lofty n'ait écrit les nouveaux tags) — corruption permanente.
+        // L'update garantit que get_metadata_internal() retourne toujours
+        // les valeurs les plus récentes, et que scan_folder_with_metadata()
+        // ne réinsère pas de données stale (check !contains_key à l.1785).
+        if let Some(entry) = cache.entries.get_mut(&path) {
+            if let Some(ref v) = title        { entry.title  = v.clone(); }
+            if let Some(ref v) = artist       { entry.artist = v.clone(); }
+            if let Some(ref v) = album        { entry.album  = v.clone(); }
+            if let Some(v) = year             { entry.year   = Some(v); }
+            if let Some(v) = track_number     { entry.track  = v; }
+            if let Some(ref v) = genre        { entry.genre  = Some(v.clone()); }
+        }
+        save_metadata_cache_to_file(&cache);
     }
     if let Ok(mut cache) = TRACKS_CACHE.lock() {
         if let Some(track) = cache.tracks.iter_mut().find(|t| t.path == path) {
@@ -2202,7 +2253,8 @@ fn write_metadata(
                 .cloned()
                 .ok_or_else(|| format!("Network source not found: {}", source_id))?
         };
-        let password = network::credentials::retrieve_password(&source.id).unwrap_or_default();
+        let password = network::credentials::retrieve_password(&source.id)
+            .map_err(|e| format!("Cannot retrieve NAS password for metadata write: {}", e))?;
         network::smb::store_credentials(
             &source.credentials.username,
             &password,
@@ -3217,7 +3269,17 @@ async fn audio_play(path: String) -> Result<(), String> {
                 .ok_or_else(|| format!("Network source not found: {}", source_id))?
         };
 
-        let password = network::credentials::retrieve_password(&source.id).unwrap_or_default();
+        let password = if source.credentials.is_guest {
+            String::new()
+        } else {
+            match network::credentials::retrieve_password(&source.id) {
+                Ok(pw) => pw,
+                Err(e) => {
+                    println!("[SMB TIMING] Keychain retrieve failed: {}", e);
+                    return Err(format!("SMB credentials not available for source {}: {}. Try reconnecting the NAS source.", source.name, e));
+                }
+            }
+        };
         network::smb::store_credentials(
             &source.credentials.username,
             &password,
@@ -3255,7 +3317,9 @@ async fn audio_play(path: String) -> Result<(), String> {
 
         // Vérifier que le download n'a pas échoué immédiatement (0 bytes → fichier introuvable)
         if available == 0 {
-            return Err(format!("SMB download failed for: {}", path));
+            let detail = network::scanner::take_last_download_error()
+                .unwrap_or_else(|| "unknown error (no details from download thread)".to_string());
+            return Err(format!("SMB download failed for {}: {}", path, detail));
         }
 
         // 5. Démarrer la lecture depuis le fichier local (peut encore être en cours de DL)
@@ -4295,10 +4359,21 @@ async fn scan_network_source_cmd(source_id: String, app_handle: tauri::AppHandle
                 }
 
                 // Merge dans TRACKS_CACHE : remplace les tracks de cette source
+                // IMPORTANT: Filtre les tracks exclues par l'utilisateur (supprimées de la bibliothèque)
+                // Sans ce filtre, un re-scan NAS ramènerait les tracks que l'utilisateur a supprimées.
                 if let Ok(mut cache) = TRACKS_CACHE.lock() {
                     let prefix = format!("smb://{}/", source.id);
                     cache.tracks.retain(|t| !t.path.starts_with(&prefix));
-                    cache.tracks.extend(net_tracks);
+
+                    let config = load_config();
+                    let excluded: std::collections::HashSet<&String> = config.excluded_paths.iter().collect();
+                    let filtered_net_tracks: Vec<_> = net_tracks.into_iter()
+                        .filter(|t| !excluded.contains(&t.path))
+                        .collect();
+                    if !excluded.is_empty() {
+                        println!("[Network Scan] Filtered out excluded tracks from NAS scan results");
+                    }
+                    cache.tracks.extend(filtered_net_tracks);
                     save_tracks_cache(&cache);
 
                     let stats = calculate_library_stats(&cache.tracks);
