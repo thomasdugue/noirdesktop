@@ -64,6 +64,19 @@ mdns-sd = "0.11"
 # UUIDs pour identifiants de sources réseau
 uuid = { version = "1", features = ["v4"] }
 
+# === DAP Sync (SD Card / USB sync) ===
+# SQLite embarqué pour persistance destinations + sélections
+rusqlite = { version = "0.31", features = ["bundled"] }
+# Filesystem watcher pour détection montage/démontage volumes
+notify = { version = "6", features = ["macos_fsevent"] }
+# SHA-256 pour quick hash des fichiers (détection modifications)
+sha2 = "0.10"
+# tempfile pour tests unitaires sync engine
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
 # === RELEASE PROFILE (Anti-reverse-engineering + Performance) ===
 [profile.release]
 opt-level = 3

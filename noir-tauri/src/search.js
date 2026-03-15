@@ -191,7 +191,8 @@ function updateSearchResultsPanel(query) {
     }
 
     if (allMatch && queryWords.length > 0) {
-      const albumObj = library.albums[track.metadata?.album || '']
+      const trackAlbumKey = (track.metadata?.artist || 'Unknown Artist') + ' \u2014 ' + (track.metadata?.album || 'Unknown Album')
+      const albumObj = library.albums[trackAlbumKey]
       scoredTracks.push({
         path: track.path,
         title: track.metadata?.title || track.name,

@@ -86,6 +86,23 @@
         </div>
       </div>
 
+      <!-- Section DAP Sync (SD Card / USB sync) -->
+      <div class="sb-dap-section">
+        <div class="sb-dap-header open" id="dap-sync-header-toggle">
+          <span class="sb-dap-title">DAP Sync</span>
+
+          <!-- Toggle arrow -->
+          <button class="btn-toggle-indexation sb-dap-toggle" id="btn-toggle-dap" title="Show/hide devices">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 9l6 6 6-6"/>
+            </svg>
+          </button>
+        </div>
+        <div class="sb-dap-list" id="dap-sync-destinations">
+          <!-- Devices populated dynamically -->
+        </div>
+      </div>
+
       <!-- Module Indexation (en bas de la sidebar) -->
       <div id="indexation-module" class="indexation-module">
         <!-- Header (toujours visible, cliquable pour toggle) -->
@@ -175,7 +192,7 @@
     <main class="main-content">
       <!-- Barre de recherche en haut -->
       <div class="search-bar">
-        <div class="search-bar-inner">
+        <div class="search-bar-inner" id="search-bar-inner">
           <input type="text" id="search-input" class="search-input" placeholder="Search..." autocomplete="off">
           <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
@@ -185,6 +202,10 @@
             <div class="search-results-content"></div>
           </div>
         </div>
+
+        <!-- DAP Sync top bar — shown only in DAP sync view -->
+        <div class="dap-sync-bar hidden" id="dap-sync-bar"></div>
+
         <div class="search-bar-actions">
           <button id="feedback-btn" class="feedback-header-btn" title="Give Feedback">
             Give feedback <span class="beta-badge">BETA</span>

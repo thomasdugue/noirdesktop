@@ -225,6 +225,12 @@ export function displayCurrentView() {
 
   transitionView(async () => {
     dom.albumsGridDiv.textContent = ''
+    dom.albumsGridDiv.classList.remove('dap-sync-view') // Remove DAP-specific overflow:hidden on .albums-view
+    // Restore search bar and deselect DAP sidebar item when leaving DAP sync view
+    if (ui.currentView !== 'dap-sync') {
+      app.hideDapTopBar?.()
+      app.renderSidebarDestinations?.()
+    }
     dom.albumsViewDiv.classList.remove('hidden')
 
     dom.albumsViewDiv.classList.toggle('home-visible', ui.currentView === 'home')
@@ -253,6 +259,9 @@ export function displayCurrentView() {
         break
       case 'playlist':
         app.displayPlaylistView()
+        break
+      case 'dap-sync':
+        app.displayDapSyncView()
         break
     }
   })
@@ -380,7 +389,7 @@ export function navigateBack() {
 }
 
 export function switchView(view) {
-  if (!['home', 'albums', 'artists', 'tracks'].includes(view)) return
+  if (!['home', 'albums', 'artists', 'tracks', 'dap-sync'].includes(view)) return
 
   dom.navItems.forEach(item => {
     item.classList.toggle('active', item.dataset.view === view)
@@ -1351,10 +1360,11 @@ export async function displayHomeView() {
 
 
     for (const entry of uniqueTracks) {
-      // Lookup album : d'abord par clé directe, puis par scan artiste+album
-      const albumKey = entry.album || 'Unknown Album'
+      // Lookup album : clé composite artiste — album (cohérent avec groupTracksIntoAlbumsAndArtists)
+      const albumKey = (entry.artist || 'Unknown Artist') + ' \u2014 ' + (entry.album || 'Unknown Album')
       let album = library.albums[albumKey]
-      if (!album && entry.album && entry.artist) {
+      if (!album && entry.album) {
+        // Fallback: linear scan by .album + .artist properties (listening history may have different formatting)
         for (const key of Object.keys(library.albums)) {
           const a = library.albums[key]
           if (a.album === entry.album && (a.artist === entry.artist || a.isVariousArtists)) {
@@ -1456,8 +1466,9 @@ export async function displayHomeView() {
   }
 
   // === 4. Discover carousel (unplayed albums) ===
-  const playedAlbumsSet = new Set(allPlayedAlbums.map(e => e?.album || ''))
-  const unplayedAlbums = Object.keys(library.albums).filter(key => !playedAlbumsSet.has(key))
+  // Compare by album name (from listening history) against each album's .album property
+  const playedAlbumNames = new Set(allPlayedAlbums.map(e => e?.album || ''))
+  const unplayedAlbums = Object.keys(library.albums).filter(key => !playedAlbumNames.has(library.albums[key]?.album))
 
   if (unplayedAlbums.length > 0) {
     const discoverSection = document.createElement('section')

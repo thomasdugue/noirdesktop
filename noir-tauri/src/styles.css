@@ -732,7 +732,7 @@ body.sidebar-resizing * {
 }
 .settings-network-status[data-status="connected"] { background: #4ade80; }
 .settings-network-status[data-status="disconnected"] { background: #ef4444; }
-.settings-network-status[data-status="reconnecting"] { background: #f59e0b; }
+.settings-network-status[data-status="reconnecting"] { background: #888; }
 .settings-network-status[data-status="disabled"] { background: #555; }
 
 .settings-network-toggle {
@@ -7038,14 +7038,13 @@ body:not(.player-visible) .track-info-panel {
   }
 
   .sidebar-header {
-    padding: 14px 10px;
-    overflow: hidden;
+    padding: 12px 0;
+    justify-content: center;
   }
 
   .app-logo {
-    height: 22px;
-    width: auto;
-    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
   }
 
   .sidebar-nav {
@@ -8721,4 +8720,1425 @@ body:not(.player-visible) .track-info-panel {
 #onboarding-overlay .done-footer {
   padding: var(--sp-xl) var(--sp-3xl);
   margin-top: auto;
+}
+
+/* === DAP SYNC === */
+
+/* Sidebar section */
+/* ============================================================
+   DAP SYNC — Sidebar Section
+   ============================================================ */
+
+.sb-dap-section {
+  border-top: 1px solid #222;
+  flex-shrink: 0;
+}
+
+.sb-dap-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.sb-dap-header:hover {
+  background: #1a1a1a;
+}
+
+.sb-dap-title {
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #555;
+  flex-shrink: 0;
+}
+
+/* Toggle arrow — push to right, reuse indexation pattern */
+.sb-dap-toggle {
+  margin-left: auto;
+}
+
+.sb-dap-header .btn-toggle-indexation svg {
+  transition: transform 0.2s ease;
+}
+
+.sb-dap-header.open .btn-toggle-indexation svg {
+  transform: rotate(180deg);
+}
+
+.sb-dap-add-cta {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 6px 8px 4px;
+  padding: 5px 0;
+  background: none;
+  border: 1px dashed var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text-faint);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.sb-dap-add-cta:hover {
+  border-color: var(--color-text-muted);
+  color: var(--color-text-muted);
+}
+
+.sb-dap-list {
+  padding: 0 8px;
+  overflow: hidden;
+}
+
+.sb-dap-device {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.12s;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.sb-dap-device:hover {
+  background: var(--color-bg-surface);
+  color: var(--color-text);
+}
+
+.sb-dap-device.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: 500;
+}
+
+.sb-dap-device .dev-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  background: var(--color-bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.sb-dap-device.active .dev-icon {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.sb-dap-device .dev-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.sb-dap-device .dev-name {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-dap-device .dev-space {
+  font-size: 9.5px;
+  color: var(--color-text-faint);
+  font-family: 'Geist Mono', monospace;
+}
+
+.sb-dap-device .dev-eject {
+  background: none;
+  border: none;
+  padding: 2px;
+  color: var(--color-text-faint);
+  opacity: 0;
+  transition: opacity 0.1s;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sb-dap-device:hover .dev-eject {
+  opacity: 1;
+}
+
+.sb-dap-device .dev-eject:hover {
+  color: #fff;
+}
+
+.sb-dap-empty {
+  font-size: 11px;
+  color: var(--color-text-faint);
+  padding: 8px 10px;
+  font-style: italic;
+}
+
+
+@keyframes dapPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.pulsing {
+  animation: dapPulse 1.5s infinite;
+}
+
+/* ============================================================
+   DAP SYNC — Main Content View
+   ============================================================ */
+
+.dap-sync-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.albums-view:has(.dap-sync-view) {
+  overflow-y: hidden;
+  padding: 0;
+}
+
+@keyframes dapFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.dap-fade-in {
+  animation: dapFadeIn 0.25s ease;
+}
+
+/* --- Shared Buttons --- */
+
+.dap-btn-primary {
+  padding: 8px 18px;
+  border-radius: 5px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  background: #fff;
+  color: #0a0a0a;
+  transition: background 0.15s;
+}
+
+.dap-btn-primary:hover {
+  background: #e0e0e0;
+}
+
+.dap-btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dap-btn-secondary {
+  padding: 8px 18px;
+  border-radius: 5px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #1c1c22;
+  color: #888;
+  border: 1px solid #222;
+  transition: all 0.15s;
+}
+
+.dap-btn-secondary:hover {
+  border-color: #333;
+  color: #fff;
+}
+
+/* --- Screen 1: Setup --- */
+
+.dap-setup-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 420px;
+  text-align: center;
+  padding: 40px;
+  flex: 1;
+}
+
+.dap-setup-icon {
+  font-size: 40px;
+  margin-bottom: 16px;
+  opacity: 0.85;
+}
+
+.dap-setup-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--color-text);
+}
+
+.dap-setup-desc {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  max-width: 380px;
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+.dap-setup-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 24px;
+  background: var(--color-bg-hover);
+  border: 1px dashed var(--color-border-light);
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-family: 'Geist Mono', monospace;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.dap-setup-btn:hover {
+  border-color: #fff;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* --- Screen 2: Albums / Sync Panel --- */
+
+.dap-content {
+  padding: 20px 24px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Destination bar */
+.dap-dest-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--color-bg-lighter);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+
+.dap-dest-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.dap-dest-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dap-dest-path {
+  font-size: 11.5px;
+  font-family: 'Geist Mono', monospace;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dap-dest-space {
+  font-size: 10.5px;
+  color: var(--color-text-faint);
+  margin-top: 2px;
+}
+
+.dap-dest-change {
+  background: none;
+  border: none;
+  font-size: 11px;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  font-family: 'Geist Mono', monospace;
+  padding: 4px 8px;
+}
+
+.dap-dest-change:hover {
+  color: #fff;
+}
+
+/* Storage bar (shared) */
+.dap-storage-bar {
+  height: 6px;
+  background: #1c1c22;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 3px;
+}
+
+.dap-storage-fill {
+  height: 100%;
+  background: #fff;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+/* Tabs */
+.dap-sync-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 14px;
+}
+
+.dap-sync-tab {
+  padding: 8px 18px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: all 0.12s;
+  background: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  font-family: 'Geist Mono', monospace;
+}
+
+.dap-sync-tab:hover {
+  color: var(--color-text-muted);
+}
+
+.dap-sync-tab.active {
+  color: #fff;
+  border-bottom-color: #fff;
+}
+
+/* Search */
+.dap-search-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.dap-search-box {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.dap-sort-select {
+  padding: 8px 10px;
+  background: var(--color-bg-light);
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  color: var(--color-text);
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s;
+}
+
+.dap-sort-select:focus {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.dap-search-box input {
+  width: 100%;
+  padding: 8px 12px 8px 12px;
+  background: var(--color-bg-light);
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px;
+  color: var(--color-text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.dap-search-box input:focus {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.dap-search-box input::placeholder {
+  color: var(--color-text-faint);
+}
+
+/* Select all row */
+.dap-select-all-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-bg-surface);
+  margin-bottom: 4px;
+}
+
+.dap-select-all-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-faint);
+}
+
+/* Checkbox (custom) */
+.dap-chk {
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid var(--color-border-light);
+  border-radius: 3px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+
+.dap-chk.on {
+  background: #fff;
+  border-color: #fff;
+}
+
+.dap-chk.on::after {
+  content: '\2713';
+  font-size: 10px;
+  color: #000;
+  font-weight: 700;
+}
+
+/* Album rows */
+.dap-albums-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 200px;
+}
+
+.dap-album-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.dap-album-row:hover {
+  background: var(--color-bg-surface);
+}
+
+.dap-alb-art {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background: var(--color-bg-surface);
+  object-fit: cover;
+}
+
+.dap-alb-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dap-alb-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text);
+}
+
+.dap-alb-artist {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.dap-alb-badges {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  flex-shrink: 0;
+  width: 72px;
+  justify-content: flex-end;
+}
+
+.dap-badge {
+  font-size: 9px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 2px 7px;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.dap-status-tag {
+  font-size: 9.5px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.dap-status-tag.on-dap {
+  background: rgba(136, 136, 160, 0.08);
+  color: var(--color-text-faint);
+}
+
+.dap-status-tag.to-add {
+  background: rgba(74, 222, 128, 0.1);
+  color: #4ade80;
+}
+
+.dap-status-tag.to-remove {
+  background: rgba(248, 113, 113, 0.1);
+  color: #f87171;
+}
+
+/* Sync-in-progress banner */
+.dap-sync-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-faint);
+  font-size: 12px;
+}
+
+.dap-btn-link {
+  background: none;
+  border: none;
+  color: var(--color-text-faint);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+/* Artist avatar (for Artists tab) */
+.dap-artist-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-bg-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+/* Track number (for Tracks tab) */
+.dap-track-num {
+  width: 28px;
+  font-size: 11px;
+  font-family: 'Geist Mono', monospace;
+  color: var(--color-text-faint);
+  text-align: center;
+  flex-shrink: 0;
+}
+
+/* Dimmed row (unselected in Tracks tab) */
+.dap-album-row.dap-row-dimmed {
+  opacity: 0.4;
+}
+
+/* Partial checkbox state (Artists tab) */
+.dap-chk.partial {
+  border-color: #fff;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.dap-chk.partial::after {
+  content: '\2014';
+  font-size: 9px;
+  color: #fff;
+  font-weight: 700;
+}
+
+/* Quality tag in DAP sync (inherits from .quality-tag) */
+.dap-album-row .quality-tag {
+  flex-shrink: 0;
+}
+
+/* Destination details panel (collapsible, under dest-bar) */
+.dap-dest-details {
+  background: var(--color-bg-lighter);
+  border: 1px solid var(--color-border);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  padding: 10px 16px;
+  margin-top: -14px; /* overlap dest-bar bottom margin */
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dap-dest-details.collapsed {
+  display: none;
+}
+
+.dap-det-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.dap-det-label {
+  font-size: 11px;
+  color: var(--color-text-faint);
+  flex-shrink: 0;
+}
+
+.dap-det-val {
+  font-size: 11px;
+  font-weight: 600;
+  font-family: 'Geist Mono', monospace;
+  color: var(--color-text-muted);
+}
+
+.dap-det-val.g { color: #4ade80; }
+.dap-det-val.r { color: #f87171; }
+
+.dap-det-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.dap-det-bar-row .dap-storage-bar {
+  flex: 1;
+  margin: 0;
+}
+
+.dap-det-after {
+  font-size: 10px;
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}
+
+.dap-det-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dap-det-separator {
+  height: 1px;
+  background: var(--color-border);
+  margin: 4px 0;
+}
+
+/* Toggle button inside dest-bar */
+.dap-dest-toggle {
+  background: none;
+  border: none;
+  color: var(--color-text-faint);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.dap-dest-toggle:hover {
+  opacity: 1;
+}
+
+.dap-dest-toggle.open {
+  transform: rotate(180deg);
+}
+
+/* Summary box */
+.dap-summary-box {
+  background: var(--color-bg-lighter);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-top: 16px;
+}
+
+.dap-summary-loading {
+  font-size: 12px;
+  color: var(--color-text-faint);
+}
+
+.dap-summary-error {
+  font-size: 12px;
+  color: #f87171;
+}
+
+.dap-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 20px;
+}
+
+.dap-sum-label {
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+
+.dap-sum-val {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Geist Mono', monospace;
+  color: var(--color-text);
+}
+
+.dap-sum-val.g { color: #4ade80; }
+.dap-sum-val.r { color: #f87171; }
+.dap-sum-val.o { color: var(--color-text-muted); }
+
+.dap-sum-footer-text {
+  font-size: 10px;
+  color: var(--color-text-faint);
+  margin-top: 3px;
+}
+
+.dap-sum-error {
+  font-size: 11px;
+  color: #f87171;
+  margin-top: 8px;
+}
+
+/* Footer */
+.dap-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-lighter);
+  flex-shrink: 0;
+}
+
+/* --- Screen 3: Syncing --- */
+
+.dap-syncing-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 20px;
+}
+
+.dap-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 28px;
+}
+
+.dap-step-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.dap-step-dot.done {
+  background: #4ade80;
+  color: #000;
+}
+
+.dap-step-dot.current {
+  background: #fff;
+  color: #000;
+}
+
+.dap-step-dot.pending {
+  background: var(--color-bg-hover);
+  color: var(--color-text-faint);
+  border: 1px solid var(--color-border-light);
+}
+
+.dap-step-line {
+  width: 20px;
+  height: 1px;
+  background: var(--color-border-light);
+}
+
+.dap-step-label {
+  font-size: 11px;
+  margin-right: 4px;
+}
+
+.dap-step-label.done { color: #4ade80; }
+.dap-step-label.current { color: #fff; font-weight: 600; }
+.dap-step-label.pending { color: var(--color-text-faint); }
+
+.dap-sync-progress-area {
+  width: 100%;
+  max-width: 400px;
+}
+
+.dap-prog-bar {
+  height: 6px;
+  background: #1c1c22;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.dap-prog-fill {
+  height: 100%;
+  background: #fff;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+.dap-prog-stats {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.dap-prog-stats span:last-child {
+  font-family: 'Geist Mono', monospace;
+}
+
+.dap-prog-file {
+  font-family: 'Geist Mono', monospace;
+  font-size: 10.5px;
+  color: var(--color-text-faint);
+  margin-top: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dap-prog-time {
+  font-size: 11px;
+  color: var(--color-text-faint);
+  margin-top: 12px;
+}
+
+/* --- Screen 4: Complete --- */
+
+.dap-complete-icon {
+  font-size: 40px;
+  margin-bottom: 14px;
+}
+
+.dap-complete-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--color-text);
+}
+
+.dap-complete-subtitle {
+  font-size: 12px;
+  color: var(--color-text-faint);
+  margin-bottom: 24px;
+}
+
+.dap-complete-stats {
+  width: 100%;
+  max-width: 320px;
+  text-align: left;
+}
+
+.dap-complete-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 12.5px;
+}
+
+.dap-complete-row span:first-child {
+  color: var(--color-text-muted);
+}
+
+.dap-complete-row .g {
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.dap-complete-row .r {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.dap-complete-divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: 10px 0;
+}
+
+.dap-eject-msg {
+  margin-top: 24px;
+  padding: 10px 18px;
+  background: rgba(74, 222, 128, 0.08);
+  border-radius: 5px;
+  font-size: 12px;
+  color: #4ade80;
+}
+
+/* --- Screen 7: Disconnected --- */
+
+.dap-disc-subtitle {
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+.dap-disc-path {
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  color: var(--color-text-faint);
+  margin-bottom: 20px;
+}
+
+.dap-disc-desc {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+  margin-bottom: 22px;
+}
+
+.dap-disc-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+/* --- Screen 8: Settings --- */
+
+.dap-settings-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.dap-settings-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 3px;
+}
+
+.dap-settings-subtitle {
+  font-size: 12px;
+  color: var(--color-text-faint);
+}
+
+.dap-set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--color-bg-surface);
+}
+
+.dap-set-row.last {
+  border-bottom: none;
+}
+
+.dap-set-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.dap-set-desc {
+  font-size: 11px;
+  color: var(--color-text-faint);
+  margin-top: 1px;
+  font-family: 'Geist Mono', monospace;
+}
+
+.dap-set-val {
+  font-size: 12px;
+  color: #fff;
+  cursor: pointer;
+}
+
+.dap-set-val:hover {
+  text-decoration: underline;
+}
+
+.dap-set-select {
+  background: var(--color-bg-light);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: 11px;
+  font-family: 'Geist Mono', monospace;
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+/* Toggle switch */
+.dap-toggle {
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--color-border-light);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.dap-toggle.on {
+  background: #fff;
+}
+
+.dap-toggle::after {
+  content: '';
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+}
+
+.dap-toggle.on::after {
+  transform: translateX(16px);
+}
+
+/* --- Screen 6: First Sync --- */
+
+.dap-first-sync {
+  padding: 28px 32px;
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.dap-warn-box {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+
+.dap-warn-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 4px;
+}
+
+.dap-warn-text {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+.dap-first-sync-question {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin: 18px 0 10px;
+  color: var(--color-text);
+}
+
+.dap-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dap-radio-opt {
+  display: flex;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.dap-radio-opt:hover {
+  border-color: var(--color-border-light);
+  background: var(--color-bg-surface);
+}
+
+.dap-radio-opt.sel {
+  border-color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dap-radio-circle {
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--color-border-light);
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dap-radio-opt.sel .dap-radio-circle {
+  border-color: #fff;
+}
+
+.dap-radio-opt.sel .dap-radio-circle::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  background: #fff;
+  border-radius: 50%;
+}
+
+.dap-r-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #fff;
+}
+
+.dap-r-desc {
+  font-size: 11px;
+  color: #555;
+  margin-top: 2px;
+}
+
+.dap-rec-tag {
+  font-size: 9px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dap-first-sync-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+/* --- Modal overlay (volume picker) --- */
+
+.dap-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dap-modal {
+  background: #151515;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 320px;
+  max-width: 400px;
+}
+
+.dap-volume-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-family: 'Geist Mono', monospace;
+  text-align: left;
+  transition: border-color 0.15s;
+}
+
+.dap-volume-btn:hover {
+  border-color: #fff;
+}
+
+/* ============================================================
+   DAP SYNC TOP BAR — replaces search bar in DAP sync view
+   ============================================================ */
+
+.dap-sync-bar {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.dap-topbar-inner {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex: 1;
+  min-width: 0;
+}
+
+.dap-topbar-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 32px;
+  flex: 1;
+  min-width: 0;
+}
+
+.dap-topbar-stat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dap-topbar-label {
+  font-size: 11px;
+  color: var(--color-text-faint);
+  flex-shrink: 0;
+  font-family: 'Geist Mono', monospace;
+  white-space: nowrap;
+}
+
+.dap-topbar-val {
+  font-size: 11px;
+  color: #bbb;
+  font-family: 'Geist Mono', monospace;
+  white-space: nowrap;
+}
+
+.dap-topbar-val.g { color: #4ade80; }
+.dap-topbar-val.r { color: #f87171; }
+
+.dap-topbar-sync-btn {
+  padding: 7px 16px;
+  border-radius: 5px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  background: #fff;
+  color: #0a0a0a;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.dap-topbar-sync-btn:hover:not(:disabled) {
+  background: #e0e0e0;
+}
+
+.dap-topbar-sync-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Separator between DAP bar and search-bar-actions (Feedback / Settings) */
+.dap-sync-bar:not(.hidden) ~ .search-bar-actions {
+  margin-left: 0;
+  padding-left: 20px;
+  border-left: 1px solid #2a2a2a;
+}
+
+/* ============================================================
+   DAP DEVICE ICON — SVG wireframe replaces emoji
+   ============================================================ */
+
+.sb-dap-device .dev-icon {
+  color: var(--color-text-faint);
+}
+
+.sb-dap-device.active .dev-icon {
+  color: #fff;
+}
+
+/* Remove emoji font-size, use SVG dimensions directly */
+.sb-dap-device .dev-icon svg {
+  display: block;
+}
+
+.dap-dest-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.dap-dest-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ============================================================
+   CHEVRON TOGGLE — use SVG instead of entity
+   ============================================================ */
+
+.dap-dest-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dap-dest-toggle svg {
+  transition: transform 0.2s ease;
+}
+
+.dap-dest-toggle.open svg {
+  transform: rotate(180deg);
+}
+
+/* ============================================================
+   TRANSFORMER ANIMATION — sync in progress
+   ============================================================ */
+
+.dap-trf-anim-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.dap-trf-icon {
+  display: block;
+}
+
+/* Override: old rule rotated the whole button, now we rotate only the SVG child */
+.dap-dest-toggle.open {
+  transform: none;
 }

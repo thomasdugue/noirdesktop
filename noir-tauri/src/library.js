@@ -208,7 +208,7 @@ export function groupTracksIntoAlbumsAndArtists() {
   for (const track of library.tracks) {
     if (!track.metadata) continue
 
-    const albumKey = track.metadata.album || 'Unknown Album'
+    const albumKey = (track.metadata.artist || 'Unknown Artist') + ' \u2014 ' + (track.metadata.album || 'Unknown Album')
     const artistKey = track.metadata.artist
 
     // Groupe par album

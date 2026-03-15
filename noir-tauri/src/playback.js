@@ -187,8 +187,8 @@ export async function playTrack(index) {
 
   // Note: gapless preload is now triggered by playback_progress when < 10s remaining
 
-  // Track l'album en cours de lecture (utilise le nom d'album seul comme clé, cohérent avec groupTracksIntoAlbumsAndArtists)
-  playback.currentPlayingAlbumKey = track.metadata?.album || 'Unknown Album'
+  // Track l'album en cours de lecture (clé composite artiste — album, cohérent avec groupTracksIntoAlbumsAndArtists)
+  playback.currentPlayingAlbumKey = (track.metadata?.artist || 'Unknown Artist') + ' \u2014 ' + (track.metadata?.album || 'Unknown Album')
 
   // Reload lyrics if panel is open
   if (app.isLyricsPanelOpen?.()) app.loadLyricsForTrack?.(track)

@@ -32,6 +32,9 @@ mod media_controls;
 // === NETWORK / NAS MODULES ===
 mod network;
 
+// === DAP SYNC (SD Card / USB sync) ===
+mod dap_sync;
+
 // Structure pour un fichier audio
 #[derive(Serialize, Deserialize, Clone)]
 struct AudioTrack {
@@ -69,6 +72,8 @@ pub(crate) struct Metadata {
     sample_rate: Option<u32>,
     bitrate: Option<u32>,
     codec: Option<String>,
+    #[serde(rename = "fileSize", default)]
+    file_size: Option<u64>,
 }
 
 // Configuration de la bibliothèque
@@ -1634,6 +1639,9 @@ fn get_metadata_internal(path: &str) -> Metadata {
         .unwrap_or("Unknown")
         .to_string();
 
+    // Read actual file size from filesystem
+    let actual_file_size = std::fs::metadata(file_path).map(|m| m.len()).ok();
+
     let mut metadata = Metadata {
         title: file_name.clone(),
         artist: "Unknown Artist".to_string(),
@@ -1648,6 +1656,7 @@ fn get_metadata_internal(path: &str) -> Metadata {
         sample_rate: None,
         bitrate: None,
         codec: None,
+        file_size: actual_file_size,
     };
 
     if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
@@ -2040,6 +2049,9 @@ fn get_metadata(path: &str) -> Metadata {
         .unwrap_or("Unknown")
         .to_string();
 
+    // Read actual file size from filesystem
+    let actual_file_size = std::fs::metadata(file_path).map(|m| m.len()).ok();
+
     let mut metadata = Metadata {
         title: file_name.clone(),
         artist: "Unknown Artist".to_string(),
@@ -2054,6 +2066,7 @@ fn get_metadata(path: &str) -> Metadata {
         sample_rate: None,
         bitrate: None,
         codec: None,
+        file_size: actual_file_size,
     };
 
     if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
@@ -4320,6 +4333,231 @@ fn noir_response_with_headers(mime: &str, data: Vec<u8>) -> tauri::http::Respons
         .expect("valid HTTP response with known headers")
 }
 
+// === DAP SYNC — Tauri Commands ===
+
+/// Global cancel flag for DAP sync operations.
+static DAP_SYNC_CANCEL: Lazy<Arc<AtomicBool>> = Lazy::new(|| Arc::new(AtomicBool::new(false)));
+
+#[tauri::command]
+fn dap_list_external_volumes() -> Result<Vec<dap_sync::volumes::ExternalVolume>, String> {
+    dap_sync::volumes::list_external_volumes()
+}
+
+#[tauri::command]
+fn dap_get_volume_info(path: String) -> Result<dap_sync::volumes::VolumeInfo, String> {
+    dap_sync::volumes::get_volume_info(&path)
+}
+
+#[tauri::command]
+fn dap_save_destination(dest: dap_sync::db::DapDestination) -> Result<i64, String> {
+    dap_sync::db::save_destination(&dest)
+}
+
+#[tauri::command]
+fn dap_get_destinations() -> Result<Vec<dap_sync::db::DapDestination>, String> {
+    dap_sync::db::get_destinations()
+}
+
+#[tauri::command]
+fn dap_get_destination(id: i64) -> Result<Option<dap_sync::db::DapDestination>, String> {
+    dap_sync::db::get_destination(id)
+}
+
+#[tauri::command]
+fn dap_delete_destination(id: i64) -> Result<(), String> {
+    dap_sync::db::delete_destination(id)
+}
+
+#[tauri::command]
+fn dap_eject_volume(path: String) -> Result<(), String> {
+    use std::process::Command;
+    let output = Command::new("diskutil")
+        .args(["eject", &path])
+        .output()
+        .map_err(|e| format!("Failed to run diskutil: {}", e))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Eject failed: {}", stderr.trim()))
+    }
+}
+
+#[tauri::command]
+fn dap_save_selection(destination_id: i64, album_id: i64, selected: bool) -> Result<(), String> {
+    dap_sync::db::save_selection(destination_id, album_id, selected)
+}
+
+#[tauri::command]
+fn dap_save_selections_batch(destination_id: i64, selections: Vec<(i64, bool)>) -> Result<(), String> {
+    dap_sync::db::save_selections_batch(destination_id, &selections)
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DapSelection {
+    album_id: i64,
+    selected: bool,
+}
+
+#[tauri::command]
+fn dap_get_selections(destination_id: i64) -> Result<Vec<DapSelection>, String> {
+    let sels = dap_sync::db::get_selections(destination_id)?;
+    Ok(sels.into_iter().map(|(album_id, selected)| DapSelection { album_id, selected }).collect())
+}
+
+#[tauri::command]
+fn dap_read_manifest(dest_path: String) -> Result<Option<dap_sync::manifest::SyncManifest>, String> {
+    dap_sync::manifest::read_manifest(&dest_path)
+}
+
+#[tauri::command]
+fn dap_compute_sync_plan(
+    tracks: Vec<dap_sync::sync_plan::TrackForSync>,
+    dest_path: String,
+    folder_structure: String,
+    mirror_mode: bool,
+) -> Result<dap_sync::sync_plan::SyncPlan, String> {
+    let cmd_start = std::time::Instant::now();
+    eprintln!("[PERF-RS] dap_compute_sync_plan called with {} tracks, dest={}", tracks.len(), dest_path);
+
+    let t0 = std::time::Instant::now();
+    let manifest = dap_sync::manifest::read_manifest(&dest_path)?;
+    eprintln!("[PERF-RS] read_manifest: {:?} ({} files)", t0.elapsed(),
+        manifest.as_ref().map(|m| m.files.len()).unwrap_or(0));
+
+    let t1 = std::time::Instant::now();
+    let vol_info = dap_sync::volumes::get_volume_info(&dest_path)?;
+    eprintln!("[PERF-RS] get_volume_info: {:?}", t1.elapsed());
+
+    // Clone cover cache entries (brief lock) for cover art resolution
+    let cover_entries = COVER_CACHE.lock()
+        .map(|c| c.entries.clone())
+        .unwrap_or_default();
+    let covers_dir = get_cover_cache_dir();
+
+    let result = dap_sync::sync_plan::compute_sync_plan(
+        &tracks,
+        &manifest,
+        &folder_structure,
+        mirror_mode,
+        vol_info.free_bytes,
+        vol_info.total_bytes,
+        &cover_entries,
+        &covers_dir,
+    );
+    eprintln!("[PERF-RS] dap_compute_sync_plan TOTAL: {:?}", cmd_start.elapsed());
+    Ok(result)
+}
+
+#[tauri::command]
+fn dap_execute_sync(
+    app_handle: tauri::AppHandle,
+    tracks: Vec<dap_sync::sync_plan::TrackForSync>,
+    dest_path: String,
+    folder_structure: String,
+    mirror_mode: bool,
+) {
+    use tauri::Emitter;
+
+    // Reset cancel flag
+    DAP_SYNC_CANCEL.store(false, std::sync::atomic::Ordering::Relaxed);
+    let cancel_flag = DAP_SYNC_CANCEL.clone();
+
+    std::thread::spawn(move || {
+        // Compute plan fresh
+        let manifest = match dap_sync::manifest::read_manifest(&dest_path) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
+                    success: false,
+                    files_copied: 0,
+                    files_deleted: 0,
+                    total_bytes_copied: 0,
+                    duration_ms: 0,
+                    errors: vec![format!("Failed to read manifest: {}", e)],
+                });
+                return;
+            }
+        };
+
+        let vol_info = match dap_sync::volumes::get_volume_info(&dest_path) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
+                    success: false,
+                    files_copied: 0,
+                    files_deleted: 0,
+                    total_bytes_copied: 0,
+                    duration_ms: 0,
+                    errors: vec![format!("Failed to get volume info: {}", e)],
+                });
+                return;
+            }
+        };
+
+        // Clone cover cache entries (brief lock) for cover art resolution
+        let cover_entries = COVER_CACHE.lock()
+            .map(|c| c.entries.clone())
+            .unwrap_or_default();
+        let covers_dir = get_cover_cache_dir();
+
+        let plan = dap_sync::sync_plan::compute_sync_plan(
+            &tracks,
+            &manifest,
+            &folder_structure,
+            mirror_mode,
+            vol_info.free_bytes,
+            vol_info.total_bytes,
+            &cover_entries,
+            &covers_dir,
+        );
+
+        if !plan.enough_space {
+            let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
+                success: false,
+                files_copied: 0,
+                files_deleted: 0,
+                total_bytes_copied: 0,
+                duration_ms: 0,
+                errors: vec!["Not enough space on destination".into()],
+            });
+            return;
+        }
+
+        match dap_sync::sync_engine::execute_sync(
+            &app_handle,
+            &dest_path,
+            &plan,
+            &manifest,
+            &folder_structure,
+            cancel_flag,
+        ) {
+            Ok(_) => {} // SyncComplete already emitted by execute_sync
+            Err(e) => {
+                let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
+                    success: false,
+                    files_copied: 0,
+                    files_deleted: 0,
+                    total_bytes_copied: 0,
+                    duration_ms: 0,
+                    errors: vec![e],
+                });
+            }
+        }
+    });
+}
+
+#[tauri::command]
+fn dap_cancel_sync() {
+    DAP_SYNC_CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn dap_start_volume_watcher(app_handle: tauri::AppHandle) {
+    dap_sync::watcher::start_volume_watcher(app_handle);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -4419,7 +4657,10 @@ pub fn run() {
             // Enregistre Noir comme propriétaire de MPRemoteCommandCenter
             // → les media keys (F7/F8/F9 / touches multimédia) sont routées vers Noir
             //   même quand Apple Music tourne en arrière-plan.
-            media_controls::init_media_controls(app_handle);
+            media_controls::init_media_controls(app_handle.clone());
+
+            // Lance le watcher de volumes pour détecter montage/démontage USB/SD
+            dap_sync::watcher::start_volume_watcher(app_handle);
 
             Ok(())
         })
@@ -4519,6 +4760,22 @@ pub fn run() {
             // Media Controls (MPRemoteCommandCenter / media keys)
             update_media_metadata,
             update_media_playback_state,
+            // DAP Sync (SD Card / USB sync)
+            dap_list_external_volumes,
+            dap_get_volume_info,
+            dap_save_destination,
+            dap_get_destinations,
+            dap_get_destination,
+            dap_delete_destination,
+            dap_eject_volume,
+            dap_save_selection,
+            dap_save_selections_batch,
+            dap_get_selections,
+            dap_read_manifest,
+            dap_compute_sync_plan,
+            dap_execute_sync,
+            dap_cancel_sync,
+            dap_start_volume_watcher,
             // Application
             quit_app
         ])

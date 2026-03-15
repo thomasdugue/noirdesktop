@@ -476,6 +476,7 @@ pub fn extract_smb_metadata_and_cover(
         sample_rate: None,
         bitrate: None,
         codec: None,
+        file_size: None,
     };
 
     // Lecture unique de 512KB
