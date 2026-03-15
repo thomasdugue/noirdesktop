@@ -675,9 +675,9 @@ export function displayMixPage(mix) {
   })
 
   pageContainer.querySelector('.add-mix-queue-btn').addEventListener('click', () => {
-    for (const track of mixTracks) {
-      app.addToQueue(track)
-    }
+    queue.items.unshift(...mixTracks)
+    app.updateQueueDisplay()
+    app.updateQueueIndicators()
     showToast(`${mix.title} added to queue`)
   })
 
@@ -700,21 +700,50 @@ export function displayMixPage(mix) {
         <span class="track-artist">${escapeHtml(trackArtist)}</span>
       </div>
       <span class="track-duration">${duration}</span>
+      <button class="track-add-playlist" title="Add to playlist">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
+        </svg>
+      </button>
+      <button class="track-add-queue${queue.items.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
+        </svg>
+      </button>
     `
 
-    trackItem.addEventListener('click', (e) => {
-      if (e.target.closest('.favorite-btn')) return
+    trackItem.addEventListener('dblclick', (e) => {
+      if (e.target.closest('button')) return
       const globalIndex = library.tracks.findIndex(t => t.path === track.path)
       if (globalIndex !== -1) {
-        // Clear queue and add remaining mix tracks after the clicked one
-        queue.items.length = 0
-        for (let i = idx + 1; i < mixTracks.length; i++) {
-          app.addToQueue(mixTracks[i])
-        }
-        app.updateQueueDisplay()
-        app.updateQueueIndicators()
-        app.playTrack(globalIndex)
+        const mixTrackPaths = mixTracks.map(t => t.path)
+        app.playTrack(globalIndex, { type: 'mix', id: null, tracks: mixTrackPaths })
       }
+    })
+
+    trackItem.querySelector('.track-add-queue').addEventListener('click', (e) => {
+      e.stopPropagation()
+      app.addToQueue(track)
+      app.showQueueNotification(`"${escapeHtml(trackTitle)}" added to queue`)
+      trackItem.querySelector('.track-add-queue').classList.add('in-queue')
+    })
+
+    trackItem.querySelector('.track-add-playlist').addEventListener('click', (e) => {
+      e.stopPropagation()
+      app.showAddToPlaylistMenu(e, track)
+    })
+
+    const favBtn = trackItem.querySelector('.track-favorite-btn')
+    if (favBtn) {
+      favBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        app.toggleFavorite(track.path, favBtn)
+      })
+    }
+
+    trackItem.addEventListener('mousedown', (e) => {
+      if (e.target.closest('button')) return
+      app.prepareCustomDrag(e, track, trackItem)
     })
 
     trackItem.addEventListener('contextmenu', (e) => {
@@ -741,13 +770,8 @@ function playMixTracks(mixTracks) {
   const firstTrack = mixTracks[0]
   const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
   if (globalIndex !== -1) {
-    queue.items.length = 0
-    for (let i = 1; i < mixTracks.length; i++) {
-      app.addToQueue(mixTracks[i])
-    }
-    app.updateQueueDisplay()
-    app.updateQueueIndicators()
-    app.playTrack(globalIndex)
+    const mixTrackPaths = mixTracks.map(t => t.path)
+    app.playTrack(globalIndex, { type: 'mix', id: null, tracks: mixTrackPaths })
   }
 }
 
@@ -873,24 +897,25 @@ export function displayAlbumPage(albumKey) {
           </div>`
         : `<span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>`
       }
+      <span class="track-duration">${duration}</span>
+      <button class="track-add-playlist" title="Add to playlist">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
+        </svg>
+      </button>
       <button class="track-add-queue${queue.items.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
         </svg>
       </button>
-      <button class="track-add-playlist" title="Add to playlist">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 5v14"/><path d="M5 12h14"/>
-        </svg>
-      </button>
-      <span class="track-duration">${duration}</span>
     `
 
     trackItem.addEventListener('dblclick', () => {
       const globalIndex = library.tracks.findIndex(t => t.path === track.path)
       if (globalIndex !== -1) {
         playback.currentPlayingAlbumKey = albumKey
-        app.playTrack(globalIndex)
+        const albumTrackPaths = album.tracks.map(t => t.path)
+        app.playTrack(globalIndex, { type: 'album', id: albumKey, tracks: albumTrackPaths })
       }
     })
 
@@ -1142,7 +1167,8 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
     const trackPath = trackItem.dataset.trackPath
     const globalIndex = library.tracks.findIndex(t => t.path === trackPath)
     if (globalIndex !== -1) {
-      app.playTrack(globalIndex)
+      const albumTrackPaths = album.tracks.map(t => t.path)
+      app.playTrack(globalIndex, { type: 'album', id: albumKey, tracks: albumTrackPaths })
       updateAlbumTracksHighlight()
     }
   })
@@ -1184,9 +1210,7 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
   })
   ui.albumDetailDiv.querySelector('.add-album-queue-btn').addEventListener('click', () => {
     if (ui.selectedAlbumKey) {
-      const alb = library.albums[ui.selectedAlbumKey]
-      alb.tracks.forEach(track => app.addToQueue(track))
-      app.showQueueNotification(`${alb.tracks.length} tracks added to queue`)
+      app.addAlbumToQueue(ui.selectedAlbumKey)
     }
   })
 
@@ -2647,7 +2671,8 @@ export function displayArtistPage(artistKey) {
       const firstTrack = artist.tracks[0]
       const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
       if (globalIndex !== -1) {
-        app.playTrack(globalIndex)
+        const artistTrackPaths = artist.tracks.map(t => t.path)
+        app.playTrack(globalIndex, { type: 'mix', id: artist.name, tracks: artistTrackPaths })
       }
     }
   })
@@ -2774,7 +2799,8 @@ export function displayArtistPage(artistKey) {
       trackItem.addEventListener('dblclick', () => {
         const globalIndex = library.tracks.findIndex(t => t.path === track.path)
         if (globalIndex !== -1) {
-          app.playTrack(globalIndex)
+          const looseTrackPaths = looseTracks.map(t => t.path)
+          app.playTrack(globalIndex, { type: 'mix', id: artist.name + '/loose', tracks: looseTrackPaths })
         }
       })
 
@@ -3194,7 +3220,7 @@ export function displayTracksGrid() {
     const trackPath = trackItem.dataset.trackPath
     const entry = library.tracksByPath.get(trackPath)
     if (entry) {
-      app.playTrack(entry.index)
+      app.playTrack(entry.index, { type: 'library', id: null, tracks: ui.tracksViewOrder })
     }
   })
 

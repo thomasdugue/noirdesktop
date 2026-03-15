@@ -734,20 +734,8 @@ function playTrackInPlaylist(playlist, startIndex) {
   const globalIndex = library.tracks.findIndex(t => t.path === track.path)
   if (globalIndex === -1) return
 
-  // Vider la queue et remplir avec les tracks APRÈS celle cliquée
-  // Push direct dans queue.items (sans toast par track)
-  app.clearQueue()
-  for (let i = startIndex + 1; i < playlistTracks.length; i++) {
-    queue.items.push(playlistTracks[i])
-  }
-  app.updateQueueDisplay()
-  app.updateQueueIndicators()
-
-  // Setter le contexte playlist AVANT playTrack (playTrack préserve 'playlist')
-  playback.playbackContext = 'playlist'
-  playback.currentPlaylistId = playlist.id
-
-  app.playTrack(globalIndex)
+  const playlistTrackPaths = playlistTracks.map(t => t.path)
+  app.playTrack(globalIndex, { type: 'playlist', id: playlist.id, tracks: playlistTrackPaths })
 }
 
 // Joue une playlist depuis le début (bouton Play)
