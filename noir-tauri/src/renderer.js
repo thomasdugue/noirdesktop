@@ -90,7 +90,7 @@ import {
   initViews, displayCurrentView, navigateToAlbumPage, navigateToArtistPage,
   navigateToMixPage, navigateBack, switchView, updateAlbumTracksHighlight,
   updateHomeNowPlayingSection, updateNowPlayingHighlight, closeAlbumDetail,
-  invalidateDiscoveryMixCache, getVirtualScrollState
+  invalidateDiscoveryMixCache, invalidateSessionCarouselCaches, getVirtualScrollState
 } from './views.js'
 
 // === WINDOW DRAG ===
@@ -208,6 +208,7 @@ app.updateHomeNowPlayingSection = updateHomeNowPlayingSection
 app.updateNowPlayingHighlight = updateNowPlayingHighlight
 app.closeAlbumDetail = closeAlbumDetail
 app.invalidateDiscoveryMixCache = invalidateDiscoveryMixCache
+app.invalidateSessionCarouselCaches = invalidateSessionCarouselCaches
 app.getVirtualScrollState = getVirtualScrollState
 
 // Fullscreen player

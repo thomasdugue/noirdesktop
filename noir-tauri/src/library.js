@@ -784,6 +784,7 @@ export async function initScanListeners() {
     if (shouldReload) {
       console.log(`Reloading library: new=${new_tracks}, removed=${removed_tracks}, total=${stats.total_tracks}`)
       invalidateDiscoveryMixCache()
+      app.invalidateSessionCarouselCaches()
       caches.homeDataCache.isValid = false
       reloadLibraryFromCache()
     }
@@ -807,6 +808,7 @@ export async function initScanListeners() {
         buildTrackLookup()
 
         invalidateDiscoveryMixCache()
+        app.invalidateSessionCarouselCaches()
 
         if (ui.currentView === 'home') {
           app.displayCurrentView()
