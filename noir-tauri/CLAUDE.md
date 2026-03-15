@@ -134,6 +134,37 @@ await transitionView(async () => {
 })
 ```
 
+### Design system & typography
+
+**Référence design** : `/Users/tsunami25/Documents/Thomas/Noir Design System/noir-design-system.html` — composants : `noir-btn-primary`, `noir-btn-secondary`, `noir-btn-icon`, variables, couleurs, exemples.
+
+**Polices** :
+- `DM Sans` — police principale du corps/métadonnées, définie comme `--font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif` dans `:root`
+- `Geist Mono` — police mono pour éléments techniques (chemins, tailles, bitrate), chargée via `@font-face` dans `styles.css`
+
+**Palette de couleurs** (thème sombre, monochrome) :
+- `--color-bg: #0a0a0a` (fond principal)
+- `--color-bg-lighter: #111` / `--color-bg-surface: #161616` / `--color-bg-hover: #1a1a1a`
+- `--color-border: #222` / `--color-border-light: #333`
+- `--color-text: #fff` / `--color-text-muted: #888` / `--color-text-faint: #555`
+- Accent vert : `#4ade80` (statut success, badges "on DAP")
+- Rouge : `#f87171` (erreurs, badges "to remove")
+
+**Convention CSS DAP Sync** : préfixe `dap-` pour toutes les classes. Sous-préfixes : `dap-dest-` (destination bar), `dap-det-` (details panel), `dap-alb-` (album rows), `dap-sync-` (syncing view), `dap-complete-` (success view).
+
+### Cover art resolution pipeline
+
+**`loadThumbnailAsync(path, imgElement, artist, album)`** (`library.js`) — pipeline 4 niveaux :
+
+1. **`thumbnailCache`** (mémoire) → instantané si déjà chargé dans cette session
+2. **`get_cover_thumbnail`** (IPC Rust) → cache disque `~/.noir_desktop/thumbnails/{hash}_thumb.jpg`
+3. **`get_cover`** (IPC Rust) → extraction depuis les tags du fichier audio (lofty)
+4. **`fetch_internet_cover`** (IPC Rust) → MusicBrainz + CoverArtArchive (nécessite `artist` + `album` non null)
+
+**⚠️ Contrainte `isConnected`** : `loadThumbnailFromQueue()` vérifie `imgElement.isConnected` dès l'entrée en file d'attente (ligne 400 de library.js). Si l'élément `<img>` n'est PAS connecté au DOM, la fonction retourne immédiatement sans charger la cover. Conséquence : ne JAMAIS créer un `<img>` détaché et le passer à `loadThumbnailAsync` en espérant qu'il sera inséré plus tard. L'`<img>` doit être dans le DOM AVANT l'appel. Pattern correct dans DAP sync : insérer l'`<img>` dans le wrapper `.dap-alb-art` (déjà dans le DOM), puis appeler `loadThumbnailAsync`.
+
+**Internet cover storage** : `~/.noir_desktop/covers/internet_{md5(artist|||album)}.jpg`
+
 ### CSS layout — critical flex constraint
 
 `.main-content` has `min-width: 0` — **do not remove**. Without it, carousels with `width: calc(100% + extra)` inflate the flex item beyond the viewport, breaking grid layouts (e.g. `.home-recent-grid` columns expand to 1492px each instead of ~268px) and preventing horizontal scroll on carousels.
@@ -185,6 +216,7 @@ Module dédié à la synchronisation de Digital Audio Players (SD card, USB mass
 | `_deleteSourcePaths` | `Set<string>` | Set pré-calculé des source paths à supprimer (O(1) lookup) |
 | `_summaryDebounceTimer` | `number\|null` | Timer du debounce de `computeAndRenderSummary` (500ms) |
 | `_saveSelectionsTimer` | `number\|null` | Timer du debounce de `saveSelections` (800ms) |
+| `_needsOnDapPreselection` | `boolean` | Flag : après le 1er plan, auto-désélectionner les albums pas encore sur le DAP |
 
 **Fonctions clés** :
 
@@ -203,7 +235,9 @@ Module dédié à la synchronisation de Digital Audio Players (SD card, USB mass
 | `buildTracksForSync()` | Construit le tableau `TrackForSync[]` à envoyer au backend Rust |
 | `saveSelections()` | Debounced (800ms) → `_doSaveSelections()` → IPC `dap_save_selections_batch` |
 | `showDapTopBar()` / `hideDapTopBar()` | Remplace la search bar par la barre d'info sync (ou restaure) |
-| `renderDapTopBar()` | Barre du haut : bouton Sync + stats (copy/delete/unchanged counts) |
+| `updateSyncButton()` | Met à jour le bouton Sync dans la dest-bar (disabled/enabled, pulse si changements pendants) |
+| `renderSummary(plan, dest)` | Panneau détails 2 colonnes (Selection + Sync) + footer (free after sync / last sync) |
+| `toggleDestDetails()` | Toggle expand/collapse du panneau détails (max-height transition) |
 | `startSync()` | Lance la sync : IPC `dap_execute_sync` → passe en subview `syncing` |
 | `renderSidebarDestinations()` | Rendu sidebar : icône DAP, status monté/démonté, badge syncing |
 | `loadThumbsBatched(queue)` | Charge les thumbnails par batch de 8 via `requestAnimationFrame` |
@@ -501,10 +535,12 @@ DAP sync also writes `.hean-sync.json` on the destination device root (e.g. `/Vo
 - **Event delegation**: album/artist grid cards carry `dataset.albumKey` / `dataset.artistKey`. Add interactions via delegation on the grid container, not per-card listeners.
 - **DAP Sync — top bar scope** : la barre d'info sync (`#dap-sync-bar`) remplace la search bar UNIQUEMENT sur la vue `dap-sync`. `hideDapTopBar()` doit être appelé dans `displayCurrentView()` quand `ui.currentView !== 'dap-sync'` pour restaurer la search bar. `renderSidebarDestinations()` doit aussi être appelé pour désélectionner le device dans la sidebar.
 - **DAP Sync — pas de `fs::metadata` dans `compute_sync_plan`** : la résolution SMB + `fs::metadata()` coûte ~12ms/fichier. Avec 800 fichiers : 10 secondes bloquantes. Utiliser `track.size_bytes` (estimé JS) à la place. **Régression critique si réintroduit.**
+- **Cover thumbnails — `isConnected` obligatoire** : `loadThumbnailAsync` vérifie `imgElement.isConnected` avant de lancer le chargement. Un `<img>` détaché du DOM (créé via `document.createElement` mais pas encore inséré) est silencieusement ignoré. Toujours insérer l'`<img>` dans le DOM AVANT d'appeler `loadThumbnailAsync`. Pattern DAP sync : `wrapper.appendChild(img)` puis `loadThumbnailAsync(path, img, artist, album)`.
 - **DAP Sync — `dest_relative_path` comme clé de déduplication** : le plan compare par chemin de destination (construit depuis artist/album/track), PAS par source path. Les paths SMB changent entre sessions (UUID différent). La clé `dest_relative_path` est stable.
 - **DAP Sync — debounce obligatoire** : `saveSelections` (800ms) et `computeAndRenderSummary` (500ms) DOIVENT être debounced. Sans debounce, chaque clic checkbox envoie tous les albums via IPC + recalcule le plan Rust = gel UI.
 - **DAP Sync — pre-computed Sets** : `_copyAlbumIds` et `_deleteSourcePaths` DOIVENT être des `Set` pré-calculés après chaque sync plan. L'ancien pattern `filesToCopy.some(f => f.albumId === id)` était O(n) par album = O(n²) total avec ~160 albums × ~800 fichiers.
 - **DAP Sync — DocumentFragment** : `renderAlbumRows()` DOIT construire dans un `DocumentFragment` avant un seul `appendChild`. Créer les rows une par une dans le DOM cause un reflow par row = gel visible.
+- **DAP Sync — progress bar basée sur tracks** : la barre de progression pendant la sync utilise `current / total` (nombre de fichiers), PAS `bytesCopied / totalBytes`. Plus intuitif pour l'utilisateur (4/8 = 50% quand 4 tracks sur 8 sont copiées).
 - **DAP Sync — albumId** : le hash JS `albumKeyToId(albumKey)` génère un ID numérique stable à partir de la clé string de l'album. Ce même ID est passé côté Rust dans `TrackForSync.album_id` et revient dans `SyncAction.album_id` pour le mapping bidirectionnel.
 - **`transitionView` async**: `transitionView(renderFn)` awaits `renderFn()` before fade-in. `displayHomeView` is async (fetches data from Rust). The `renderVersion` counter prevents stale renders when multiple transitions overlap. `scan_complete` listener must check `shouldReload` before triggering `reloadLibraryFromCache()` — unconditional reload causes race conditions with the initial `displayHomeView`.
 - **SMB singleton**: `libsmbclient` is process-level — only one `SmbClient` can exist at a time. All SMB ops share `CONNECTION` mutex. Never instantiate a second `SmbClient` concurrently.
@@ -606,4 +642,5 @@ Lire la spec correspondante AVANT de travailler sur une feature :
 - **2026-03-06** : AirPlay Level 2 — Fix playback AirPlay qui cassait après le premier switch. Cause racine : `set_system_default_device` ne peut PAS réactiver un device AirPlay stale (API accepte silencieusement sans effet). Solution : stratégie de préservation session AirPlay (ne pas changer le défaut système quand on quitte AirPlay). Routing AirPlay via défaut système (`get_device_id()` → None). `prepare_for_streaming` skip sample rate pour AirPlay. Guard hog mode Rust dans `set_exclusive_mode`. Erreur AudioUnit explicite (non-AirPlay). Retry JS 1.5s pour AirPlay. Auto-reset `exclusive_mode=Shared` quand switch → AirPlay avec hog actif. 800ms d'attente activation AirPlay. Tests T1-T6, T8-T13 passés, T11 limitation cosmétique (notification volume macOS).
 - **2026-03-08** : Fix home page — (1) `transitionView` rendu async avec `renderVersion` pour annuler les renders obsolètes, (2) `displayHomeView` awaitée dans `displayCurrentView`, (3) `scan_complete` conditionnel (ne reload que si `new_tracks > 0 || removed_tracks > 0`), (4) `min-width: 0` sur `.main-content` — cause racine du grid 4496px (carousels `calc(100% + extra)` inflataient le flex item), (5) fallback `thumbnailCache` pour covers Recently Played, (6) media queries responsive `.home-recent-grid` (3 cols → 2 → 1).
 - **2026-03-09** : Onboarding integration — Intégration du prototype onboarding (6 étapes) dans l'app. Fixes : (1) CSS variables manquantes `--sp-*`, `--fs-*`, `--color-green` dans `:root`, (2) stats 0/0/0 → payload `data.stats.mp3_count` au lieu de `data.mp3_count`, (3) NAS "Unknown" → `device.display_name`/`device.hostname` au lieu de `device.name`/`device.host`, (4) IPv6 → fallback hostname `.local`, (5) `smb_connect` manquait `isGuest`/`domain`, (6) `add_network_source` manquait `name`/`domain`/`isGuest`, (7) `[object Object]` dans folders → `share.name`, (8) scan progress → champs corrects `data.phase`/`data.current`/`data.total`/`data.folder`, (9) NAS scan 0 tracks → `add_network_source` retourne `NetworkSource` objet, fix `result.id`.
+- **2026-03-15** : DAP Sync — sprint UX polish + cover fix. **UX** : (1) Select All toggle visuel immédiat, (2) default selection = albums déjà on DAP (flag `_needsOnDapPreselection` + auto-deselect après 1er plan), (3) sort dropdown button+menu (même pattern que views.js), (4) bitrate sort fonctionnel (`getQualityRank()` primary + `getAlbumBitrate()` tiebreaker), (5) top bar vidée (feedback/settings seulement), bouton Sync déplacé dans dest-bar avec icône SVG, (6) stats sync dans panneau déployable 2 colonnes (Selection + Sync) + footer (free/last sync), (7) dest-bar entièrement cliquable pour toggle détails, (8) animation fade-in subtile sur changement d'onglet (`dapTabIn` 180ms, `prefers-reduced-motion` respecté), (9) tailles de police augmentées (album names 13px, artists 11.5px, tabs 12.5px, details labels 11.5px), (10) barre de progression syncing basée sur nombre de tracks (pas bytes), icône transfert agrandie 96px, (11) écran success : icône DAP blanche 76px + badge check animé + 6 micro-particules flottantes + espacement Done/eject augmenté. **Bug fix** : covers albums internet (Deezer/MusicBrainz) ne s'affichaient pas — cause : `loadThumbsBatched` créait un `<img>` détaché du DOM → `loadThumbnailFromQueue` rejetait via `isConnected` check → fix : `<img>` inséré DANS le wrapper `.dap-alb-art` déjà connecté au DOM avant l'appel `loadThumbnailAsync`. **CSS** : supprimé le `display: none` en doublon sur `.dap-dest-details.collapsed` (conflictait avec la transition max-height), ajouté `padding/border-width: 0` au collapsed state.
 - **2026-03-14** : DAP Sync — sprint UX + performance critique. **Bugs corrigés** : (B1) `SyncAction` manquait `album_id` → tags "to add"/"to remove" ne s'affichaient jamais → ajouté dans struct + build, (B2) Checkbox albums ne recalculait pas le plan → ajout `computeAndRenderSummary()`, (B3) `computeAndRenderSummary()` re-rendait seulement l'onglet Albums → remplacé par `renderTabContent()`, (B4) Sync non-incrémental → comparaison par `dest_relative_path` (stable across SMB sessions) au lieu de `source_path`, (B5) Storage 0B/0B après sync → `await refreshMountedVolumes()` avant `displayCurrentView()`, (B6) Tags dans mauvaise colonne → CSS `.dap-alb-badges` largeur fixe. **Performance** (cause racine identifiée via marqueurs `[PERF]`/`[PERF-RS]`) : `fs::metadata()` sur fichiers SMB = 12ms/fichier × 805 fichiers = **10.5 secondes**. Fix : suppression de `fs::metadata()` + `resolve_smb_path()` dans `compute_sync_plan()`, utilisation de `track.size_bytes` (estimé JS). Résultat : 10.7s → **32ms** (330× plus rapide). **Optimisations JS** : (1) DocumentFragment pour single DOM reflow, (2) Sets pré-calculés `_copyAlbumIds`/`_deleteSourcePaths` pour O(1) lookups (était O(n²)), (3) debounce `saveSelections` 800ms + `computeAndRenderSummary` 500ms, (4) thumbnails batchés 8/frame, (5) `updateStatusTagsInPlace()` au lieu de full re-render. **UI** : (1) couleurs jaunes supprimées (monochrome), (2) stats intégrées dans header device repliable (`dap-dest-details`), (3) bouton Cancel supprimé du footer, (4) colonnes tags dédiées, (5) sort dropdown (A→Z, Z→A, bitrate ↑↓, status), (6) bouton Change supprimé, (7) icône Settings agrandie (même design que Settings app), (8) top bar info sync remplace search bar uniquement sur vue DAP, (9) sidebar device se désélectionne en quittant la vue DAP. **Marqueurs de performance** encore présents dans le code (`console.time('[PERF]')` et `eprintln!("[PERF-RS]")`) — à retirer une fois la stabilité confirmée.

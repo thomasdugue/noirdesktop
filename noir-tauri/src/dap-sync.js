@@ -28,7 +28,10 @@ let _summaryDebounceTimer = null
 let _saveSelectionsTimer = null
 // Pre-computed lookup sets for O(1) status badge checks (rebuilt after each sync plan)
 let _copyAlbumIds = new Set()
+let _onDapAlbumIds = new Set()
 let _deleteSourcePaths = new Set()
+// Flag: on first plan computation after page load, auto-deselect albums not on DAP
+let _needsOnDapPreselection = false
 
 // === SVG CONSTANTS ===
 
@@ -142,7 +145,8 @@ function getAlbumStatusRank(albumId, album) {
 function getAlbumBitrate(album) {
   const firstTrack = album.tracks[0]
   if (!firstTrack?.metadata) return 0
-  return firstTrack.metadata.bitrate || (firstTrack.metadata.sampleRate || 0) * (firstTrack.metadata.bitDepth || 0)
+  const m = firstTrack.metadata
+  return (Number(m.bitrate) || 0) || (Number(m.sampleRate) || 0) * (Number(m.bitDepth) || 0)
 }
 
 function sortAlbumKeys(albumKeys) {
@@ -150,9 +154,19 @@ function sortAlbumKeys(albumKeys) {
     case 'alpha-desc':
       return albumKeys.sort((a, b) => b.localeCompare(a))
     case 'bitrate-desc':
-      return albumKeys.sort((a, b) => getAlbumBitrate(library.albums[b]) - getAlbumBitrate(library.albums[a]))
+      return albumKeys.sort((a, b) => {
+        const ra = getQualityRank(getAlbumQuality(library.albums[a]).class)
+        const rb = getQualityRank(getAlbumQuality(library.albums[b]).class)
+        if (rb !== ra) return rb - ra
+        return getAlbumBitrate(library.albums[b]) - getAlbumBitrate(library.albums[a])
+      })
     case 'bitrate-asc':
-      return albumKeys.sort((a, b) => getAlbumBitrate(library.albums[a]) - getAlbumBitrate(library.albums[b]))
+      return albumKeys.sort((a, b) => {
+        const ra = getQualityRank(getAlbumQuality(library.albums[a]).class)
+        const rb = getQualityRank(getAlbumQuality(library.albums[b]).class)
+        if (ra !== rb) return ra - rb
+        return getAlbumBitrate(library.albums[a]) - getAlbumBitrate(library.albums[b])
+      })
     case 'status':
       return albumKeys.sort((a, b) => {
         const sa = getAlbumStatusRank(albumKeyToId(a), library.albums[a])
@@ -426,53 +440,23 @@ function hideDapTopBar() {
 }
 
 function renderDapTopBar() {
+  // Top bar is now empty — sync stats moved to expandable panel,
+  // Sync button moved to dest-bar. We just keep the bar element present
+  // so search-bar-inner stays hidden and feedback/settings remain visible.
   const bar = document.getElementById('dap-sync-bar')
   if (!bar) return
+  bar.innerHTML = ''
+}
 
-  const dest = getCurrentDest()
-  const copyCount = syncPlan?.filesToCopy?.length ?? 0
-  const coversCount = syncPlan?.coversToCopy?.length ?? 0
-  const unchanged = syncPlan?.filesUnchanged ?? 0
-  const deleteCount = syncPlan?.filesToDelete?.length ?? 0
-  const totalCopyB = (syncPlan?.totalCopyBytes ?? 0) + (syncPlan?.totalCoverBytes ?? 0)
-  const copyBytes = formatBytes(totalCopyB)
-  const deleteBytes = formatBytes(syncPlan?.totalDeleteBytes ?? 0)
-
-  const totalBytes = dest?._totalBytes ?? 0
-  const freeBytes = dest?._freeBytes ?? 0
-  const afterFree = Math.max(freeBytes - totalCopyB + (syncPlan?.totalDeleteBytes ?? 0), 0)
-
-  const hasPlan = syncPlan !== null
+// Update the Sync button inside the dest-bar (called after plan computation)
+function updateSyncButton() {
+  const btn = document.getElementById('dap-sync-now-btn')
+  if (!btn) return
   const isDisabled = selectedAlbums.size === 0 || isSyncing
-
-  bar.innerHTML = `
-    <div class="dap-topbar-inner">
-      <button class="dap-topbar-sync-btn" id="dap-sync-now-btn" ${isDisabled ? 'disabled' : ''}>
-        ${isSyncing ? 'Syncing\u2026' : '\u25b6\ufe0e Sync'}
-      </button>
-      <div class="dap-topbar-stats">
-        <div class="dap-topbar-stat">
-          <span class="dap-topbar-label">To copy</span>
-          <span class="dap-topbar-val ${hasPlan && copyCount > 0 ? 'g' : ''}">${hasPlan ? `+${copyCount}${coversCount > 0 ? ` + ${coversCount} covers` : ''} (${copyBytes})` : '\u2014'}</span>
-        </div>
-        <div class="dap-topbar-stat">
-          <span class="dap-topbar-label">On DAP</span>
-          <span class="dap-topbar-val">${hasPlan ? `${unchanged} files` : '\u2014'}</span>
-        </div>
-        <div class="dap-topbar-stat">
-          <span class="dap-topbar-label">To remove</span>
-          <span class="dap-topbar-val ${hasPlan && deleteCount > 0 ? 'r' : ''}">${hasPlan ? `\u2212${deleteCount} (${deleteBytes})` : '\u2014'}</span>
-        </div>
-        <div class="dap-topbar-stat">
-          <span class="dap-topbar-label">Free after</span>
-          <span class="dap-topbar-val">${hasPlan && totalBytes > 0 ? formatBytes(afterFree) : '\u2014'}</span>
-        </div>
-      </div>
-    </div>
-  `
-
-  const btn = bar.querySelector('#dap-sync-now-btn')
-  if (btn && !isSyncing) btn.addEventListener('click', startSync)
+  const hasPendingChanges = syncPlan && ((syncPlan.filesToCopy?.length ?? 0) > 0 || (syncPlan.filesToDelete?.length ?? 0) > 0)
+  btn.disabled = isDisabled
+  btn.innerHTML = isSyncing ? 'Syncing\u2026' : 'Sync <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l1.5-1.5M12 20v-8m0 0l3 3m-3-3l-3 3"/><path d="M20 12l-1.5 1.5M12 4v8m0 0l-3-3m3 3l3-3"/></svg>'
+  btn.classList.toggle('has-changes', !isDisabled && hasPendingChanges)
 }
 
 function closeSyncPanel() {
@@ -544,6 +528,8 @@ function renderAlbumsView(grid) {
   const totalBytes = dest._totalBytes || 0
   const usedPct = totalBytes > 0 ? ((totalBytes - freeBytes) / totalBytes * 100).toFixed(0) : 0
 
+  const syncDisabled = selectedAlbums.size === 0 || isSyncing
+
   wrapper.innerHTML = `
     <div class="dap-dest-bar">
       <span class="dap-dest-icon">${DAP_ICON_SVG}</span>
@@ -552,11 +538,14 @@ function renderAlbumsView(grid) {
         <div class="dap-dest-space">${formatBytes(freeBytes)} free / ${formatBytes(totalBytes)}</div>
         <div class="dap-storage-bar"><div class="dap-storage-fill" style="width:${usedPct}%"></div></div>
       </div>
+      <button class="dap-dest-sync-btn" id="dap-sync-now-btn" ${syncDisabled ? 'disabled' : ''}>
+        ${isSyncing ? 'Syncing\u2026' : 'Sync <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l1.5-1.5M12 20v-8m0 0l3 3m-3-3l-3 3"/><path d="M20 12l-1.5 1.5M12 4v8m0 0l-3-3m3 3l3-3"/></svg>'}
+      </button>
       <button class="dap-dest-toggle ${detailsExpanded ? 'open' : ''}" id="dap-dest-toggle" title="Show details">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </button>
-      <button class="dap-dest-gear titlebar-settings-btn" id="dap-goto-settings" title="Settings">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <button class="dap-dest-gear" id="dap-goto-settings" title="Settings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
       </button>
@@ -576,13 +565,22 @@ function renderAlbumsView(grid) {
       <div class="dap-search-box">
         <input type="text" placeholder="Filter albums..." id="dap-album-search" value="${escapeHtml(albumSearchFilter)}">
       </div>
-      <select class="dap-sort-select" id="dap-sort-select">
-        <option value="alpha-asc" ${currentSortKey === 'alpha-asc' ? 'selected' : ''}>A → Z</option>
-        <option value="alpha-desc" ${currentSortKey === 'alpha-desc' ? 'selected' : ''}>Z → A</option>
-        <option value="bitrate-desc" ${currentSortKey === 'bitrate-desc' ? 'selected' : ''}>Bitrate ↓</option>
-        <option value="bitrate-asc" ${currentSortKey === 'bitrate-asc' ? 'selected' : ''}>Bitrate ↑</option>
-        <option value="status" ${currentSortKey === 'status' ? 'selected' : ''}>Status</option>
-      </select>
+      <div class="artist-sort-dropdown">
+        <button id="dap-sort-btn" class="btn-sort-icon" title="Sort">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18"/>
+            <path d="M7 12h10"/>
+            <path d="M10 18h4"/>
+          </svg>
+        </button>
+        <div id="dap-sort-menu" class="sort-menu hidden">
+          <button class="sort-option${currentSortKey === 'alpha-asc' ? ' active' : ''}" data-sort="alpha-asc">Album A → Z</button>
+          <button class="sort-option${currentSortKey === 'alpha-desc' ? ' active' : ''}" data-sort="alpha-desc">Album Z → A</button>
+          <button class="sort-option${currentSortKey === 'bitrate-desc' ? ' active' : ''}" data-sort="bitrate-desc">Qualité ↓</button>
+          <button class="sort-option${currentSortKey === 'bitrate-asc' ? ' active' : ''}" data-sort="bitrate-asc">Qualité ↑</button>
+          <button class="sort-option${currentSortKey === 'status' ? ' active' : ''}" data-sort="status">Status</button>
+        </div>
+      </div>
     </div>
 
     <div class="dap-select-all-row" id="dap-select-all-row">
@@ -618,14 +616,25 @@ function renderAlbumsView(grid) {
   console.timeEnd('[PERF] renderAlbumsView TOTAL')
 
   // Wire events
-  wrapper.querySelector('#dap-dest-toggle').addEventListener('click', toggleDestDetails)
+  const syncBtn = wrapper.querySelector('#dap-sync-now-btn')
+  if (syncBtn && !isSyncing) syncBtn.addEventListener('click', startSync)
+
+  wrapper.querySelector('#dap-dest-toggle').addEventListener('click', (e) => { e.stopPropagation(); toggleDestDetails() })
+  wrapper.querySelector('.dap-dest-bar').addEventListener('click', (e) => {
+    // Don't toggle if clicking on buttons inside the bar
+    if (e.target.closest('button')) return
+    toggleDestDetails()
+  })
   wrapper.querySelector('#dap-goto-settings').addEventListener('click', () => {
     dapSubView = 'settings'
     app.displayCurrentView()
   })
 
   wrapper.querySelector('#dap-toggle-all').addEventListener('click', function () {
-    if (this.classList.contains('on')) {
+    const wasOn = this.classList.contains('on')
+    // Immediate visual feedback before async operations
+    this.classList.toggle('on', !wasOn)
+    if (wasOn) {
       deselectAll()
     } else {
       selectAll()
@@ -637,10 +646,31 @@ function renderAlbumsView(grid) {
     renderTabContent()
   })
 
-  wrapper.querySelector('#dap-sort-select').addEventListener('change', (e) => {
-    currentSortKey = e.target.value
-    renderTabContent()
+  // Sort dropdown (same pattern as album/artist views)
+  const dapSortBtn = wrapper.querySelector('#dap-sort-btn')
+  const dapSortMenu = wrapper.querySelector('#dap-sort-menu')
+  dapSortBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    dapSortMenu.classList.toggle('hidden')
   })
+  dapSortMenu.querySelectorAll('.sort-option').forEach(option => {
+    option.addEventListener('click', (e) => {
+      e.stopPropagation()
+      currentSortKey = option.dataset.sort
+      dapSortMenu.classList.add('hidden')
+      // Update active state on all options
+      dapSortMenu.querySelectorAll('.sort-option').forEach(o => o.classList.toggle('active', o.dataset.sort === currentSortKey))
+      renderTabContent()
+    })
+  })
+  const closeDapSortMenu = (e) => {
+    if (!e.target.closest('.artist-sort-dropdown')) {
+      dapSortMenu.classList.add('hidden')
+    }
+  }
+  document.removeEventListener('click', window._dapSortMenuClose)
+  window._dapSortMenuClose = closeDapSortMenu
+  document.addEventListener('click', closeDapSortMenu)
 
   // Tab switching
   wrapper.querySelectorAll('.dap-sync-tab').forEach(tab => {
@@ -691,8 +721,8 @@ function renderAlbumRows() {
     if (syncPlan) {
       const hasCopy = _copyAlbumIds.has(albumId)
       const hasDelete = _deleteSourcePaths.size > 0 && album.tracks.some(t => _deleteSourcePaths.has(t.path))
-      const onDap = !hasCopy && isSelected
-      if (onDap) {
+      const onDap = _onDapAlbumIds.has(albumId) && isSelected
+      if (onDap && !hasCopy) {
         statusTag = '<span class="dap-status-tag on-dap">on DAP</span>'
       } else if (hasCopy && isSelected) {
         statusTag = '<span class="dap-status-tag to-add">to add</span>'
@@ -762,13 +792,18 @@ function loadThumbsBatched(queue) {
     const end = Math.min(i + BATCH, queue.length)
     for (; i < end; i++) {
       const { row, coverPath, artist, albumName } = queue[i]
-      const thumb = row.querySelector('.dap-alb-art')
-      if (!thumb || !thumb.isConnected) continue
+      const wrapper = row.querySelector('.dap-alb-art')
+      if (!wrapper || !wrapper.isConnected) continue
+      // Insert img INTO the DOM-connected wrapper so loadThumbnailAsync's
+      // isConnected check passes (needed for internet cover fallback)
       const img = document.createElement('img')
-      img.className = 'dap-alb-art'
+      img.className = 'dap-alb-art-img'
       img.style.display = 'none'
+      wrapper.appendChild(img)
       app.loadThumbnailAsync(coverPath, img, artist, albumName).then(() => {
-        if (img.src && thumb.isConnected) { thumb.replaceWith(img); img.style.display = '' }
+        if (img.src) {
+          img.style.display = ''
+        }
       })
     }
     if (i < queue.length) requestAnimationFrame(nextBatch)
@@ -777,10 +812,18 @@ function loadThumbsBatched(queue) {
 }
 
 function renderTabContent() {
+  const container = document.getElementById('dap-albums-list')
   switch (currentTab) {
     case 'artists': renderArtistRows(); break
     case 'tracks': renderTrackRows(); break
     default: renderAlbumRows(); break
+  }
+  // Subtle fade-in on tab switch
+  if (container) {
+    container.classList.remove('dap-tab-enter')
+    // Force reflow to restart animation
+    void container.offsetWidth
+    container.classList.add('dap-tab-enter')
   }
 }
 
@@ -827,15 +870,17 @@ function renderArtistRows() {
       artistNames.sort((a, b) => b.localeCompare(a)); break
     case 'bitrate-desc':
       artistNames.sort((a, b) => {
-        const ba = Math.max(...artistMap[a].map(x => getAlbumBitrate(x.album)))
-        const bb = Math.max(...artistMap[b].map(x => getAlbumBitrate(x.album)))
-        return bb - ba
+        const ra = Math.max(...artistMap[a].map(x => getQualityRank(getAlbumQuality(x.album).class)))
+        const rb = Math.max(...artistMap[b].map(x => getQualityRank(getAlbumQuality(x.album).class)))
+        if (rb !== ra) return rb - ra
+        return Math.max(...artistMap[b].map(x => getAlbumBitrate(x.album))) - Math.max(...artistMap[a].map(x => getAlbumBitrate(x.album)))
       }); break
     case 'bitrate-asc':
       artistNames.sort((a, b) => {
-        const ba = Math.max(...artistMap[a].map(x => getAlbumBitrate(x.album)))
-        const bb = Math.max(...artistMap[b].map(x => getAlbumBitrate(x.album)))
-        return ba - bb
+        const ra = Math.max(...artistMap[a].map(x => getQualityRank(getAlbumQuality(x.album).class)))
+        const rb = Math.max(...artistMap[b].map(x => getQualityRank(getAlbumQuality(x.album).class)))
+        if (ra !== rb) return ra - rb
+        return Math.max(...artistMap[a].map(x => getAlbumBitrate(x.album))) - Math.max(...artistMap[b].map(x => getAlbumBitrate(x.album)))
       }); break
     case 'status':
       artistNames.sort((a, b) => {
@@ -873,9 +918,10 @@ function renderArtistRows() {
         const aid = albumKeyToId(albumKey)
         const isSel = selectedAlbums.has(aid)
         const hasCopy = _copyAlbumIds.has(aid)
+        const isOnDap = _onDapAlbumIds.has(aid)
         const hasDelete = _deleteSourcePaths.size > 0 && album.tracks.some(t => _deleteSourcePaths.has(t.path))
         if (hasCopy) { hasAnyCopy = true; allOnDap = false }
-        else if (!isSel) allOnDap = false
+        else if (!isSel || !isOnDap) allOnDap = false
         if (hasDelete) hasAnyDelete = true
       }
       if (allOnDap && someSelected) {
@@ -957,8 +1003,8 @@ function renderTrackRows() {
       if (syncPlan) {
         const hasCopy = _copyAlbumIds.has(albumId)
         const hasDelete = _deleteSourcePaths.size > 0 && album.tracks.some(t => _deleteSourcePaths.has(t.path))
-        const onDap = !hasCopy && isAlbumSelected
-        if (onDap) {
+        const onDap = _onDapAlbumIds.has(albumId) && isAlbumSelected
+        if (onDap && !hasCopy) {
           statusTag = '<span class="dap-status-tag on-dap">on DAP</span>'
         } else if (hasCopy && isAlbumSelected) {
           statusTag = '<span class="dap-status-tag to-add">to add</span>'
@@ -1025,8 +1071,7 @@ function updateSelectAllCheckbox() {
 }
 
 function updateSyncNowButton() {
-  const btn = document.getElementById('dap-sync-now-btn')
-  if (btn) btn.disabled = selectedAlbums.size === 0
+  updateSyncButton()
 }
 
 function selectAll() {
@@ -1058,10 +1103,14 @@ function debouncedComputeAndRenderSummary() {
 
 function precomputeSyncPlanLookups() {
   _copyAlbumIds = new Set()
+  _onDapAlbumIds = new Set()
   _deleteSourcePaths = new Set()
   if (!syncPlan) return
   if (syncPlan.filesToCopy) {
     for (const f of syncPlan.filesToCopy) _copyAlbumIds.add(f.albumId)
+  }
+  if (syncPlan.unchangedAlbumIds) {
+    for (const id of syncPlan.unchangedAlbumIds) _onDapAlbumIds.add(id)
   }
   if (syncPlan.filesToDelete) {
     for (const f of syncPlan.filesToDelete) _deleteSourcePaths.add(f.sourcePath)
@@ -1107,13 +1156,31 @@ async function computeAndRenderSummary() {
     precomputeSyncPlanLookups()
     console.timeEnd('[PERF] precomputeSyncPlanLookups')
 
+    // On first load: auto-select ONLY albums already on DAP
+    // so the user sees a selection matching the device's current state
+    if (_needsOnDapPreselection) {
+      _needsOnDapPreselection = false
+      selectedAlbums.clear()
+      for (const albumId of _onDapAlbumIds) {
+        selectedAlbums.add(albumId)
+      }
+      console.log(`[DAP] Auto-preselection: ${_onDapAlbumIds.size} albums on DAP selected, ${_copyAlbumIds.size} albums not on DAP`)
+      saveSelections()
+      renderTabContent()
+      updateSelectAllCheckbox()
+      // Re-compute with corrected selections
+      computeAndRenderSummary()
+      return
+    }
+
     console.time('[PERF] renderSummary')
     renderSummary(syncPlan, dest)
     console.timeEnd('[PERF] renderSummary')
 
-    console.time('[PERF] renderDapTopBar')
-    renderDapTopBar()           // Update persistent top bar with fresh stats
-    console.timeEnd('[PERF] renderDapTopBar')
+    console.time('[PERF] updateSyncButton')
+    updateSyncButton()          // Update Sync button state in dest-bar
+    renderDapTopBar()           // Keep top bar in sync (hides search bar)
+    console.timeEnd('[PERF] updateSyncButton')
 
     console.time('[PERF] updateStatusTagsInPlace')
     updateStatusTagsInPlace()   // Update status badges without full re-render
@@ -1151,8 +1218,8 @@ function updateStatusTagsInPlace() {
     let statusTag = ''
     const hasCopy = _copyAlbumIds.has(albumId)
     const hasDelete = _deleteSourcePaths.size > 0 && album.tracks.some(t => _deleteSourcePaths.has(t.path))
-    const onDap = !hasCopy && isSelected
-    if (onDap) statusTag = '<span class="dap-status-tag on-dap">on DAP</span>'
+    const onDap = _onDapAlbumIds.has(albumId) && isSelected
+    if (onDap && !hasCopy) statusTag = '<span class="dap-status-tag on-dap">on DAP</span>'
     else if (hasCopy && isSelected) statusTag = '<span class="dap-status-tag to-add">to add</span>'
     else if (hasDelete) statusTag = '<span class="dap-status-tag to-remove">to remove</span>'
 
@@ -1198,25 +1265,44 @@ function renderSummary(plan, dest) {
     : 'Never'
 
   details.innerHTML = `
-    <div class="dap-det-section">
-      <div class="dap-det-row">
-        <span class="dap-det-label">Albums</span>
-        <span class="dap-det-val">${selectedAlbums.size}</span>
+    <div class="dap-det-grid">
+      <div class="dap-det-col">
+        <div class="dap-det-col-title">Selection</div>
+        <div class="dap-det-row">
+          <span class="dap-det-label">Albums</span>
+          <span class="dap-det-val">${selectedAlbums.size}</span>
+        </div>
+        <div class="dap-det-row">
+          <span class="dap-det-label">Artists</span>
+          <span class="dap-det-val">${artistSet.size}</span>
+        </div>
+        <div class="dap-det-row">
+          <span class="dap-det-label">Tracks</span>
+          <span class="dap-det-val">${totalTracks}</span>
+        </div>
       </div>
-      <div class="dap-det-row">
-        <span class="dap-det-label">Artists</span>
-        <span class="dap-det-val">${artistSet.size}</span>
-      </div>
-      <div class="dap-det-row">
-        <span class="dap-det-label">Songs</span>
-        <span class="dap-det-val">${totalTracks}</span>
-      </div>
-      <div class="dap-det-row">
-        <span class="dap-det-label">Last sync</span>
-        <span class="dap-det-val">${escapeHtml(lastSyncStr)}</span>
+      <div class="dap-det-col">
+        <div class="dap-det-col-title">Sync</div>
+        <div class="dap-det-row">
+          <span class="dap-det-label">To copy</span>
+          <span class="dap-det-val g">${copyCount > 0 ? `+${copyCount}${coversCount > 0 ? ` + ${coversCount} covers` : ''} (${copyBytes})` : 'Nothing'}</span>
+        </div>
+        <div class="dap-det-row">
+          <span class="dap-det-label">To remove</span>
+          <span class="dap-det-val r">${deleteCount > 0 ? `\u2212${deleteCount} (${deleteBytes})` : 'Nothing'}</span>
+        </div>
+        <div class="dap-det-row">
+          <span class="dap-det-label">On DAP</span>
+          <span class="dap-det-val">${unchanged} files</span>
+        </div>
       </div>
     </div>
-    ${!plan.enoughSpace ? '<div class="dap-sum-error" style="margin-top:8px">Not enough space on destination</div>' : ''}
+    <div class="dap-det-footer">
+      <span class="dap-det-footer-item">Free after sync: <strong>${totalBytes > 0 ? formatBytes(afterFree) : '\u2014'}</strong></span>
+      <span class="dap-det-footer-sep">\u00b7</span>
+      <span class="dap-det-footer-item">Last sync: <strong>${escapeHtml(lastSyncStr)}</strong></span>
+    </div>
+    ${!plan.enoughSpace ? '<div class="dap-sum-error">Not enough space on destination</div>' : ''}
   `
 }
 
@@ -1250,7 +1336,7 @@ function renderSyncingView(grid) {
   })
   stepperHtml += '</div>'
 
-  const pct = p.totalBytes > 0 ? (p.bytesCopied / p.totalBytes * 100).toFixed(1) : (p.total > 0 ? (p.current / p.total * 100).toFixed(1) : 0)
+  const pct = p.total > 0 ? (p.current / p.total * 100).toFixed(1) : 0
 
   div.innerHTML = `
     <div class="dap-trf-anim-wrap">${TRANSFORMER_SVG}</div>
@@ -1259,8 +1345,8 @@ function renderSyncingView(grid) {
     <div class="dap-sync-progress-area">
       <div class="dap-prog-bar"><div class="dap-prog-fill" style="width:${pct}%"></div></div>
       <div class="dap-prog-stats">
-        <span>${formatBytes(p.bytesCopied)} / ${formatBytes(p.totalBytes)}</span>
         <span>${p.current} / ${p.total} files</span>
+        <span>${formatBytes(p.bytesCopied)} / ${formatBytes(p.totalBytes)}</span>
       </div>
       <div class="dap-prog-file">${escapeHtml(p.currentFile || '')}</div>
       <div class="dap-prog-time">syncing...</div>
@@ -1285,8 +1371,34 @@ function renderCompleteView(grid) {
 
   const div = document.createElement('div')
   div.className = 'dap-setup-center dap-fade-in'
+  // Generate subtle micro-particles
+  const particles = Array.from({ length: 6 }, (_, i) => {
+    const angle = (i / 6) * Math.PI * 2 + (Math.random() * 0.5 - 0.25)
+    const dist = 28 + Math.random() * 16
+    const tx = Math.round(Math.cos(angle) * dist)
+    const ty = Math.round(Math.sin(angle) * dist)
+    const dur = (1.6 + Math.random() * 1.2).toFixed(1)
+    const delay = (Math.random() * 2.5).toFixed(1)
+    const size = (2 + Math.random() * 1.5).toFixed(1)
+    return `<span class="dap-particle" style="--tx:${tx}px;--ty:${ty}px;--dur:${dur}s;--delay:${delay}s;width:${size}px;height:${size}px"></span>`
+  }).join('')
+
   div.innerHTML = `
-    <div class="dap-complete-icon">&#9989;</div>
+    <div class="dap-complete-dap-icon">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="1" width="14" height="22" rx="2.5"/>
+        <rect x="7" y="3" width="10" height="8" rx="1"/>
+        <path d="M10 6l3 1.5-3 1.5V6z" fill="currentColor" stroke="none"/>
+        <circle cx="12" cy="17" r="3.5"/>
+        <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"/>
+      </svg>
+      <div class="dap-check-badge">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+          <path class="dap-check-path" d="M5 12l5 5L19 7"/>
+        </svg>
+      </div>
+      ${particles}
+    </div>
     <div class="dap-complete-title">Sync complete</div>
     <div class="dap-complete-subtitle">All changes applied to ${escapeHtml(deviceName)}</div>
     <div class="dap-complete-stats">
@@ -1297,8 +1409,10 @@ function renderCompleteView(grid) {
       <div class="dap-storage-bar"><div class="dap-storage-fill" style="width:${usedPct}%"></div></div>
       <div class="dap-sum-footer-text">${formatBytes(freeBytes)} free</div>
     </div>
-    <div class="dap-eject-msg">&#9167; You can safely eject your SD card</div>
-    <button class="dap-btn-primary" id="dap-done-btn">Done</button>
+    <div class="dap-complete-actions">
+      <div class="dap-eject-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 10H5l7-10z"/><line x1="5" y1="21" x2="19" y2="21"/></svg> You can safely eject your SD card</div>
+      <button class="dap-btn-primary" id="dap-done-btn" style="margin-top: 16px;">Done</button>
+    </div>
   `
 
   grid.appendChild(div)
@@ -1469,22 +1583,21 @@ function renderFirstSyncView(grid) {
 
 async function loadSelections(destId) {
   console.time('[PERF] loadSelections IPC')
+  // Always select ALL albums initially so the first sync plan computation
+  // can determine which albums are already on the DAP vs which need copying.
+  // After plan computation, _needsOnDapPreselection triggers auto-deselection
+  // of albums not yet on the device.
+  selectedAlbums.clear()
+  for (const albumKey of Object.keys(library.albums)) {
+    selectedAlbums.add(albumKeyToId(albumKey))
+  }
+  _needsOnDapPreselection = true
   try {
-    const sels = await invoke('dap_get_selections', { destinationId: destId })
+    await invoke('dap_get_selections', { destinationId: destId })
     console.timeEnd('[PERF] loadSelections IPC')
-    console.log(`[PERF] loadSelections: ${sels.length} selections loaded`)
-    selectedAlbums.clear()
-    for (const sel of sels) {
-      if (sel.selected) selectedAlbums.add(sel.albumId)
-    }
-    console.log(`[PERF] loadSelections: ${selectedAlbums.size} albums selected`)
   } catch (e) {
     console.timeEnd('[PERF] loadSelections IPC')
-    console.error('[DAP] Failed to load selections:', e)
-    selectedAlbums.clear()
-    for (const albumKey of Object.keys(library.albums)) {
-      selectedAlbums.add(albumKeyToId(albumKey))
-    }
+    console.error('[DAP] Failed to load selections (will auto-detect from DAP):', e)
   }
 }
 
@@ -1651,10 +1764,10 @@ function updateSyncingProgress() {
   const fileEl = document.querySelector('.dap-prog-file')
   const labelEl = document.querySelector('.dap-syncing-label')
 
-  const pct = p.totalBytes > 0 ? (p.bytesCopied / p.totalBytes * 100).toFixed(1) : (p.total > 0 ? (p.current / p.total * 100).toFixed(1) : 0)
+  const pct = p.total > 0 ? (p.current / p.total * 100).toFixed(1) : 0
 
   if (fillEl) fillEl.style.width = `${pct}%`
-  if (statsEl) statsEl.innerHTML = `<span>${formatBytes(p.bytesCopied)} / ${formatBytes(p.totalBytes)}</span><span>${p.current} / ${p.total} files</span>`
+  if (statsEl) statsEl.innerHTML = `<span>${p.current} / ${p.total} files</span><span>${formatBytes(p.bytesCopied)} / ${formatBytes(p.totalBytes)}</span>`
   if (fileEl) fileEl.textContent = p.currentFile || ''
 
   // Update stepper dots

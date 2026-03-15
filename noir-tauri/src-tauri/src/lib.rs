@@ -4520,6 +4520,7 @@ fn dap_compute_sync_plan(
         vol_info.total_bytes,
         &cover_entries,
         &covers_dir,
+        &dest_path,
     );
     eprintln!("[PERF-RS] dap_compute_sync_plan TOTAL: {:?}", cmd_start.elapsed());
     Ok(result)
@@ -4586,6 +4587,7 @@ fn dap_execute_sync(
             vol_info.total_bytes,
             &cover_entries,
             &covers_dir,
+            &dest_path,
         );
 
         if !plan.enough_space {
