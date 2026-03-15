@@ -10,6 +10,14 @@ import {
   showLoading, updateLoading, hideLoading
 } from './utils.js'
 
+// === NORMALISATION DES CLÉS ALBUM/ARTISTE ===
+// Élimine les espaces de début/fin et normalise les caractères accentués (NFC)
+// pour éviter les doublons invisibles dans library.albums / library.artists
+export function normalizeKey(str) {
+  if (!str) return str
+  return str.trim().normalize('NFC')
+}
+
 // === LAZY LOADING DES POCHETTES (Intersection Observer) ===
 let coverObserver = null
 
@@ -208,14 +216,14 @@ export function groupTracksIntoAlbumsAndArtists() {
   for (const track of library.tracks) {
     if (!track.metadata) continue
 
-    const albumKey = (track.metadata.artist || 'Unknown Artist') + ' \u2014 ' + (track.metadata.album || 'Unknown Album')
-    const artistKey = track.metadata.artist
+    const albumKey = normalizeKey(track.metadata.album) || 'Unknown Album'
+    const artistKey = normalizeKey(track.metadata.artist) || 'Unknown Artist'
 
     // Groupe par album
     if (!library.albums[albumKey]) {
       library.albums[albumKey] = {
-        artist: track.metadata.artist,
-        album: track.metadata.album,
+        artist: artistKey,
+        album: albumKey,
         tracks: [],
         coverPath: track.path,
         cover: null,
@@ -223,7 +231,7 @@ export function groupTracksIntoAlbumsAndArtists() {
       }
     }
     library.albums[albumKey].tracks.push(track)
-    library.albums[albumKey].artistsSet.add(track.metadata.artist)
+    library.albums[albumKey].artistsSet.add(artistKey)
 
     // Groupe par artiste
     if (!library.artists[artistKey]) {
@@ -256,7 +264,7 @@ export function groupTracksIntoAlbumsAndArtists() {
     if (artistsArray.length > 1) {
       const artistCounts = {}
       for (const track of library.albums[albumKey].tracks) {
-        const artist = track.metadata?.artist || 'Unknown Artist'
+        const artist = normalizeKey(track.metadata?.artist) || 'Unknown Artist'
         artistCounts[artist] = (artistCounts[artist] || 0) + 1
       }
 

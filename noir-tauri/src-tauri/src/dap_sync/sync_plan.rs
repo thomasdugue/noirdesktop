@@ -36,6 +36,7 @@ pub struct SyncPlan {
     pub files_to_copy: Vec<SyncAction>,
     pub files_to_delete: Vec<SyncAction>,
     pub files_unchanged: usize,
+    pub unchanged_album_ids: Vec<i64>,
     pub total_copy_bytes: u64,
     pub total_delete_bytes: u64,
     pub net_bytes: i64,
@@ -111,6 +112,8 @@ fn resolve_cover_for_album(
 }
 
 /// Compute the sync plan by comparing selected tracks against the existing manifest.
+/// Falls back to filesystem check when manifest is missing or incomplete:
+/// if a file is not in the manifest but physically exists on the DAP, it's "unchanged".
 pub fn compute_sync_plan(
     tracks: &[TrackForSync],
     manifest: &Option<SyncManifest>,
@@ -120,8 +123,10 @@ pub fn compute_sync_plan(
     dest_total_bytes: u64,
     cover_cache: &HashMap<String, String>,
     covers_dir: &Path,
+    dest_path: &str,
 ) -> SyncPlan {
     let total_start = std::time::Instant::now();
+    let dest_root = Path::new(dest_path);
 
     // Build a lookup from dest_relative_path -> SyncedFile for the existing manifest.
     // We compare by destination path (derived from metadata: artist/album/track) instead of
@@ -134,12 +139,62 @@ pub fn compute_sync_plan(
         .unwrap_or_default();
     eprintln!("[PERF-RS] manifest_lookup build: {:?} ({} entries)", t0.elapsed(), manifest_lookup.len());
 
+    // Scan the DAP filesystem once upfront: collect all existing files AND album folders.
+    // This is more robust than per-file exists() checks because it lets us detect albums
+    // even when individual filenames don't match exactly (e.g. metadata changed since last sync).
+    let t_scan = std::time::Instant::now();
+    let mut dap_existing_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // folders_with_files: set of folder paths that contain at least one audio file
+    let mut dap_folders_with_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if dest_root.exists() {
+        fn walk_dap(dir: &Path, prefix: &str, files: &mut std::collections::HashSet<String>, folders_with_files: &mut std::collections::HashSet<String>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                let mut has_audio_files = false;
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    // Skip hidden files/dirs (like .hean-sync.json, .Spotlight, .Trashes)
+                    if name.starts_with('.') { continue; }
+                    let rel = if prefix.is_empty() { name.clone() } else { format!("{}/{}", prefix, name) };
+                    if entry.path().is_dir() {
+                        walk_dap(&entry.path(), &rel, files, folders_with_files);
+                    } else {
+                        files.insert(rel);
+                        has_audio_files = true;
+                    }
+                }
+                if has_audio_files && !prefix.is_empty() {
+                    folders_with_files.insert(prefix.to_string());
+                }
+            }
+        }
+        walk_dap(dest_root, "", &mut dap_existing_files, &mut dap_folders_with_files);
+    }
+    // Build a lowercased version for case-insensitive fallback matching
+    let dap_folders_lower: std::collections::HashSet<String> = dap_folders_with_files
+        .iter()
+        .map(|f| f.to_lowercase())
+        .collect();
+    eprintln!("[PERF-RS] DAP filesystem scan: {:?} ({} files, {} folders with files)",
+        t_scan.elapsed(), dap_existing_files.len(), dap_folders_with_files.len());
+    if !dap_folders_with_files.is_empty() {
+        let mut sample: Vec<&String> = dap_folders_with_files.iter().collect();
+        sample.sort();
+        sample.truncate(15);
+        eprintln!("[DEBUG-RS] Sample DAP folders with files: {:?}", sample);
+    }
+
     let mut files_to_copy = Vec::new();
     let mut files_unchanged: usize = 0;
+    let mut files_found_on_disk: usize = 0;
+    let mut files_found_via_folder: usize = 0;
     let mut total_copy_bytes: u64 = 0;
+    let mut unchanged_album_id_set: std::collections::HashSet<i64> = std::collections::HashSet::new();
 
     // Track which dest_relative_paths are selected (for mirror mode delete detection)
     let mut selected_dest_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Log first few mismatches for debugging
+    let mut mismatch_log_count: usize = 0;
 
     let t2 = std::time::Instant::now();
 
@@ -148,27 +203,56 @@ pub fn compute_sync_plan(
         selected_dest_paths.insert(dest_rel.clone());
 
         if manifest_lookup.contains_key(&dest_rel) {
-            // File already on DAP — same destination path means same content (artist/album/track match)
+            // File already on DAP — found in manifest
             files_unchanged += 1;
+            unchanged_album_id_set.insert(track.album_id);
+        } else if dap_existing_files.contains(&dest_rel) {
+            // Not in manifest, but found in DAP filesystem scan (exact match).
+            files_unchanged += 1;
+            files_found_on_disk += 1;
+            unchanged_album_id_set.insert(track.album_id);
         } else {
-            // New file — use size_bytes from frontend (estimated from metadata).
-            // We skip fs::metadata() here because it's extremely slow on SMB mounts
-            // (~12ms per file × 800 files = 10 seconds). The real file size will be
-            // determined during the actual sync copy operation.
-            total_copy_bytes += track.size_bytes;
-            files_to_copy.push(SyncAction {
-                source_path: track.path.clone(),
-                dest_relative_path: dest_rel,
-                size_bytes: track.size_bytes,
-                action: "copy".into(),
-                album_name: track.album.clone().unwrap_or_else(|| "Unknown Album".into()),
-                artist_name: track.artist.clone().unwrap_or_else(|| "Unknown Artist".into()),
-                album_id: track.album_id,
-            });
+            // Exact file path not found. Try album folder match:
+            // If the album folder exists on DAP (e.g., "St Germain/Tourist (2012 Remaster)")
+            // AND it contains audio files, consider this album as "on DAP" even if individual
+            // filenames differ (metadata may have changed since last sync).
+            // Uses case-insensitive fallback for exFAT/FAT32 volumes.
+            let album_folder = dest_rel.rfind('/').map(|pos| &dest_rel[..pos]);
+            let folder_has_files = album_folder.map(|f| {
+                dap_folders_with_files.contains(f) || dap_folders_lower.contains(&f.to_lowercase())
+            }).unwrap_or(false);
+
+            if folder_has_files {
+                // Album folder exists with files — treat as on DAP
+                files_unchanged += 1;
+                files_found_via_folder += 1;
+                unchanged_album_id_set.insert(track.album_id);
+            } else {
+                // Log first few mismatches for debugging
+                if mismatch_log_count < 5 {
+                    eprintln!("[DEBUG-RS] Track NOT on DAP: dest_rel={:?}, album_folder={:?}, artist={:?}, album={:?}",
+                        dest_rel, album_folder, track.artist, track.album);
+                    mismatch_log_count += 1;
+                }
+                // New file — use size_bytes from frontend (estimated from metadata).
+                // We skip fs::metadata() on SOURCE files because it's extremely slow on SMB mounts
+                // (~12ms per file × 800 files = 10 seconds). The real file size will be
+                // determined during the actual sync copy operation.
+                total_copy_bytes += track.size_bytes;
+                files_to_copy.push(SyncAction {
+                    source_path: track.path.clone(),
+                    dest_relative_path: dest_rel,
+                    size_bytes: track.size_bytes,
+                    action: "copy".into(),
+                    album_name: track.album.clone().unwrap_or_else(|| "Unknown Album".into()),
+                    artist_name: track.artist.clone().unwrap_or_else(|| "Unknown Artist".into()),
+                    album_id: track.album_id,
+                });
+            }
         }
     }
-    eprintln!("[PERF-RS] track loop: {:?} ({} tracks, {} unchanged, {} to copy)",
-        t2.elapsed(), tracks.len(), files_unchanged, files_to_copy.len());
+    eprintln!("[PERF-RS] track loop: {:?} ({} tracks, {} unchanged ({} via disk, {} via folder match), {} to copy)",
+        t2.elapsed(), tracks.len(), files_unchanged, files_found_on_disk, files_found_via_folder, files_to_copy.len());
 
     // Mirror mode: find files in manifest that are no longer selected → delete
     let mut files_to_delete = Vec::new();
@@ -215,6 +299,11 @@ pub fn compute_sync_plan(
             }
         }
 
+        let mut covers_resolved = 0usize;
+        let mut covers_not_found = 0usize;
+        let mut covers_skipped_manifest = 0usize;
+        let mut covers_skipped_on_dap = 0usize;
+
         for (folder, (track_path, artist, album)) in &album_folders {
             let cover_dest = format!("{}/cover.jpg", folder);
 
@@ -233,11 +322,17 @@ pub fn compute_sync_plan(
                     }
                     // else: same size → unchanged, skip
                 }
-                // else: no local cover but one on DAP → keep DAP version
+                covers_skipped_manifest += 1;
                 continue;
             }
 
-            // No cover in manifest → resolve and add
+            // Check if cover already exists on DAP filesystem (not in manifest but present)
+            if dap_existing_files.contains(&cover_dest) {
+                covers_skipped_on_dap += 1;
+                continue;
+            }
+
+            // No cover in manifest or on DAP → resolve and add
             if let Some((source, size)) = resolve_cover_for_album(track_path, artist, album, cover_cache, covers_dir) {
                 total_cover_bytes += size;
                 covers_to_copy.push(CoverSyncAction {
@@ -245,8 +340,17 @@ pub fn compute_sync_plan(
                     dest_relative_path: cover_dest,
                     size_bytes: size,
                 });
+                covers_resolved += 1;
+            } else {
+                covers_not_found += 1;
+                if covers_not_found <= 3 {
+                    eprintln!("[DEBUG-RS] Cover not found for: folder={:?}, track={:?}, artist={:?}, album={:?}",
+                        folder, track_path, artist, album);
+                }
             }
         }
+        eprintln!("[PERF-RS] Cover resolution: {} albums, {} to copy, {} skipped (manifest), {} skipped (on DAP), {} not found",
+            album_folders.len(), covers_resolved, covers_skipped_manifest, covers_skipped_on_dap, covers_not_found);
     }
 
     let net_bytes = (total_copy_bytes + total_cover_bytes) as i64 - total_delete_bytes as i64;
@@ -259,6 +363,7 @@ pub fn compute_sync_plan(
         files_to_copy,
         files_to_delete,
         files_unchanged,
+        unchanged_album_ids: unchanged_album_id_set.into_iter().collect(),
         total_copy_bytes,
         total_delete_bytes,
         net_bytes,
@@ -343,7 +448,7 @@ mod tests {
     ) -> SyncPlan {
         let empty_cache = HashMap::new();
         let dummy_dir = PathBuf::from("/nonexistent");
-        compute_sync_plan(tracks, manifest, structure, mirror, free, total, &empty_cache, &dummy_dir)
+        compute_sync_plan(tracks, manifest, structure, mirror, free, total, &empty_cache, &dummy_dir, "/nonexistent")
     }
 
     fn make_track(path: &str, album: &str, artist: &str, size: u64, track_num: u32) -> TrackForSync {
@@ -588,9 +693,11 @@ mod tests {
         let mut cache = HashMap::new();
         cache.insert("/music/a.flac".to_string(), cover_file.to_string_lossy().to_string());
 
+        let dest_dir = tempfile::tempdir().unwrap();
         let plan = compute_sync_plan(
             &tracks, &None, "artist_album_track", true,
             1_000_000_000, 2_000_000_000, &cache, dir.path(),
+            &dest_dir.path().to_string_lossy(),
         );
         assert_eq!(plan.covers_to_copy.len(), 1);
         assert_eq!(plan.covers_to_copy[0].dest_relative_path, "Artist A/Album A/cover.jpg");
@@ -611,9 +718,11 @@ mod tests {
         std::fs::write(&internet_cover, vec![0u8; 8000]).unwrap();
 
         let empty_cache = HashMap::new();
+        let dest_dir = tempfile::tempdir().unwrap();
         let plan = compute_sync_plan(
             &tracks, &None, "artist_album_track", true,
             1_000_000_000, 2_000_000_000, &empty_cache, dir.path(),
+            &dest_dir.path().to_string_lossy(),
         );
         assert_eq!(plan.covers_to_copy.len(), 1);
         assert_eq!(plan.covers_to_copy[0].size_bytes, 8000);
@@ -655,9 +764,11 @@ mod tests {
             ],
         });
 
+        let dest_dir = tempfile::tempdir().unwrap();
         let plan = compute_sync_plan(
             &tracks, &manifest, "artist_album_track", true,
             1_000_000_000, 2_000_000_000, &cache, dir.path(),
+            &dest_dir.path().to_string_lossy(),
         );
         assert_eq!(plan.covers_to_copy.len(), 0, "Same size → cover unchanged, skip");
     }
@@ -675,9 +786,11 @@ mod tests {
         let mut cache = HashMap::new();
         cache.insert("/music/a.flac".to_string(), cover_file.to_string_lossy().to_string());
 
+        let dest_dir = tempfile::tempdir().unwrap();
         let plan = compute_sync_plan(
             &tracks, &None, "flat", true,
             1_000_000_000, 2_000_000_000, &cache, dir.path(),
+            &dest_dir.path().to_string_lossy(),
         );
         assert_eq!(plan.covers_to_copy.len(), 0, "Flat mode → no covers");
     }

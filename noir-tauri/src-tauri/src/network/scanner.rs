@@ -17,6 +17,15 @@ use once_cell::sync::Lazy;
 static CURRENT_DOWNLOAD_CANCEL: Lazy<Mutex<Option<Arc<AtomicBool>>>> =
     Lazy::new(|| Mutex::new(None));
 
+/// Message d'erreur du dernier download échoué.
+/// Le thread de download stocke l'erreur, audio_play la récupère quand bytes_written == 0.
+static LAST_DOWNLOAD_ERROR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
+/// Récupère et consomme le message d'erreur du dernier download échoué.
+pub fn take_last_download_error() -> Option<String> {
+    LAST_DOWNLOAD_ERROR.lock().ok().and_then(|mut err| err.take())
+}
+
 /// Extensions audio reconnues
 const AUDIO_EXTENSIONS: &[&str] = &["flac", "mp3", "m4a", "aac", "wav", "aiff", "aif", "opus"];
 
@@ -784,6 +793,10 @@ pub fn start_progressive_download(
     let cancel_thread = cancel;
 
     std::thread::spawn(move || {
+        // Effacer l'erreur précédente avant de démarrer
+        if let Ok(mut err) = LAST_DOWNLOAD_ERROR.lock() {
+            *err = None;
+        }
         // read_file_to_temp_progressive utilise le CONNECTION mutex partagé (un seul SmbClient actif).
         // cancel_thread permet d'interrompre ce download si un nouveau track est demandé.
         match smb::read_file_to_temp_progressive(
@@ -795,6 +808,10 @@ pub fn start_progressive_download(
             }
             Err(e) => {
                 eprintln!("[SMB Progressive] Thread: download FAILED: {}", e);
+                // Stocker l'erreur pour que audio_play puisse la récupérer
+                if let Ok(mut err) = LAST_DOWNLOAD_ERROR.lock() {
+                    *err = Some(e);
+                }
                 // Supprimer le fichier partiel pour ne pas polluer le cache
                 let _ = std::fs::remove_file(&temp_clone);
             }
@@ -808,4 +825,44 @@ pub fn start_progressive_download(
     });
 
     Ok((temp_file, bytes_written, download_done))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Single test to avoid race conditions on the shared LAST_DOWNLOAD_ERROR static
+    #[test]
+    fn last_download_error_store_take_consume_lifecycle() {
+        // 1. Clean state → returns None
+        if let Ok(mut err) = LAST_DOWNLOAD_ERROR.lock() {
+            *err = None;
+        }
+        assert_eq!(take_last_download_error(), None, "clean state should return None");
+
+        // 2. Store an error → take returns it, then None (consumed)
+        if let Ok(mut err) = LAST_DOWNLOAD_ERROR.lock() {
+            *err = Some("SMB connection timed out".to_string());
+        }
+        assert_eq!(
+            take_last_download_error(),
+            Some("SMB connection timed out".to_string()),
+            "should return the stored error"
+        );
+        assert_eq!(take_last_download_error(), None, "error should be consumed after take");
+
+        // 3. Overwrite: second error replaces first
+        if let Ok(mut err) = LAST_DOWNLOAD_ERROR.lock() {
+            *err = Some("first error".to_string());
+        }
+        if let Ok(mut err) = LAST_DOWNLOAD_ERROR.lock() {
+            *err = Some("second error".to_string());
+        }
+        assert_eq!(
+            take_last_download_error(),
+            Some("second error".to_string()),
+            "should return the latest error, not the first"
+        );
+        assert_eq!(take_last_download_error(), None, "consumed after take");
+    }
 }
