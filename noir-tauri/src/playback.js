@@ -33,14 +33,92 @@ export function playAlbum(albumKey) {
   const firstTrack = album.tracks[0]
   const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
   if (globalIndex !== -1) {
-    playTrack(globalIndex)
+    const albumTrackPaths = album.tracks.map(t => t.path)
+    playTrack(globalIndex, { type: 'album', id: albumKey, tracks: albumTrackPaths })
     app.updateAlbumTracksHighlight()
   }
 }
 
+// === AUTO-QUEUE : POPULATION ET REPLENISHMENT ===
+
+const AUTO_QUEUE_MIN = 15  // Nombre minimum de tracks dans la queue avant replenishment
+
+// Construit la queue à partir d'un contexte de lecture.
+// context = { type: 'album'|'library'|'playlist'|'mix', id: string|null, tracks: string[] }
+// startIndex = index de la track jouée dans context.tracks
+export function populateQueueFromContext(context, startIndex) {
+  if (!context || !context.tracks || context.tracks.length === 0) return
+
+  // Clear queue sans notification
+  queue.items.length = 0
+
+  // Stocker la source pour le replenishment
+  playback.autoQueueSource = context
+  playback.autoQueueIndex = startIndex
+
+  // Ajouter les tracks suivantes (jusqu'à AUTO_QUEUE_MIN)
+  const remaining = context.tracks.slice(startIndex + 1)
+  let toAdd = remaining.slice(0, AUTO_QUEUE_MIN)
+
+  // En mode shuffle, mélanger les tracks
+  if (playback.shuffleMode !== 'off') {
+    // Shuffle Fisher-Yates
+    toAdd = [...toAdd]
+    for (let i = toAdd.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[toAdd[i], toAdd[j]] = [toAdd[j], toAdd[i]]
+    }
+  }
+
+  for (const path of toAdd) {
+    const track = library.tracks.find(t => t.path === path)
+    if (track) queue.items.push(track)
+  }
+
+  playback.autoQueueIndex = startIndex + remaining.slice(0, AUTO_QUEUE_MIN).length
+
+  app.updateQueueDisplay()
+  app.updateQueueIndicators()
+}
+
+// Replenish la queue quand elle tombe sous AUTO_QUEUE_MIN tracks.
+// Appelée après chaque consommation de track depuis la queue.
+export function replenishQueue() {
+  if (!playback.autoQueueSource) return
+  if (queue.items.length >= AUTO_QUEUE_MIN) return
+
+  const source = playback.autoQueueSource
+  const needed = AUTO_QUEUE_MIN - queue.items.length
+  const startFrom = playback.autoQueueIndex + 1
+
+  if (startFrom >= source.tracks.length) {
+    // Plus de tracks dans la source — repeat-all ?
+    if (playback.repeatMode === 'all') {
+      playback.autoQueueIndex = -1
+      const toAdd = source.tracks.slice(0, needed)
+      for (const path of toAdd) {
+        const track = library.tracks.find(t => t.path === path)
+        if (track) queue.items.push(track)
+      }
+      playback.autoQueueIndex = toAdd.length - 1
+    }
+    return
+  }
+
+  const toAdd = source.tracks.slice(startFrom, startFrom + needed)
+  for (const path of toAdd) {
+    const track = library.tracks.find(t => t.path === path)
+    if (track) queue.items.push(track)
+  }
+  playback.autoQueueIndex = startFrom + toAdd.length - 1
+
+  app.updateQueueDisplay()
+  app.updateQueueIndicators()
+}
+
 // === LECTURE D'UN MORCEAU ===
 
-export async function playTrack(index) {
+export async function playTrack(index, context) {
   // Validation des entrées
   if (index < 0 || index >= library.tracks.length) {
     console.error('playTrack: index invalide', index)
@@ -58,6 +136,27 @@ export async function playTrack(index) {
     playback.audioIsPlaying = false
     dom.playPauseBtn.textContent = '▶'
     await invoke('audio_pause').catch(() => {}) // attendre l'arrêt confirmé
+  }
+
+  // Auto-queue : si un contexte est fourni, construire la queue automatiquement
+  if (context) {
+    const track = library.tracks[index]
+    const posInContext = track ? context.tracks.indexOf(track.path) : -1
+    if (posInContext !== -1) {
+      populateQueueFromContext(context, posInContext)
+    }
+    // Setter le playbackContext depuis le type de contexte
+    if (context.type === 'library') {
+      playback.playbackContext = 'library'
+      playback.currentPlaylistId = null
+    } else if (context.type === 'playlist') {
+      playback.playbackContext = 'playlist'
+      playback.currentPlaylistId = context.id || null
+    } else {
+      // album, mix → contexte album (s'arrête en fin, pas de saut inter-album)
+      playback.playbackContext = 'album'
+      playback.currentPlaylistId = null
+    }
   }
 
   playback.currentTrackIndex = index
@@ -193,12 +292,10 @@ export async function playTrack(index) {
   // Reload lyrics if panel is open
   if (app.isLyricsPanelOpen?.()) app.loadLyricsForTrack?.(track)
 
-  // Contexte de lecture — mis à jour à chaque appel pour refléter la vue active
-  // 'library'  = vue liste complète (currentView === 'tracks') → séquentiel global autorisé
-  // 'album'    = toute autre vue (album, artiste, home, search…) → s'arrête en fin d'album
-  // 'playlist' = joué depuis une playlist → suit la queue (set par playlists.js AVANT cet appel)
-  // Quand playNextTrack/playPreviousTrack enchaîne, la vue n'a pas changé → contexte cohérent
-  if (playback.playbackContext !== 'playlist') {
+  // Contexte de lecture — si un context a été passé en paramètre, il a déjà été appliqué plus haut.
+  // Si autoQueueSource est actif, le contexte est déjà correct (on consomme la queue).
+  // Sinon, déduire le contexte depuis la vue courante (comportement legacy pour les appels sans context).
+  if (!context && !playback.autoQueueSource && playback.playbackContext !== 'playlist') {
     playback.playbackContext = (ui.currentView === 'tracks') ? 'library' : 'album'
     playback.currentPlaylistId = null
   }
@@ -232,61 +329,19 @@ export async function playTrack(index) {
 // === GAPLESS PRELOAD ===
 
 export function getNextTrackPath() {
-  // Queue priority
+  // Repeat one = same track
+  if (playback.repeatMode === 'one' && playback.currentTrackIndex >= 0) {
+    return library.tracks[playback.currentTrackIndex]?.path
+  }
+
+  // Queue priority — peek without consuming
   if (queue.items.length > 0) return queue.items[0].path
 
-  // Repeat one = same track
-  if (playback.repeatMode === 'one' && playback.currentTrackIndex >= 0) return library.tracks[playback.currentTrackIndex]?.path
+  // Queue vide : tenter un replenish (repeat-all peut remplir)
+  replenishQueue()
+  if (queue.items.length > 0) return queue.items[0].path
 
-  const currentTrack = library.tracks[playback.currentTrackIndex]
-  if (!currentTrack) return null
-
-  // Contexte playlist : queue vide → fin de playlist (ou repeat-all → première track)
-  if (playback.playbackContext === 'playlist') {
-    if (playback.repeatMode === 'all' && playback.currentPlaylistId != null) {
-      const playlist = app.getPlaylistById?.(playback.currentPlaylistId)
-      if (playlist) {
-        const firstTrack = playlist.trackPaths
-          .map(path => library.tracks.find(t => t.path === path))
-          .find(Boolean)
-        return firstTrack?.path || null
-      }
-    }
-    return null  // Fin de playlist, pas de repeat
-  }
-
-  // Contexte library : respecter l'ordre visuel de la vue tracks
-  if (playback.playbackContext === 'library' && ui.tracksViewOrder.length > 0) {
-    const viewIdx = ui.tracksViewOrder.indexOf(currentTrack.path)
-    if (viewIdx >= 0 && viewIdx < ui.tracksViewOrder.length - 1) {
-      return ui.tracksViewOrder[viewIdx + 1]
-    }
-    // Fin de la vue
-    if (playback.repeatMode === 'all') return ui.tracksViewOrder[0]
-    return null
-  }
-
-  // Contexte album : prochaine track dans l'album
-  const currentFolder = currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/'))
-  const albumTracks = library.tracks.filter(t => {
-    const folder = t.path.substring(0, t.path.lastIndexOf('/'))
-    return folder === currentFolder && t.metadata?.album === currentTrack.metadata?.album
-  }).sort((a, b) => {
-    const discA = a.metadata?.disc || 1
-    const discB = b.metadata?.disc || 1
-    if (discA !== discB) return discA - discB
-    return (a.metadata?.track || 0) - (b.metadata?.track || 0)
-  })
-
-  const idx = albumTracks.findIndex(t => t.path === currentTrack.path)
-  if (idx >= 0 && idx < albumTracks.length - 1) {
-    return albumTracks[idx + 1].path
-  }
-
-  // End of album — repeat all wraps, otherwise null
-  if (playback.repeatMode === 'all' && albumTracks.length > 0) {
-    return albumTracks[0].path
-  }
+  // Pas de prochaine track
   return null
 }
 
@@ -394,331 +449,98 @@ export async function togglePlay() {
   }, 250)
 }
 
-// Fonction pour jouer le morceau précédent (réutilisable par raccourcis clavier)
+// Fonction pour jouer le morceau précédent — utilise autoQueueSource pour naviguer en arrière
 export function playPreviousTrack() {
-  // Contexte playlist : naviguer dans la playlist, pas dans l'album
-  if (playback.playbackContext === 'playlist' && playback.currentPlaylistId != null) {
-    const playlist = app.getPlaylistById?.(playback.currentPlaylistId)
-    if (playlist) {
-      const currentTrack = library.tracks[playback.currentTrackIndex]
-      const playlistTracks = playlist.trackPaths
-        .map(path => library.tracks.find(t => t.path === path))
-        .filter(Boolean)
-      const playlistIdx = playlistTracks.findIndex(t => t.path === currentTrack?.path)
-
-      if (playlistIdx > 0) {
-        // Track précédente dans la playlist
-        const prevTrack = playlistTracks[playlistIdx - 1]
-        const globalIndex = library.tracks.findIndex(t => t.path === prevTrack.path)
-        // Reconstruire la queue : tracks après prevTrack
-        queue.items.length = 0
-        for (let i = playlistIdx; i < playlistTracks.length; i++) {
-          queue.items.push(playlistTracks[i])
-        }
-        app.updateQueueDisplay()
-        app.updateQueueIndicators()
-        if (globalIndex !== -1) { playTrack(globalIndex); return }
-      } else if (playlistIdx === 0 && playback.repeatMode === 'all') {
-        // Début de playlist + repeat all → dernière track
-        const lastTrack = playlistTracks[playlistTracks.length - 1]
-        const globalIndex = library.tracks.findIndex(t => t.path === lastTrack.path)
-        queue.items.length = 0
-        app.updateQueueDisplay()
-        app.updateQueueIndicators()
-        if (globalIndex !== -1) { playTrack(globalIndex); return }
-      }
-      return  // Début de playlist, pas de repeat → ne rien faire
-    }
-  }
-
   const currentTrack = library.tracks[playback.currentTrackIndex]
-  const currentFolder = currentTrack?.path ? currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/')) : null
+  if (!currentTrack) return
 
-  // Filtre les tracks qui sont dans le même dossier ET ont le même album metadata
-  const albumTracks = currentFolder ? library.tracks.filter(t => {
-    const folder = t.path.substring(0, t.path.lastIndexOf('/'))
-    return (folder === currentFolder || (t.metadata?.album === currentTrack?.metadata?.album && t.metadata?.artist === currentTrack?.metadata?.artist))
-  }).sort((a, b) => {
-    const discA = a.metadata?.disc || 1
-    const discB = b.metadata?.disc || 1
-    if (discA !== discB) return discA - discB
-    const trackA = a.metadata?.track || 0
-    const trackB = b.metadata?.track || 0
-    if (trackA !== trackB) return trackA - trackB
-    return (a.name || '').localeCompare(b.name || '')
-  }) : []
+  // Si on a un autoQueueSource, naviguer en arrière dans la source
+  if (playback.autoQueueSource && playback.autoQueueSource.tracks.length > 0) {
+    const source = playback.autoQueueSource
+    const currentIdx = source.tracks.indexOf(currentTrack.path)
 
-  const currentAlbumTrackIndex = albumTracks.findIndex(t => t.path === currentTrack?.path)
-
-  console.log('playPreviousTrack DEBUG:', {
-    currentAlbumTrackIndex,
-    albumTracksCount: albumTracks.length,
-    currentFolder
-  })
-
-  if (albumTracks.length > 0 && currentAlbumTrackIndex > 0) {
-    // Track précédente dans l'album
-    const prevAlbumTrack = albumTracks[currentAlbumTrackIndex - 1]
-    const globalIndex = library.tracks.findIndex(t => t.path === prevAlbumTrack.path)
-    console.log('Playing previous album track:', { prevTrack: prevAlbumTrack?.metadata?.title, globalIndex })
-    if (globalIndex !== -1) {
-      playTrack(globalIndex)
-      return
+    if (currentIdx > 0) {
+      // Track précédente dans la source
+      const prevPath = source.tracks[currentIdx - 1]
+      const globalIndex = library.tracks.findIndex(t => t.path === prevPath)
+      if (globalIndex !== -1) {
+        // Reconstruire la queue à partir de la track précédente
+        populateQueueFromContext(source, currentIdx - 1)
+        playTrack(globalIndex)
+        return
+      }
+    } else if (currentIdx === 0 && playback.repeatMode === 'all') {
+      // Début de la source + repeat all → dernière track
+      const lastPath = source.tracks[source.tracks.length - 1]
+      const globalIndex = library.tracks.findIndex(t => t.path === lastPath)
+      if (globalIndex !== -1) {
+        populateQueueFromContext(source, source.tracks.length - 1)
+        playTrack(globalIndex)
+        return
+      }
     }
-  } else if (albumTracks.length > 0 && currentAlbumTrackIndex === 0 && playback.repeatMode === 'all') {
-    // Début de l'album + repeat all = va à la dernière track de l'album
-    const lastTrack = albumTracks[albumTracks.length - 1]
-    const globalIndex = library.tracks.findIndex(t => t.path === lastTrack.path)
-    if (globalIndex !== -1) {
-      playTrack(globalIndex)
-      return
-    }
+    // Début de la source, pas de repeat → ne rien faire
+    return
   }
 
-  // Fallback: comportement global
+  // Fallback sans autoQueueSource : comportement basique (track précédente globale)
   if (playback.currentTrackIndex > 0) {
     playTrack(playback.currentTrackIndex - 1)
   }
 }
 
-// Fonction pour jouer le morceau suivant (gère queue + shuffle + repeat + album context)
+// Fonction pour jouer le morceau suivant — consomme la queue (queue-first architecture)
 export function playNextTrack() {
-  // 1. Priorité : vérifie la file d'attente
-  if (queue.items.length > 0) {
-    let nextTrack
-    // Shuffle playlist : prendre un item aléatoire au lieu du premier
-    if (playback.playbackContext === 'playlist' && playback.shuffleMode !== 'off') {
-      const randomIdx = Math.floor(Math.random() * queue.items.length)
-      nextTrack = queue.items.splice(randomIdx, 1)[0]
-    } else {
-      nextTrack = queue.items.shift() // Retire le premier de la queue
-    }
+  // 1. Repeat one → replay current track
+  if (playback.repeatMode === 'one' && playback.currentTrackIndex >= 0) {
+    playTrack(playback.currentTrackIndex)
+    return
+  }
+
+  // 2. Shuffle : prendre un item aléatoire dans la queue
+  if (playback.shuffleMode !== 'off' && queue.items.length > 1) {
+    const randomIdx = Math.floor(Math.random() * queue.items.length)
+    const nextTrack = queue.items.splice(randomIdx, 1)[0]
     const globalIndex = library.tracks.findIndex(t => t.path === nextTrack.path)
     if (globalIndex !== -1) {
       playTrack(globalIndex)
+      replenishQueue()
       app.updateQueueDisplay()
       app.updateQueueIndicators()
       return
     }
   }
 
-  // 1b. Contexte playlist : queue vide = fin de playlist
-  if (playback.playbackContext === 'playlist') {
-    if (playback.repeatMode === 'all' && playback.currentPlaylistId != null) {
-      // Recharger la playlist dans la queue et relancer
-      const playlist = app.getPlaylistById?.(playback.currentPlaylistId)
-      if (playlist) {
-        const currentTrackForRepeat = library.tracks[playback.currentTrackIndex]
-        let playlistTracks = playlist.trackPaths
-          .map(path => library.tracks.find(t => t.path === path))
-          .filter(Boolean)
-
-        // En mode shuffle, shuffler la playlist (exclure la track courante pour éviter doublon)
-        if (playback.shuffleMode !== 'off') {
-          playlistTracks = playlistTracks.filter(t => t.path !== currentTrackForRepeat?.path)
-          for (let i = playlistTracks.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1))
-            ;[playlistTracks[i], playlistTracks[j]] = [playlistTracks[j], playlistTracks[i]]
-          }
-        }
-
-        if (playlistTracks.length > 0) {
-          const firstTrack = playlistTracks[0]
-          const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
-          // Re-remplir la queue avec les tracks restantes
-          for (let i = 1; i < playlistTracks.length; i++) {
-            queue.items.push(playlistTracks[i])
-          }
-          app.updateQueueDisplay()
-          app.updateQueueIndicators()
-          if (globalIndex !== -1) { playTrack(globalIndex); return }
-        }
-      }
-    }
-    // Fin de playlist sans repeat → stop
-    console.log('playNextTrack: end of playlist, no repeat - stopping')
-    dom.playPauseBtn.textContent = '▶'
-    return
-  }
-
-  // 2. Récupère les tracks de l'album en cours
-  // Match par dossier OU par métadonnées album+artiste (pour albums multi-CD dans des sous-dossiers)
-  const currentTrack = library.tracks[playback.currentTrackIndex]
-  const currentFolder = currentTrack?.path ? currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/')) : null
-
-  // Filtre les tracks du même album: même dossier OU même album+artiste (multi-CD)
-  const albumTracks = currentFolder ? library.tracks.filter(t => {
-    const folder = t.path.substring(0, t.path.lastIndexOf('/'))
-    return (folder === currentFolder || (t.metadata?.album === currentTrack?.metadata?.album && t.metadata?.artist === currentTrack?.metadata?.artist))
-  }).sort((a, b) => {
-    const discA = a.metadata?.disc || 1
-    const discB = b.metadata?.disc || 1
-    if (discA !== discB) return discA - discB
-    const trackA = a.metadata?.track || 0
-    const trackB = b.metadata?.track || 0
-    if (trackA !== trackB) return trackA - trackB
-    return (a.name || '').localeCompare(b.name || '')
-  }) : []
-
-  // Trouve l'index du track actuel dans l'album
-  const currentAlbumTrackIndex = albumTracks.findIndex(t => t.path === currentTrack?.path)
-
-  // DEBUG
-  console.log('playNextTrack DEBUG:', {
-    currentFolder,
-    albumTracksCount: albumTracks.length,
-    currentTrackPath: currentTrack?.path,
-    currentAlbumTrackIndex,
-    shuffleMode: playback.shuffleMode,
-    repeatMode: playback.repeatMode
-  })
-
-  // 3. Contexte 'library' → séquentiel selon l'ordre visuel de la vue tracks
-  if (playback.playbackContext === 'library' && playback.shuffleMode === 'off') {
-    if (ui.tracksViewOrder.length > 0) {
-      // Naviguer dans l'ordre trié/filtré de la vue (ui.tracksViewOrder)
-      const viewIdx = ui.tracksViewOrder.indexOf(currentTrack?.path)
-      if (viewIdx >= 0 && viewIdx < ui.tracksViewOrder.length - 1) {
-        const nextPath = ui.tracksViewOrder[viewIdx + 1]
-        const globalIndex = library.tracks.findIndex(t => t.path === nextPath)
-        if (globalIndex !== -1) { playTrack(globalIndex); return }
-      }
-      // Fin de la vue
-      if (playback.repeatMode === 'all') {
-        const firstPath = ui.tracksViewOrder[0]
-        const globalIndex = library.tracks.findIndex(t => t.path === firstPath)
-        if (globalIndex !== -1) { playTrack(globalIndex); return }
-      }
-    } else {
-      // Fallback si tracksViewOrder vide (vue non encore rendue)
-      if (playback.currentTrackIndex < library.tracks.length - 1) {
-        playTrack(playback.currentTrackIndex + 1); return
-      } else if (playback.repeatMode === 'all') {
-        playTrack(0); return
-      }
-    }
-    dom.playPauseBtn.textContent = '▶'
-    return
-  }
-
-  // 4. Gestion des modes shuffle (seulement si le track actuel est bien dans l'album)
-  if (playback.shuffleMode === 'album' && albumTracks.length > 1 && currentAlbumTrackIndex !== -1) {
-    // Marquer la track courante comme jouée AVANT de filtrer (évite de la rejouer immédiatement)
-    if (currentTrack) playback.shufflePlayedTracks.add(currentTrack.path)
-
-    // Shuffle dans l'album uniquement - évite les doublons
-    const availableTracks = albumTracks.filter(t => !playback.shufflePlayedTracks.has(t.path))
-
-    if (availableTracks.length === 0) {
-      // Tous les tracks ont été joués, on reset et on recommence
-      playback.shufflePlayedTracks.clear()
-      if (currentTrack) playback.shufflePlayedTracks.add(currentTrack.path)
-      // Re-filter après reset
-      const freshTracks = albumTracks.filter(t => !playback.shufflePlayedTracks.has(t.path))
-      if (freshTracks.length > 0) {
-        const randomTrack = freshTracks[Math.floor(Math.random() * freshTracks.length)]
-        playback.shufflePlayedTracks.add(randomTrack.path)
-        const globalIndex = library.tracks.findIndex(t => t.path === randomTrack.path)
-        if (globalIndex !== -1) {
-          playTrack(globalIndex)
-          return
-        }
-      }
-    } else {
-      // Choisir parmi les tracks non encore joués
-      const randomTrack = availableTracks[Math.floor(Math.random() * availableTracks.length)]
-      playback.shufflePlayedTracks.add(randomTrack.path)
-      const globalIndex = library.tracks.findIndex(t => t.path === randomTrack.path)
-      if (globalIndex !== -1) {
-        playTrack(globalIndex)
-        return
-      }
-    }
-  } else if (playback.shuffleMode === 'library') {
-    // Marquer la track courante comme jouée AVANT de filtrer (évite de la rejouer immédiatement)
-    if (currentTrack) playback.shufflePlayedTracks.add(currentTrack.path)
-
-    // Shuffle sur toute la bibliothèque - évite les doublons
-    const availableTracks = library.tracks.filter(t => !playback.shufflePlayedTracks.has(t.path))
-
-    if (availableTracks.length === 0) {
-      // Tous les tracks ont été joués, on reset
-      playback.shufflePlayedTracks.clear()
-      if (currentTrack) playback.shufflePlayedTracks.add(currentTrack.path)
-      const freshTracks = library.tracks.filter(t => !playback.shufflePlayedTracks.has(t.path))
-      if (freshTracks.length > 0) {
-        const randomTrack = freshTracks[Math.floor(Math.random() * freshTracks.length)]
-        playback.shufflePlayedTracks.add(randomTrack.path)
-        const globalIndex = library.tracks.findIndex(t => t.path === randomTrack.path)
-        playTrack(globalIndex)
-        return
-      }
-    } else {
-      const randomTrack = availableTracks[Math.floor(Math.random() * availableTracks.length)]
-      playback.shufflePlayedTracks.add(randomTrack.path)
-      const globalIndex = library.tracks.findIndex(t => t.path === randomTrack.path)
+  // 3. Queue has items → consume first
+  if (queue.items.length > 0) {
+    const nextTrack = queue.items.shift()
+    const globalIndex = library.tracks.findIndex(t => t.path === nextTrack.path)
+    if (globalIndex !== -1) {
       playTrack(globalIndex)
+      replenishQueue()
+      app.updateQueueDisplay()
+      app.updateQueueIndicators()
       return
     }
   }
 
-  // 5. Mode séquentiel album (contexte album/playlist/null)
-  if (albumTracks.length > 0 && currentAlbumTrackIndex !== -1) {
-    // On est dans un album, on joue le track suivant de l'album
-    if (currentAlbumTrackIndex < albumTracks.length - 1) {
-      // Track suivante dans l'album
-      const nextAlbumTrack = albumTracks[currentAlbumTrackIndex + 1]
-      const globalIndex = library.tracks.findIndex(t => t.path === nextAlbumTrack.path)
-      console.log('playNextTrack: playing next album track', {
-        nextAlbumTrack: nextAlbumTrack?.name,
-        globalIndex,
-        currentAlbumTrackIndex,
-        albumTracksLength: albumTracks.length
-      })
-      if (globalIndex !== -1) {
-        playTrack(globalIndex)
-        return
-      }
-    } else if (playback.repeatMode === 'all') {
-      // Fin de l'album + repeat all = retour au début de l'album
-      const firstTrack = albumTracks[0]
-      const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
-      console.log('playNextTrack: repeat all - back to first track', { globalIndex })
-      if (globalIndex !== -1) {
-        playTrack(globalIndex)
-        return
-      }
-    } else {
-      // Fin de l'album, pas de repeat
-      console.log('playNextTrack: end of album, no repeat - stopping')
+  // 4. Queue vide — tenter un replenish (repeat-all peut boucler)
+  replenishQueue()
+  if (queue.items.length > 0) {
+    const nextTrack = queue.items.shift()
+    const globalIndex = library.tracks.findIndex(t => t.path === nextTrack.path)
+    if (globalIndex !== -1) {
+      playTrack(globalIndex)
+      replenishQueue()
+      app.updateQueueDisplay()
+      app.updateQueueIndicators()
+      return
     }
-  } else {
-    // Track non trouvée dans le contexte album (album vide ou index invalide)
-    // Ne jamais sauter à un album différent — seulement autoriser la lecture globale
-    // si le contexte est explicitement 'library' (vue liste complète)
-    console.log('playNextTrack: album lookup failed', {
-      playbackContext: playback.playbackContext,
-      currentAlbumTrackIndex,
-      currentTrackIndex: playback.currentTrackIndex,
-      tracksLength: library.tracks.length
-    })
-    if (playback.playbackContext === 'library') {
-      if (playback.currentTrackIndex < library.tracks.length - 1) {
-        console.log('playNextTrack: library mode - playing global next track', { nextIndex: playback.currentTrackIndex + 1 })
-        playTrack(playback.currentTrackIndex + 1)
-        return
-      } else if (playback.repeatMode === 'all') {
-        console.log('playNextTrack: library mode repeat all - back to track 0')
-        playTrack(0)
-        return
-      }
-    }
-    // Contexte album/playlist/null → ne pas sauter à un autre album, s'arrêter proprement
-    console.log('playNextTrack: non-library context with failed album lookup - stopping to avoid cross-album jump')
   }
 
-  // Fin de lecture
+  // 5. Fin de lecture — plus rien à jouer
   console.log('playNextTrack: END OF PLAYBACK - no next track to play')
+  playback.autoQueueSource = null
   dom.playPauseBtn.textContent = '▶'
 }
 
@@ -1271,58 +1093,19 @@ export async function initRustAudioListeners() {
     playback.gaplessPreloadTriggered = false
 
     // Advance to the next track in the UI (without calling playTrack)
-    if (queue.items.length > 0) {
+    if (playback.repeatMode === 'one') {
+      // Stay on same track, just reset position display
+    } else if (queue.items.length > 0) {
       const nextTrack = queue.items.shift()
       const globalIndex = library.tracks.findIndex(t => t.path === nextTrack.path)
       if (globalIndex !== -1) {
         playback.currentTrackIndex = globalIndex
-        app.updateQueueDisplay()
-        app.updateQueueIndicators()
       }
-    } else if (playback.repeatMode === 'one') {
-      // Stay on same track, just reset position display
-    } else {
-      // Advance to next track
-      const currentTrack = library.tracks[playback.currentTrackIndex]
-      if (currentTrack) {
-        if (playback.playbackContext === 'library' && ui.tracksViewOrder.length > 0) {
-          // Contexte library : respecter l'ordre visuel de la vue tracks
-          const viewIdx = ui.tracksViewOrder.indexOf(currentTrack.path)
-          if (viewIdx >= 0 && viewIdx < ui.tracksViewOrder.length - 1) {
-            const nextPath = ui.tracksViewOrder[viewIdx + 1]
-            const globalIndex = library.tracks.findIndex(t => t.path === nextPath)
-            if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
-          } else if (playback.repeatMode === 'all' && ui.tracksViewOrder.length > 0) {
-            const firstPath = ui.tracksViewOrder[0]
-            const globalIndex = library.tracks.findIndex(t => t.path === firstPath)
-            if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
-          }
-          // else : fin de la vue, currentTrackIndex reste inchangé
-        } else {
-          // Contexte album : ordre de l'album
-          const currentFolder = currentTrack.path.substring(0, currentTrack.path.lastIndexOf('/'))
-          const albumTracks = library.tracks.filter(t => {
-            const folder = t.path.substring(0, t.path.lastIndexOf('/'))
-            return folder === currentFolder && t.metadata?.album === currentTrack.metadata?.album
-          }).sort((a, b) => {
-            const discA = a.metadata?.disc || 1
-            const discB = b.metadata?.disc || 1
-            if (discA !== discB) return discA - discB
-            return (a.metadata?.track || 0) - (b.metadata?.track || 0)
-          })
-
-          const idx = albumTracks.findIndex(t => t.path === currentTrack.path)
-          if (idx >= 0 && idx < albumTracks.length - 1) {
-            const nextTrack = albumTracks[idx + 1]
-            const globalIndex = library.tracks.findIndex(t => t.path === nextTrack.path)
-            if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
-          } else if (playback.repeatMode === 'all' && albumTracks.length > 0) {
-            const globalIndex = library.tracks.findIndex(t => t.path === albumTracks[0].path)
-            if (globalIndex !== -1) playback.currentTrackIndex = globalIndex
-          }
-        }
-      }
+      replenishQueue()
+      app.updateQueueDisplay()
+      app.updateQueueIndicators()
     }
+    // else: no queue, playback will stop naturally
 
     // Update the UI with the new track info
     const track = library.tracks[playback.currentTrackIndex]

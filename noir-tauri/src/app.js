@@ -28,6 +28,7 @@ export const app = {
   updateNowPlayingHighlight: null,
   closeAlbumDetail: null,
   invalidateDiscoveryMixCache: null,
+  invalidateSessionCarouselCaches: null,
   getVirtualScrollState: null,
 
   // === Panels ===

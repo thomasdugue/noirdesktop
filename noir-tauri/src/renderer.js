@@ -60,7 +60,7 @@ import {
   resetPlayerUI, getCurrentTrackDuration, triggerGaplessPreload,
   loadAudioDevices, updateVolumeIcon, updateHogModeStatus,
   updateRepeatButtonUI, initPlayback, getNextTrackInfo, getCurrentTrackPath,
-  performSeek
+  performSeek, populateQueueFromContext, replenishQueue
 } from './playback.js'
 import {
   toggleFullscreenPlayer, closeFullscreenPlayer, isFullscreenOpen,
@@ -90,7 +90,7 @@ import {
   initViews, displayCurrentView, navigateToAlbumPage, navigateToArtistPage,
   navigateToMixPage, navigateBack, switchView, updateAlbumTracksHighlight,
   updateHomeNowPlayingSection, updateNowPlayingHighlight, closeAlbumDetail,
-  invalidateDiscoveryMixCache, getVirtualScrollState
+  invalidateDiscoveryMixCache, invalidateSessionCarouselCaches, getVirtualScrollState
 } from './views.js'
 
 // === WINDOW DRAG ===
@@ -155,6 +155,8 @@ app.triggerGaplessPreload = triggerGaplessPreload
 app.loadAudioDevices = loadAudioDevices
 app.updateVolumeIcon = updateVolumeIcon
 app.updateRepeatButtonUI = updateRepeatButtonUI
+app.populateQueueFromContext = populateQueueFromContext
+app.replenishQueue = replenishQueue
 
 // Panels
 app.addToQueue = addToQueue
@@ -208,6 +210,7 @@ app.updateHomeNowPlayingSection = updateHomeNowPlayingSection
 app.updateNowPlayingHighlight = updateNowPlayingHighlight
 app.closeAlbumDetail = closeAlbumDetail
 app.invalidateDiscoveryMixCache = invalidateDiscoveryMixCache
+app.invalidateSessionCarouselCaches = invalidateSessionCarouselCaches
 app.getVirtualScrollState = getVirtualScrollState
 
 // Fullscreen player
@@ -222,13 +225,14 @@ app.loadLyricsForTrack = loadLyricsForTrack
 app.syncLyricsToTime = syncLyricsToTime
 app.closeFullscreenLyrics = closeFullscreenLyrics
 
-// addAlbumToQueue — ajoute tous les tracks d'un album à la queue
+// addAlbumToQueue — ajoute tous les tracks d'un album à la queue (dans l'ordre)
 app.addAlbumToQueue = function addAlbumToQueue(albumKey) {
   const album = library.albums[albumKey]
   if (!album) return
-  for (const track of album.tracks) {
-    addToQueue(track)
-  }
+  // Insérer en bloc au début de la queue (dans l'ordre de l'album)
+  queue.items.unshift(...album.tracks)
+  updateQueueDisplay()
+  updateQueueIndicators()
   showQueueNotification(`${album.tracks.length} tracks added to queue`)
 }
 

@@ -4373,6 +4373,24 @@ async fn scan_network_source_cmd(source_id: String, app_handle: tauri::AppHandle
                     if !excluded.is_empty() {
                         println!("[Network Scan] Filtered out excluded tracks from NAS scan results");
                     }
+                    // Enregistre les dates d'ajout pour les nouvelles tracks NAS
+                    if let Ok(mut dates_cache) = ADDED_DATES_CACHE.lock() {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let mut new_dates = false;
+                        for track in &filtered_net_tracks {
+                            if !dates_cache.entries.contains_key(&track.path) {
+                                dates_cache.entries.insert(track.path.clone(), now);
+                                new_dates = true;
+                            }
+                        }
+                        if new_dates {
+                            save_added_dates_cache(&dates_cache);
+                        }
+                    }
+
                     cache.tracks.extend(filtered_net_tracks);
                     save_tracks_cache(&cache);
 

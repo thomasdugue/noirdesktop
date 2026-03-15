@@ -136,7 +136,23 @@ let discoveryMixes = []
 // (le calcul parcourt toute la librairie → coûteux avec de nombreux tracks)
 let _discoveryMixesMemCache = null
 let _discoveryMixesMemCacheAt = 0
-const DISCOVERY_MEM_TTL = 2 * 60 * 1000  // 2 minutes en mémoire
+const DISCOVERY_MEM_TTL = Infinity  // Persist for entire session (app relaunch resets)
+
+// === SESSION-LEVEL CAROUSEL CACHES ===
+// These selections are computed once per app launch and reused across home page visits.
+// They are only invalidated by a full app restart (page reload) or a library scan.
+let _sessionDiscoverSelection = null    // Array of albumKeys for Discover carousel
+let _sessionHiResSelection = null       // Array of albumKeys for Audiophile Quality carousel
+let _sessionLongAlbumsSelection = null  // Array of {key, album, duration} for Long Albums carousel
+let _sessionRandomMixSelection = null   // Array of albumKeys for Random Mix carousel
+
+// Called on scan_complete to force re-computation
+export function invalidateSessionCarouselCaches() {
+  _sessionDiscoverSelection = null
+  _sessionHiResSelection = null
+  _sessionLongAlbumsSelection = null
+  _sessionRandomMixSelection = null
+}
 
 // ============================================================
 // INIT
@@ -422,6 +438,25 @@ async function generateDiscoveryMixes() {
         const validMixes = parsed.mixes.filter(mix =>
           mix.tracks.some(path => pathSet.has(path))
         )
+        // Rebuild coverCandidates if missing (old cache format)
+        for (const mix of validMixes) {
+          if (!mix.coverCandidates) {
+            const candidates = []
+            const seen = new Set()
+            for (const trackPath of mix.tracks) {
+              const track = library.tracks.find(t => t.path === trackPath)
+              if (!track?.metadata?.album) continue
+              const albumName = track.metadata.album.trim().normalize('NFC')
+              if (seen.has(albumName)) continue
+              seen.add(albumName)
+              const albumObj = library.albums[albumName]
+              candidates.push(albumObj?.coverPath || trackPath)
+              if (candidates.length >= 5) break
+            }
+            mix.coverCandidates = candidates.length > 0 ? candidates : [mix.coverPath]
+            mix.coverPath = candidates[0] || mix.coverPath
+          }
+        }
         if (validMixes.length > 0) {
           discoveryMixes = validMixes
           // Peupler le cache mémoire pour éviter ce chemin à la prochaine navigation
@@ -511,7 +546,26 @@ async function generateDiscoveryMixes() {
       }
     }
 
-    const coverTrack = mixTracks[Math.floor(Math.random() * mixTracks.length)]
+    // Pick cover: prefer album coverPath (more reliable), fallback to track paths
+    // Try up to 5 different tracks from different albums to maximize cover hit rate
+    // Note: library.albums keys are normalizeKey(albumName) only, NOT "artist — album"
+    const coverCandidates = []
+    const seenAlbumsForCover = new Set()
+    for (const track of mixTracks) {
+      const albumName = (track.metadata?.album || 'Unknown Album').trim().normalize('NFC')
+      if (seenAlbumsForCover.has(albumName)) continue
+      seenAlbumsForCover.add(albumName)
+      const albumObj = library.albums[albumName]
+      if (albumObj?.coverPath) {
+        coverCandidates.push(albumObj.coverPath)
+      } else {
+        coverCandidates.push(track.path)
+      }
+      if (coverCandidates.length >= 5) break
+    }
+    if (coverCandidates.length === 0) {
+      coverCandidates.push(mixTracks[0].path)
+    }
 
     const decadeLabel = combo.decade >= 2000
       ? combo.decade.toString()
@@ -524,7 +578,8 @@ async function generateDiscoveryMixes() {
       decade: combo.decade,
       decadeLabel,
       tracks: mixTracks.map(t => t.path),
-      coverPath: coverTrack.path,
+      coverPath: coverCandidates[0],
+      coverCandidates,
       trackCount: mixTracks.length
     }
   })
@@ -620,9 +675,9 @@ export function displayMixPage(mix) {
   })
 
   pageContainer.querySelector('.add-mix-queue-btn').addEventListener('click', () => {
-    for (const track of mixTracks) {
-      app.addToQueue(track)
-    }
+    queue.items.unshift(...mixTracks)
+    app.updateQueueDisplay()
+    app.updateQueueIndicators()
     showToast(`${mix.title} added to queue`)
   })
 
@@ -645,12 +700,50 @@ export function displayMixPage(mix) {
         <span class="track-artist">${escapeHtml(trackArtist)}</span>
       </div>
       <span class="track-duration">${duration}</span>
+      <button class="track-add-playlist" title="Add to playlist">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
+        </svg>
+      </button>
+      <button class="track-add-queue${queue.items.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
+        </svg>
+      </button>
     `
 
-    trackItem.addEventListener('click', (e) => {
-      if (e.target.closest('.favorite-btn')) return
+    trackItem.addEventListener('dblclick', (e) => {
+      if (e.target.closest('button')) return
       const globalIndex = library.tracks.findIndex(t => t.path === track.path)
-      if (globalIndex !== -1) app.playTrack(globalIndex)
+      if (globalIndex !== -1) {
+        const mixTrackPaths = mixTracks.map(t => t.path)
+        app.playTrack(globalIndex, { type: 'mix', id: null, tracks: mixTrackPaths })
+      }
+    })
+
+    trackItem.querySelector('.track-add-queue').addEventListener('click', (e) => {
+      e.stopPropagation()
+      app.addToQueue(track)
+      app.showQueueNotification(`"${escapeHtml(trackTitle)}" added to queue`)
+      trackItem.querySelector('.track-add-queue').classList.add('in-queue')
+    })
+
+    trackItem.querySelector('.track-add-playlist').addEventListener('click', (e) => {
+      e.stopPropagation()
+      app.showAddToPlaylistMenu(e, track)
+    })
+
+    const favBtn = trackItem.querySelector('.track-favorite-btn')
+    if (favBtn) {
+      favBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        app.toggleFavorite(track.path, favBtn)
+      })
+    }
+
+    trackItem.addEventListener('mousedown', (e) => {
+      if (e.target.closest('button')) return
+      app.prepareCustomDrag(e, track, trackItem)
     })
 
     trackItem.addEventListener('contextmenu', (e) => {
@@ -677,10 +770,8 @@ function playMixTracks(mixTracks) {
   const firstTrack = mixTracks[0]
   const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
   if (globalIndex !== -1) {
-    for (let i = 1; i < mixTracks.length; i++) {
-      app.addToQueue(mixTracks[i])
-    }
-    app.playTrack(globalIndex)
+    const mixTrackPaths = mixTracks.map(t => t.path)
+    app.playTrack(globalIndex, { type: 'mix', id: null, tracks: mixTrackPaths })
   }
 }
 
@@ -806,24 +897,25 @@ export function displayAlbumPage(albumKey) {
           </div>`
         : `<span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>`
       }
+      <span class="track-duration">${duration}</span>
+      <button class="track-add-playlist" title="Add to playlist">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
+        </svg>
+      </button>
       <button class="track-add-queue${queue.items.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
         </svg>
       </button>
-      <button class="track-add-playlist" title="Add to playlist">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 5v14"/><path d="M5 12h14"/>
-        </svg>
-      </button>
-      <span class="track-duration">${duration}</span>
     `
 
     trackItem.addEventListener('dblclick', () => {
       const globalIndex = library.tracks.findIndex(t => t.path === track.path)
       if (globalIndex !== -1) {
         playback.currentPlayingAlbumKey = albumKey
-        app.playTrack(globalIndex)
+        const albumTrackPaths = album.tracks.map(t => t.path)
+        app.playTrack(globalIndex, { type: 'album', id: albumKey, tracks: albumTrackPaths })
       }
     })
 
@@ -1075,7 +1167,8 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
     const trackPath = trackItem.dataset.trackPath
     const globalIndex = library.tracks.findIndex(t => t.path === trackPath)
     if (globalIndex !== -1) {
-      app.playTrack(globalIndex)
+      const albumTrackPaths = album.tracks.map(t => t.path)
+      app.playTrack(globalIndex, { type: 'album', id: albumKey, tracks: albumTrackPaths })
       updateAlbumTracksHighlight()
     }
   })
@@ -1117,9 +1210,7 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
   })
   ui.albumDetailDiv.querySelector('.add-album-queue-btn').addEventListener('click', () => {
     if (ui.selectedAlbumKey) {
-      const alb = library.albums[ui.selectedAlbumKey]
-      alb.tracks.forEach(track => app.addToQueue(track))
-      app.showQueueNotification(`${alb.tracks.length} tracks added to queue`)
+      app.addAlbumToQueue(ui.selectedAlbumKey)
     }
   })
 
@@ -1366,17 +1457,30 @@ export async function displayHomeView() {
 
 
     for (const entry of uniqueTracks) {
-      // Lookup album : clé composite artiste — album (cohérent avec groupTracksIntoAlbumsAndArtists)
-      const albumKey = (entry.artist || 'Unknown Artist') + ' \u2014 ' + (entry.album || 'Unknown Album')
-      let album = library.albums[albumKey]
+      // Lookup album : la clé dans library.albums est normalizeKey(albumName) seulement (pas artist — album)
+      const normalizedAlbum = (entry.album || 'Unknown Album').trim().normalize('NFC')
+      let album = library.albums[normalizedAlbum]
+      if (!album) {
+        // Fallback: try with artist — album key (ancien format) then linear scan
+        const compositeKey = (entry.artist || 'Unknown Artist').trim().normalize('NFC') + ' \u2014 ' + normalizedAlbum
+        album = library.albums[compositeKey]
+      }
       if (!album && entry.album) {
-        // Fallback: linear scan by .album + .artist properties (listening history may have different formatting)
+        // Fallback: linear scan by .album property (listening history may have different formatting)
         for (const key of Object.keys(library.albums)) {
           const a = library.albums[key]
-          if (a.album === entry.album && (a.artist === entry.artist || a.isVariousArtists)) {
+          if (a.album === normalizedAlbum || a.album === entry.album) {
             album = a
             break
           }
+        }
+      }
+      // Last resort: find via track path in library
+      if (!album && entry.path) {
+        const track = library.tracks.find(t => t.path === entry.path)
+        if (track?.metadata?.album) {
+          const key = track.metadata.album.trim().normalize('NFC') || 'Unknown Album'
+          album = library.albums[key]
         }
       }
 
@@ -1399,21 +1503,23 @@ export async function displayHomeView() {
 
       const coverPath = (album && album.coverPath) ? album.coverPath : entry.path
       if (img && placeholder) {
-        // Handlers onload/onerror pour s'assurer que le placeholder est géré
-        // même si l'image noir:// échoue après que loadThumbnailAsync ait mis display:block
-        img.onload = () => {
-          img.style.display = 'block'
-          placeholder.style.display = 'none'
-        }
-        img.onerror = () => {
-          img.style.display = 'none'
-          placeholder.style.display = 'flex'
-        }
         // Essayer le cache avec coverPath, puis avec entry.path en fallback
         const cachedCover = caches.coverCache.get(coverPath) || caches.thumbnailCache.get(coverPath)
           || (coverPath !== entry.path && (caches.coverCache.get(entry.path) || caches.thumbnailCache.get(entry.path)))
         if (!loadCachedImage(img, placeholder, cachedCover)) {
-          app.loadThumbnailAsync(coverPath, img, entry.artist, entry.album)
+          // Load with fallback: try album coverPath first, then entry.path
+          app.loadThumbnailAsync(coverPath, img, entry.artist, entry.album).then(() => {
+            if (img.isConnected && img.style.display === 'block') {
+              placeholder.style.display = 'none'
+            } else if (coverPath !== entry.path && img.isConnected) {
+              // Album cover failed, try the track file directly
+              app.loadThumbnailAsync(entry.path, img, entry.artist, entry.album).then(() => {
+                if (img.isConnected && img.style.display === 'block') {
+                  placeholder.style.display = 'none'
+                }
+              })
+            }
+          })
         }
       }
 
@@ -1450,7 +1556,7 @@ export async function displayHomeView() {
 
       const newHeader = document.createElement('h2')
       newHeader.className = 'home-section-title'
-      newHeader.textContent = 'New Releases'
+      newHeader.textContent = 'Recently Added'
       newSection.appendChild(newHeader)
 
       const newCarousel = document.createElement('div')
@@ -1473,10 +1579,20 @@ export async function displayHomeView() {
 
   // === 4. Discover carousel (unplayed albums) ===
   // Compare by album name (from listening history) against each album's .album property
+  // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
   const playedAlbumNames = new Set(allPlayedAlbums.map(e => e?.album || ''))
   const unplayedAlbums = Object.keys(library.albums).filter(key => !playedAlbumNames.has(library.albums[key]?.album))
 
   if (unplayedAlbums.length > 0) {
+    const { carousel: maxCarousel } = getResponsiveItemCount()
+
+    // Use session cache if available, otherwise compute and cache
+    if (!_sessionDiscoverSelection || _sessionDiscoverSelection.every(k => !library.albums[k])) {
+      const shuffled = [...unplayedAlbums].sort(() => Math.random() - 0.5)
+      _sessionDiscoverSelection = shuffled.slice(0, maxCarousel)
+    }
+    const selection = _sessionDiscoverSelection.slice(0, maxCarousel)
+
     const discoverSection = document.createElement('section')
     discoverSection.className = 'home-section'
     discoverSection.id = 'home-decouvrir-section'
@@ -1489,10 +1605,6 @@ export async function displayHomeView() {
     const carousel = document.createElement('div')
     carousel.className = 'home-carousel'
     carousel.id = 'decouvrir-carousel'
-
-    const { carousel: maxCarousel } = getResponsiveItemCount()
-    const shuffled = [...unplayedAlbums].sort(() => Math.random() - 0.5)
-    const selection = shuffled.slice(0, maxCarousel)
 
     for (const aKey of selection) {
       const album = library.albums[aKey]
@@ -1550,6 +1662,7 @@ export async function displayHomeView() {
   }
 
   // === 6. Audiophile Quality carousel ===
+  // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
   const hiResAlbumKeys = Object.keys(library.albums).filter(key => {
     const album = library.albums[key]
     return album.tracks.some(track => {
@@ -1559,7 +1672,12 @@ export async function displayHomeView() {
     })
   })
 
-  const hiResSelection = hiResAlbumKeys.reverse().slice(0, 25)
+  // Use session cache if available, otherwise shuffle and cache
+  if (!_sessionHiResSelection || _sessionHiResSelection.every(k => !library.albums[k])) {
+    const shuffled = [...hiResAlbumKeys].sort(() => Math.random() - 0.5)
+    _sessionHiResSelection = shuffled.slice(0, 25)
+  }
+  const hiResSelection = _sessionHiResSelection
 
   if (hiResSelection.length > 0) {
     const hiResSection = document.createElement('section')
@@ -1617,6 +1735,7 @@ export async function displayHomeView() {
   }
 
   // === 7. Long Albums carousel (> 60 minutes) ===
+  // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
   const longAlbumKeys = Object.keys(library.albums).filter(key => {
     const album = library.albums[key]
     const totalDuration = album.tracks.reduce((sum, track) => {
@@ -1626,6 +1745,17 @@ export async function displayHomeView() {
   })
 
   if (longAlbumKeys.length >= 3) {
+    // Use session cache if available, otherwise shuffle and cache
+    if (!_sessionLongAlbumsSelection || _sessionLongAlbumsSelection.every(s => !library.albums[s.key])) {
+      const withDuration = longAlbumKeys.map(key => {
+        const album = library.albums[key]
+        const totalDuration = album.tracks.reduce((sum, t) => sum + (t.metadata?.duration || 0), 0)
+        return { key, album, duration: totalDuration }
+      })
+      const shuffled = withDuration.sort(() => Math.random() - 0.5)
+      _sessionLongAlbumsSelection = shuffled.slice(0, 15)
+    }
+
     const longSection = document.createElement('section')
     longSection.className = 'home-section'
 
@@ -1637,14 +1767,7 @@ export async function displayHomeView() {
     const longCarousel = document.createElement('div')
     longCarousel.className = 'home-carousel'
 
-    const sortedByDuration = longAlbumKeys
-      .map(key => {
-        const album = library.albums[key]
-        const totalDuration = album.tracks.reduce((sum, t) => sum + (t.metadata?.duration || 0), 0)
-        return { key, album, duration: totalDuration }
-      })
-      .sort((a, b) => b.duration - a.duration)
-      .slice(0, 15)
+    const sortedByDuration = _sessionLongAlbumsSelection
 
     for (const { key: aKey, album, duration } of sortedByDuration) {
       if (!album) continue
@@ -1756,8 +1879,14 @@ export async function displayHomeView() {
   }
 
   // === 9. Random Mix ===
+  // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
   const allAlbumKeys = Object.keys(library.albums)
   if (allAlbumKeys.length >= 10) {
+    // Use session cache if available, otherwise shuffle and cache
+    if (!_sessionRandomMixSelection || _sessionRandomMixSelection.every(k => !library.albums[k])) {
+      _sessionRandomMixSelection = [...allAlbumKeys].sort(() => Math.random() - 0.5).slice(0, 12)
+    }
+
     const mixSection = document.createElement('section')
     mixSection.className = 'home-section'
 
@@ -1769,7 +1898,7 @@ export async function displayHomeView() {
     const mixCarousel = document.createElement('div')
     mixCarousel.className = 'home-carousel'
 
-    const shuffledAlbums = [...allAlbumKeys].sort(() => Math.random() - 0.5).slice(0, 12)
+    const shuffledAlbums = _sessionRandomMixSelection
 
     for (const aKey of shuffledAlbums) {
       const album = library.albums[aKey]
@@ -1816,10 +1945,17 @@ export async function displayHomeView() {
       const img = item.querySelector('.discovery-mix-bg-img')
       const placeholder = item.querySelector('.carousel-cover-placeholder')
 
-      if (mix.coverPath && img && placeholder) {
-        const cachedCover = caches.coverCache.get(mix.coverPath) || caches.thumbnailCache.get(mix.coverPath)
+      // Load cover using same pattern as createCarouselAlbumItem (proven working)
+      const coverPath = mix.coverPath || (mix.coverCandidates && mix.coverCandidates[0])
+      if (coverPath && img && placeholder) {
+        const firstTrackPath = mix.tracks[0]
+        const firstTrack = library.tracks.find(t => t.path === firstTrackPath)
+        const mixArtist = firstTrack?.metadata?.artist || ''
+        const mixAlbum = firstTrack?.metadata?.album || ''
+
+        const cachedCover = caches.coverCache.get(coverPath)
         if (!loadCachedImage(img, placeholder, cachedCover)) {
-          app.loadThumbnailAsync(mix.coverPath, img, '', '').then(() => {
+          app.loadThumbnailAsync(coverPath, img, mixArtist, mixAlbum).then(() => {
             if (img.isConnected && img.style.display === 'block') {
               placeholder.style.display = 'none'
             }
@@ -2535,7 +2671,8 @@ export function displayArtistPage(artistKey) {
       const firstTrack = artist.tracks[0]
       const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
       if (globalIndex !== -1) {
-        app.playTrack(globalIndex)
+        const artistTrackPaths = artist.tracks.map(t => t.path)
+        app.playTrack(globalIndex, { type: 'mix', id: artist.name, tracks: artistTrackPaths })
       }
     }
   })
@@ -2662,7 +2799,8 @@ export function displayArtistPage(artistKey) {
       trackItem.addEventListener('dblclick', () => {
         const globalIndex = library.tracks.findIndex(t => t.path === track.path)
         if (globalIndex !== -1) {
-          app.playTrack(globalIndex)
+          const looseTrackPaths = looseTracks.map(t => t.path)
+          app.playTrack(globalIndex, { type: 'mix', id: artist.name + '/loose', tracks: looseTrackPaths })
         }
       })
 
@@ -3082,7 +3220,7 @@ export function displayTracksGrid() {
     const trackPath = trackItem.dataset.trackPath
     const entry = library.tracksByPath.get(trackPath)
     if (entry) {
-      app.playTrack(entry.index)
+      app.playTrack(entry.index, { type: 'library', id: null, tracks: ui.tracksViewOrder })
     }
   })
 

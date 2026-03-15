@@ -21,9 +21,9 @@ let contextMenuAbort = null
 // QUEUE FUNCTIONS
 // ============================================================================
 
-// Add a track to the end of the queue
+// Add a track right after the current track (position 0 in queue = plays next)
 export function addToQueue(track) {
-  queue.items.push(track)
+  queue.items.unshift(track)
   updateQueueDisplay()
   updateQueueIndicators()
   showQueueNotification(`"${track.metadata?.title || track.name}" added to queue`)
@@ -406,7 +406,9 @@ export function showAlbumContextMenu(e, albumKey) {
   })
 
   menu.querySelector('[data-action="add-album-queue"]').addEventListener('click', () => {
-    album.tracks.forEach(track => addToQueue(track))
+    queue.items.unshift(...album.tracks)
+    updateQueueDisplay()
+    updateQueueIndicators()
     showQueueNotification(`${album.tracks.length} tracks added to queue`)
     menu.remove()
   })
@@ -556,11 +558,13 @@ function handleContextMenuAction(action) {
   switch (action) {
     case 'play':
       if (isMulti) {
-        // Multi: play the first, add the rest to queue
+        // Multi: play the first, add the rest to queue (in order)
         const firstIdx = library.tracks.findIndex(t => t.path === contextMenu.tracks[0].path)
         if (firstIdx !== -1) app.playTrack(firstIdx)
-        for (let i = 1; i < contextMenu.tracks.length; i++) {
-          addToQueue(contextMenu.tracks[i])
+        if (contextMenu.tracks.length > 1) {
+          queue.items.unshift(...contextMenu.tracks.slice(1))
+          updateQueueDisplay()
+          updateQueueIndicators()
         }
       } else {
         const idx = library.tracks.findIndex(t => t.path === contextMenu.tracks[0].path)
@@ -569,9 +573,13 @@ function handleContextMenuAction(action) {
       break
 
     case 'add-to-queue':
-      contextMenu.tracks.forEach(track => addToQueue(track))
       if (isMulti) {
+        queue.items.unshift(...contextMenu.tracks)
+        updateQueueDisplay()
+        updateQueueIndicators()
         showQueueNotification(`${contextMenu.tracks.length} tracks added to queue`)
+      } else {
+        addToQueue(contextMenu.tracks[0])
       }
       break
 

@@ -51,6 +51,10 @@ export const playback = {
   // null      → indéterminé → comportement conservateur (s'arrête en fin d'album)
   playbackContext: null,
   currentPlaylistId: null,  // ID de la playlist en cours de lecture (pour repeat-all / prev)
+  // Auto-queue : source de données pour le remplissage automatique de la queue
+  // { type: 'album'|'library'|'playlist'|'mix', id: string|null, tracks: string[] }
+  autoQueueSource: null,
+  autoQueueIndex: 0,        // index de la track courante dans autoQueueSource.tracks
 };
 
 // === LIBRARY DATA ===
