@@ -705,7 +705,16 @@ export function displayMixPage(mix) {
     trackItem.addEventListener('click', (e) => {
       if (e.target.closest('.favorite-btn')) return
       const globalIndex = library.tracks.findIndex(t => t.path === track.path)
-      if (globalIndex !== -1) app.playTrack(globalIndex)
+      if (globalIndex !== -1) {
+        // Clear queue and add remaining mix tracks after the clicked one
+        queue.items.length = 0
+        for (let i = idx + 1; i < mixTracks.length; i++) {
+          app.addToQueue(mixTracks[i])
+        }
+        app.updateQueueDisplay()
+        app.updateQueueIndicators()
+        app.playTrack(globalIndex)
+      }
     })
 
     trackItem.addEventListener('contextmenu', (e) => {
@@ -732,9 +741,12 @@ function playMixTracks(mixTracks) {
   const firstTrack = mixTracks[0]
   const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
   if (globalIndex !== -1) {
+    queue.items.length = 0
     for (let i = 1; i < mixTracks.length; i++) {
       app.addToQueue(mixTracks[i])
     }
+    app.updateQueueDisplay()
+    app.updateQueueIndicators()
     app.playTrack(globalIndex)
   }
 }
