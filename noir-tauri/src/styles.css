@@ -5090,6 +5090,11 @@ body:not(.player-visible) .queue-panel {
   margin: 6px 0;
 }
 
+.context-menu-item.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
 .context-menu-item-danger {
   color: #ff6b6b;
 }
@@ -6595,6 +6600,260 @@ body:not(.player-visible) .track-info-panel {
   font-size: 14px;
   margin: 0 0 20px;
   line-height: 1.5;
+}
+
+/* DAP Sync Modal */
+.dap-modal-content {
+  max-width: 400px;
+  width: 100%;
+  padding: 28px;
+  border-radius: 16px;
+  background: #141414;
+  border: 1px solid #252525;
+}
+
+/* Hero section: centered icon + title */
+.dap-modal-hero {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.dap-modal-icon-centered {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  margin-bottom: 14px;
+}
+
+/* Animated sync arrows ring */
+.dap-modal-sync-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 72px;
+  height: 72px;
+  margin: -36px 0 0 -36px;
+  animation: dapSyncRingSpin 6s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes dapSyncRingSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dap-modal-sync-ring { animation: none; }
+}
+
+.dap-modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: -0.01em;
+}
+
+.dap-modal-subtitle {
+  font-size: 12px;
+  color: #555;
+  margin-top: 3px;
+}
+
+/* Content card: album artwork + info */
+.dap-modal-content-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid #1e1e1e;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+
+/* Album artwork in modal */
+.dap-modal-artwork {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  flex-shrink: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555;
+}
+.dap-modal-artwork-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 6px;
+}
+.dap-modal-artwork-placeholder {
+  opacity: 0.5;
+}
+
+.dap-modal-content-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dap-modal-content-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #ddd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dap-modal-content-sub {
+  font-size: 11px;
+  color: #666;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Section label */
+.dap-modal-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+
+/* Destination card selector (NAS-discovery inspired) */
+.dap-modal-dest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 20px;
+}
+
+.dap-modal-dest-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.dap-modal-dest-card:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.dap-modal-dest-card.active {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: #444;
+}
+
+.dap-modal-dest-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #888;
+  flex-shrink: 0;
+}
+.dap-modal-dest-card.active .dap-modal-dest-card-icon {
+  color: #fff;
+}
+
+.dap-modal-dest-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dap-modal-dest-card-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #aaa;
+}
+.dap-modal-dest-card.active .dap-modal-dest-card-name {
+  color: #fff;
+}
+
+.dap-modal-dest-card-space {
+  font-size: 10.5px;
+  color: #555;
+  margin-top: 1px;
+}
+
+.dap-modal-dest-card-check {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  flex-shrink: 0;
+}
+.dap-modal-dest-card.active .dap-modal-dest-card-check {
+  color: #fff;
+}
+
+/* Actions */
+.dap-modal-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.dap-modal-btn-secondary {
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid #2a2a2a;
+  background: transparent;
+  color: #aaa;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.dap-modal-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #ccc;
+  border-color: #3a3a3a;
+}
+
+.dap-modal-btn-primary {
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: none;
+  background: #fff;
+  color: #0a0a0a;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s, transform 0.1s;
+}
+.dap-modal-btn-primary:hover {
+  background: #e5e5e5;
+}
+.dap-modal-btn-primary:active {
+  transform: scale(0.97);
 }
 
 /* === BOUTON AJOUTER À PLAYLIST (sur les tracks) === */
@@ -9652,55 +9911,43 @@ body:not(.player-visible) .track-info-panel {
   margin-bottom: 20px;
 }
 
-.dap-stepper {
+/* Phase indicator (replaces stepper dots) */
+.dap-phase-indicator {
   display: flex;
   align-items: center;
   gap: 8px;
   justify-content: center;
-  margin-bottom: 28px;
+  margin-bottom: 24px;
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  border: 1px solid #1e1e1e;
 }
 
-.dap-step-dot {
-  width: 22px;
-  height: 22px;
+.dap-phase-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.dap-step-dot.done {
-  background: #4ade80;
-  color: #000;
-}
-
-.dap-step-dot.current {
   background: #fff;
-  color: #000;
+  flex-shrink: 0;
+  animation: dapPhasePulse 1.5s ease-in-out infinite;
 }
 
-.dap-step-dot.pending {
-  background: var(--color-bg-hover);
-  color: var(--color-text-faint);
-  border: 1px solid var(--color-border-light);
+@keyframes dapPhasePulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 
-.dap-step-line {
-  width: 20px;
-  height: 1px;
-  background: var(--color-border-light);
+@media (prefers-reduced-motion: reduce) {
+  .dap-phase-dot { animation: none; opacity: 0.8; }
 }
 
-.dap-step-label {
-  font-size: 11px;
-  margin-right: 4px;
+.dap-phase-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: #ccc;
+  letter-spacing: 0.01em;
 }
-
-.dap-step-label.done { color: #4ade80; }
-.dap-step-label.current { color: #fff; font-weight: 600; }
-.dap-step-label.pending { color: var(--color-text-faint); }
 
 .dap-sync-progress-area {
   width: 100%;
