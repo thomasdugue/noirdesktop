@@ -5,7 +5,7 @@
 import { invoke, listen } from './state.js'
 import { library, ui, dom } from './state.js'
 import { app } from './app.js'
-import { showToast } from './utils.js'
+import { showToast, escapeHtml } from './utils.js'
 import { formatQuality } from './utils.js'
 
 // === LOCAL STATE ===
@@ -16,6 +16,7 @@ let selectedAlbums = new Set()
 let syncPlan = null
 let isSyncing = false
 let mountedVolumes = new Set()
+let _externalVolumes = [] // Full ExternalVolume objects from last refresh
 let dapSubView = 'setup' // setup | albums | syncing | complete | disconnected | settings | first-sync
 let syncProgress = { phase: '', current: 0, total: 0, currentFile: '', bytesCopied: 0, totalBytes: 0 }
 let syncResult = null
@@ -105,6 +106,107 @@ function albumKeyToId(albumKey) {
   return Math.abs(hash)
 }
 
+// === CONTEXT MENU HELPERS (called via app mediator from panels.js) ===
+
+function hasDapDestination() {
+  // Has at least one configured destination (mounted or not)
+  return destinations.length > 0
+}
+
+function getMountedDestinations() {
+  return destinations.filter(d => mountedVolumes.has(d.path))
+}
+
+function isAlbumSelectedForDap(albumKey) {
+  return selectedAlbums.has(albumKeyToId(albumKey))
+}
+
+function isArtistFullySelectedForDap(artistKey) {
+  const artist = library.artists[artistKey]
+  if (!artist || !artist.albums || artist.albums.length === 0) return false
+  return artist.albums.every(ak => selectedAlbums.has(albumKeyToId(ak)))
+}
+
+function toggleAlbumDapSelection(albumKey) {
+  if (!currentDestinationId) return null
+  const albumId = albumKeyToId(albumKey)
+  let added
+  if (selectedAlbums.has(albumId)) {
+    selectedAlbums.delete(albumId)
+    added = false
+  } else {
+    selectedAlbums.add(albumId)
+    added = true
+  }
+  updateSelectAllCheckbox()
+  // Flush save immediately (no debounce) so navigating to DAP page sees the change
+  clearTimeout(_saveSelectionsTimer)
+  _doSaveSelections()
+  updateSyncNowButton()
+  debouncedComputeAndRenderSummary()
+  return added
+}
+
+function toggleArtistDapSelection(artistKey) {
+  if (!currentDestinationId) return null
+  const artist = library.artists[artistKey]
+  if (!artist || !artist.albums || artist.albums.length === 0) return null
+  const albumIds = artist.albums.map(ak => albumKeyToId(ak))
+  const allSelected = albumIds.every(id => selectedAlbums.has(id))
+  if (allSelected) {
+    albumIds.forEach(id => selectedAlbums.delete(id))
+  } else {
+    albumIds.forEach(id => selectedAlbums.add(id))
+  }
+  updateSelectAllCheckbox()
+  // Flush save immediately (no debounce) so navigating to DAP page sees the change
+  clearTimeout(_saveSelectionsTimer)
+  _doSaveSelections()
+  updateSyncNowButton()
+  debouncedComputeAndRenderSummary()
+  return { added: !allSelected, count: artist.albums.length }
+}
+
+// Toggle albums on a SPECIFIC destination (used by modal when user picks a different dest)
+async function toggleAlbumsOnDest(albumKeys, destId, action) {
+  // action: 'add' | 'remove'
+  const albumIds = albumKeys.map(k => albumKeyToId(k))
+  if (destId === currentDestinationId) {
+    // Same dest as current — use in-memory selectedAlbums
+    for (const id of albumIds) {
+      if (action === 'add') selectedAlbums.add(id)
+      else selectedAlbums.delete(id)
+    }
+    updateSelectAllCheckbox()
+    clearTimeout(_saveSelectionsTimer)
+    _doSaveSelections()
+    updateSyncNowButton()
+    debouncedComputeAndRenderSummary()
+  } else {
+    // Different dest — load its selections, modify, save back via batch IPC
+    try {
+      const existingSelections = await invoke('dap_get_selections', { destinationId: destId })
+      const selMap = new Map()
+      if (existingSelections) {
+        for (const s of existingSelections) selMap.set(s.albumId, s.selected)
+      }
+      for (const id of albumIds) {
+        selMap.set(id, action === 'add')
+      }
+      // Build full selection list (include all known albums for consistency)
+      const allAlbumIds = Object.keys(library.albums).map(k => albumKeyToId(k))
+      const selections = allAlbumIds.map(id => {
+        if (selMap.has(id)) return [id, selMap.get(id)]
+        // Not in DB yet — default to true (same as loadSelections first-use behavior)
+        return [id, true]
+      })
+      await invoke('dap_save_selections_batch', { destinationId: destId, selections })
+    } catch (e) {
+      console.error('[DAP] Failed to toggle on dest', destId, e)
+    }
+  }
+}
+
 function getAlbumQuality(album) {
   const firstTrack = album.tracks[0]
   if (!firstTrack?.metadata) return { label: '-', class: '' }
@@ -121,11 +223,6 @@ function getQualityRank(cls) {
   return 0
 }
 
-function escapeHtml(str) {
-  const el = document.createElement('span')
-  el.textContent = str
-  return el.innerHTML
-}
 
 function getCurrentDest() {
   return destinations.find(d => d.id === currentDestinationId)
@@ -197,10 +294,8 @@ function renderSidebarDestinations() {
 
   if (destinations.length === 0) {
     container.innerHTML = `
-      <div class="sb-dap-empty">No devices configured</div>
-      <button class="sb-dap-add-cta" id="dap-add-dest-cta">+ Add destination</button>
+      <div class="sb-dap-empty">No device connected</div>
     `
-    container.querySelector('#dap-add-dest-cta')?.addEventListener('click', addDestination)
     return
   }
 
@@ -264,6 +359,7 @@ async function refreshMountedVolumes() {
   try {
     const volumes = await invoke('dap_list_external_volumes')
     mountedVolumes.clear()
+    _externalVolumes = volumes
     for (const v of volumes) {
       mountedVolumes.add(v.path)
       // Store free/total bytes on destinations
@@ -273,6 +369,42 @@ async function refreshMountedVolumes() {
           d._totalBytes = v.totalBytes
         }
       }
+    }
+    // Auto-create destinations for new removable volumes not yet configured
+    for (const v of volumes) {
+      const alreadyConfigured = destinations.some(d => d.path === v.path)
+      if (!alreadyConfigured) {
+        try {
+          const dest = {
+            name: v.name,
+            path: v.path,
+            volumeName: v.name,
+            folderStructure: 'artist_album_track',
+            mirrorMode: true,
+            showInSidebar: true,
+          }
+          await invoke('dap_save_destination', { dest })
+        } catch (e) {
+          // Path already exists (UNIQUE constraint) or other error — skip silently
+          console.warn('[DAP] Auto-create destination failed for', v.name, e)
+        }
+      }
+    }
+    // Reload destinations if any were auto-created
+    const hadNew = volumes.some(v => !destinations.some(d => d.path === v.path))
+    if (hadNew) {
+      try {
+        destinations = await invoke('dap_get_destinations')
+        // Re-apply free/total bytes
+        for (const v of volumes) {
+          for (const d of destinations) {
+            if (d.path === v.path || d.path.startsWith(v.path)) {
+              d._freeBytes = v.freeBytes
+              d._totalBytes = v.totalBytes
+            }
+          }
+        }
+      } catch (e) { /* ignore */ }
     }
   } catch (e) {
     console.error('[DAP] Failed to list volumes:', e)
@@ -1333,24 +1465,16 @@ function renderSyncingView(grid) {
   div.className = 'dap-setup-center dap-fade-in'
 
   const p = syncProgress
-  const phaseDots = ['Prepare', 'Remove', 'Copy']
-  const currentPhaseIdx = p.phase === 'copy' ? 2 : p.phase === 'delete' ? 1 : 0
-
-  let stepperHtml = '<div class="dap-stepper">'
-  phaseDots.forEach((label, i) => {
-    if (i > 0) stepperHtml += '<div class="dap-step-line"></div>'
-    const cls = i < currentPhaseIdx ? 'done' : i === currentPhaseIdx ? 'current' : 'pending'
-    const content = i < currentPhaseIdx ? '&#10003;' : (i + 1)
-    stepperHtml += `<div class="dap-step-dot ${cls}">${content}</div><span class="dap-step-label ${cls}">${label}</span>`
-  })
-  stepperHtml += '</div>'
-
+  const phaseLabel = p.phase === 'copy' ? 'Copying files' : p.phase === 'delete' ? 'Removing files' : 'Preparing'
   const pct = p.total > 0 ? (p.current / p.total * 100).toFixed(1) : 0
 
   div.innerHTML = `
     <div class="dap-trf-anim-wrap">${TRANSFORMER_SVG}</div>
     <div class="dap-syncing-label">Syncing to ${escapeHtml(deviceName)}</div>
-    ${stepperHtml}
+    <div class="dap-phase-indicator">
+      <span class="dap-phase-dot"></span>
+      <span class="dap-phase-text">${phaseLabel}</span>
+    </div>
     <div class="dap-sync-progress-area">
       <div class="dap-prog-bar"><div class="dap-prog-fill" style="width:${pct}%"></div></div>
       <div class="dap-prog-stats">
@@ -1358,7 +1482,6 @@ function renderSyncingView(grid) {
         <span>${formatBytes(p.bytesCopied)} / ${formatBytes(p.totalBytes)}</span>
       </div>
       <div class="dap-prog-file">${escapeHtml(p.currentFile || '')}</div>
-      <div class="dap-prog-time">syncing...</div>
     </div>
     <button class="dap-btn-secondary" id="dap-cancel-sync-btn">Cancel sync</button>
   `
@@ -1592,21 +1715,31 @@ function renderFirstSyncView(grid) {
 
 async function loadSelections(destId) {
   console.time('[PERF] loadSelections IPC')
-  // Always select ALL albums initially so the first sync plan computation
-  // can determine which albums are already on the DAP vs which need copying.
-  // After plan computation, _needsOnDapPreselection triggers auto-deselection
-  // of albums not yet on the device.
   selectedAlbums.clear()
-  for (const albumKey of Object.keys(library.albums)) {
-    selectedAlbums.add(albumKeyToId(albumKey))
-  }
   _needsOnDapPreselection = true
   try {
-    await invoke('dap_get_selections', { destinationId: destId })
+    const selections = await invoke('dap_get_selections', { destinationId: destId })
     console.timeEnd('[PERF] loadSelections IPC')
+    if (selections && selections.length > 0) {
+      // Use saved selections from DB
+      for (const sel of selections) {
+        if (sel.selected) selectedAlbums.add(sel.albumId)
+      }
+      _needsOnDapPreselection = false
+    } else {
+      // No selections saved yet (first sync) — select ALL albums
+      // _needsOnDapPreselection stays true for auto-deselection after first plan
+      for (const albumKey of Object.keys(library.albums)) {
+        selectedAlbums.add(albumKeyToId(albumKey))
+      }
+    }
   } catch (e) {
     console.timeEnd('[PERF] loadSelections IPC')
     console.error('[DAP] Failed to load selections (will auto-detect from DAP):', e)
+    // Fallback: select all albums
+    for (const albumKey of Object.keys(library.albums)) {
+      selectedAlbums.add(albumKeyToId(albumKey))
+    }
   }
 }
 
@@ -1771,7 +1904,7 @@ function updateSyncingProgress() {
   const fillEl = document.querySelector('.dap-prog-fill')
   const statsEl = document.querySelector('.dap-prog-stats')
   const fileEl = document.querySelector('.dap-prog-file')
-  const labelEl = document.querySelector('.dap-syncing-label')
+  const phaseTextEl = document.querySelector('.dap-phase-text')
 
   const pct = p.total > 0 ? (p.current / p.total * 100).toFixed(1) : 0
 
@@ -1779,17 +1912,9 @@ function updateSyncingProgress() {
   if (statsEl) statsEl.innerHTML = `<span>${p.current} / ${p.total} files</span><span>${formatBytes(p.bytesCopied)} / ${formatBytes(p.totalBytes)}</span>`
   if (fileEl) fileEl.textContent = p.currentFile || ''
 
-  // Update stepper dots
-  const dots = document.querySelectorAll('.dap-step-dot')
-  const labels = document.querySelectorAll('.dap-step-label')
-  const phaseIdx = p.phase === 'copy' ? 2 : p.phase === 'delete' ? 1 : 0
-  dots.forEach((dot, i) => {
-    dot.className = 'dap-step-dot ' + (i < phaseIdx ? 'done' : i === phaseIdx ? 'current' : 'pending')
-    dot.innerHTML = i < phaseIdx ? '&#10003;' : (i + 1)
-  })
-  labels.forEach((label, i) => {
-    label.className = 'dap-step-label ' + (i < phaseIdx ? 'done' : i === phaseIdx ? 'current' : 'pending')
-  })
+  // Update phase label
+  const phaseLabel = p.phase === 'copy' ? 'Copying files' : p.phase === 'delete' ? 'Removing files' : 'Preparing'
+  if (phaseTextEl) phaseTextEl.textContent = phaseLabel
 }
 
 // === SIDEBAR HEADER TOGGLE ===
@@ -1816,5 +1941,229 @@ export async function initDapSync() {
   initSidebarToggle()
 }
 
+// === DAP SYNC MODAL (Sync Now / Sync Later confirmation) ===
+
+let _dapModalAbort = null
+
+function getDapDestinationName() {
+  return getCurrentDest()?.name || 'DAP'
+}
+
+function showDapSyncModal({ albumKeys, artistName }) {
+  // Remove any existing modal
+  const existing = document.getElementById('dap-sync-modal')
+  if (existing) existing.remove()
+  if (_dapModalAbort) { _dapModalAbort.abort(); _dapModalAbort = null }
+
+  const mounted = getMountedDestinations()
+  if (mounted.length === 0) {
+    showToast('No DAP device connected')
+    return
+  }
+
+  // Default to current dest, or first mounted
+  let selectedDestId = (currentDestinationId && mounted.find(d => d.id === currentDestinationId))
+    ? currentDestinationId
+    : mounted[0].id
+
+  // Determine action (add/remove) based on current selection state for the selected dest
+  function getActionForDest(destId) {
+    if (destId === currentDestinationId) {
+      const albumIds = albumKeys.map(k => albumKeyToId(k))
+      const allSelected = albumIds.every(id => selectedAlbums.has(id))
+      return allSelected ? 'remove' : 'add'
+    }
+    return 'add'
+  }
+
+  let action = getActionForDest(selectedDestId)
+
+  // Build content info (what's being synced)
+  function buildContentInfo() {
+    if (artistName) {
+      const count = albumKeys.length
+      return { label: artistName, sub: `${count} album${count > 1 ? 's' : ''}` }
+    } else if (albumKeys.length === 1) {
+      const album = library.albums[albumKeys[0]]
+      const artistLabel = album?.artist || ''
+      return { label: album?.album || 'Album', sub: artistLabel }
+    } else {
+      return { label: `${albumKeys.length} albums`, sub: '' }
+    }
+  }
+
+  // Destination selector — NAS-discovery-inspired cards
+  const showDestSelector = mounted.length > 1
+  function buildDestSelectorHtml() {
+    if (!showDestSelector) return ''
+    return `
+      <div class="dap-modal-section-label">Destination</div>
+      <div class="dap-modal-dest-list">
+        ${mounted.map(d => {
+          const freeLabel = d._freeBytes ? formatBytes(d._freeBytes) + ' free' : ''
+          return `
+          <div class="dap-modal-dest-card${d.id === selectedDestId ? ' active' : ''}" data-dest-id="${d.id}">
+            <div class="dap-modal-dest-card-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="1" width="14" height="22" rx="2.5"/>
+                <rect x="7" y="3" width="10" height="8" rx="1"/>
+                <circle cx="12" cy="17" r="3.5"/>
+                <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"/>
+              </svg>
+            </div>
+            <div class="dap-modal-dest-card-info">
+              <div class="dap-modal-dest-card-name">${escapeHtml(d.name)}</div>
+              ${freeLabel ? `<div class="dap-modal-dest-card-space">${freeLabel}</div>` : ''}
+            </div>
+            <div class="dap-modal-dest-card-check">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+          </div>`
+        }).join('')}
+      </div>
+    `
+  }
+
+  const info = buildContentInfo()
+  const title = action === 'add' ? 'Add to DAP' : 'Remove from DAP'
+  const destLabel = showDestSelector ? 'Choose destination device' : ('to ' + escapeHtml(mounted[0]?.name || 'DAP'))
+
+  // Get album cover info for artwork display
+  let coverAlbumKey = albumKeys[0] || null
+  const coverAlbum = coverAlbumKey ? library.albums[coverAlbumKey] : null
+
+  const modal = document.createElement('div')
+  modal.id = 'dap-sync-modal'
+  modal.className = 'modal'
+  modal.innerHTML = `
+    <div class="modal-backdrop"></div>
+    <div class="modal-content dap-modal-content">
+      <div class="dap-modal-hero">
+        <div class="dap-modal-icon-centered">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="1" width="14" height="22" rx="2.5"/>
+            <rect x="7" y="3" width="10" height="8" rx="1"/>
+            <path d="M10 6l3 1.5-3 1.5V6z" fill="currentColor" stroke="none"/>
+            <circle cx="12" cy="17" r="3.5"/>
+            <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"/>
+          </svg>
+          <div class="dap-modal-sync-ring">
+            <svg width="72" height="72" viewBox="0 0 72 72" fill="none">
+              <path d="M56 28a22 22 0 0 0-40 0" stroke="rgba(255,255,255,0.18)" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M16 44a22 22 0 0 0 40 0" stroke="rgba(255,255,255,0.18)" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M55 28l3-3.5M55 28l-4-2" stroke="rgba(255,255,255,0.3)" stroke-width="1.3" stroke-linecap="round"/>
+              <path d="M17 44l-3 3.5M17 44l4 2" stroke="rgba(255,255,255,0.3)" stroke-width="1.3" stroke-linecap="round"/>
+            </svg>
+          </div>
+        </div>
+        <div class="dap-modal-title">${title}</div>
+        <div class="dap-modal-subtitle">${destLabel}</div>
+      </div>
+
+      <div class="dap-modal-content-card">
+        <div class="dap-modal-artwork" id="dap-modal-artwork-wrap">
+          <svg class="dap-modal-artwork-placeholder" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/>
+          </svg>
+        </div>
+        <div class="dap-modal-content-info">
+          <div class="dap-modal-content-name">${escapeHtml(info.label)}</div>
+          ${info.sub ? `<div class="dap-modal-content-sub">${escapeHtml(info.sub)}</div>` : ''}
+        </div>
+      </div>
+
+      ${buildDestSelectorHtml()}
+
+      <div class="dap-modal-actions">
+        <button class="dap-modal-btn-secondary" data-action="sync-later">Sync Later</button>
+        <button class="dap-modal-btn-primary" data-action="sync-now">
+          Sync Now
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+
+  // Load album artwork AFTER modal is in DOM (isConnected constraint)
+  if (coverAlbum?.coverPath && app.loadThumbnailAsync) {
+    const artworkWrap = modal.querySelector('#dap-modal-artwork-wrap')
+    if (artworkWrap) {
+      const img = document.createElement('img')
+      img.className = 'dap-modal-artwork-img'
+      img.style.display = 'none'
+      artworkWrap.appendChild(img)
+      app.loadThumbnailAsync(coverAlbum.coverPath, img, coverAlbum.artist, coverAlbum.album).then(() => {
+        if (img.src) {
+          img.style.display = ''
+          const placeholder = artworkWrap.querySelector('.dap-modal-artwork-placeholder')
+          if (placeholder) placeholder.style.display = 'none'
+        }
+      })
+    }
+  }
+
+  _dapModalAbort = new AbortController()
+  const { signal } = _dapModalAbort
+
+  function closeModal() {
+    modal.remove()
+    if (_dapModalAbort) { _dapModalAbort.abort(); _dapModalAbort = null }
+  }
+
+  function updateModalUI() {
+    const titleEl = modal.querySelector('.dap-modal-title')
+    if (titleEl) titleEl.textContent = action === 'add' ? 'Add to DAP' : 'Remove from DAP'
+  }
+
+  // Destination card selection handlers
+  if (showDestSelector) {
+    for (const card of modal.querySelectorAll('.dap-modal-dest-card')) {
+      card.addEventListener('click', () => {
+        selectedDestId = Number(card.dataset.destId)
+        action = getActionForDest(selectedDestId)
+        modal.querySelectorAll('.dap-modal-dest-card').forEach(c => c.classList.remove('active'))
+        card.classList.add('active')
+        updateModalUI()
+      }, { signal })
+    }
+  }
+
+  async function performAction(syncNow) {
+    closeModal()
+    await toggleAlbumsOnDest(albumKeys, selectedDestId, action)
+    if (syncNow) {
+      const dest = destinations.find(d => d.id === selectedDestId)
+      if (dest) {
+        currentDestinationId = dest.id
+        await loadSelections(dest.id)
+        dapSubView = 'albums'
+        navigateToDapSync()
+        startSync()
+      }
+    } else {
+      showToast(action === 'add' ? 'Added to DAP sync' : 'Removed from DAP sync')
+    }
+  }
+
+  modal.querySelector('[data-action="sync-later"]').addEventListener('click', () => {
+    performAction(false)
+  }, { signal })
+
+  modal.querySelector('[data-action="sync-now"]').addEventListener('click', () => {
+    performAction(true)
+  }, { signal })
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal()
+  }, { signal })
+
+  modal.addEventListener('mousedown', (e) => {
+    if (e.target === modal || e.target.classList.contains('modal-backdrop')) closeModal()
+  }, { signal })
+}
+
 // === EXPORTS ===
-export { openSyncPanel, closeSyncPanel, loadDestinations, refreshMountedVolumes, hideDapTopBar, renderSidebarDestinations }
+export { openSyncPanel, closeSyncPanel, loadDestinations, refreshMountedVolumes, hideDapTopBar, renderSidebarDestinations, hasDapDestination, getMountedDestinations, isAlbumSelectedForDap, isArtistFullySelectedForDap, toggleAlbumDapSelection, toggleArtistDapSelection, toggleAlbumsOnDest, showDapSyncModal, getDapDestinationName, startSync }

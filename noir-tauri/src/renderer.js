@@ -27,7 +27,7 @@ import { initNetworkUI, populateNetworkSources } from './network.js'
 import { initOnboarding } from './onboarding.js'
 
 // DAP Sync
-import { initDapSync, openSyncPanel, closeSyncPanel, loadDestinations as loadDapDestinations, refreshMountedVolumes, displayDapSyncView, hideDapTopBar, renderSidebarDestinations } from './dap-sync.js'
+import { initDapSync, openSyncPanel, closeSyncPanel, loadDestinations as loadDapDestinations, refreshMountedVolumes, displayDapSyncView, hideDapTopBar, renderSidebarDestinations, hasDapDestination, getMountedDestinations, isAlbumSelectedForDap, isArtistFullySelectedForDap, toggleAlbumDapSelection, toggleArtistDapSelection, toggleAlbumsOnDest, showDapSyncModal, getDapDestinationName, startSync as startDapSync } from './dap-sync.js'
 
 // EQ
 import {
@@ -69,7 +69,7 @@ import {
 import {
   addToQueue, playNext, removeFromQueue, clearQueue,
   toggleQueuePanel, updateQueueDisplay, updateQueueIndicators,
-  showContextMenu, showAlbumContextMenu, closeContextMenu,
+  showContextMenu, showAlbumContextMenu, showArtistContextMenu, closeContextMenu,
   showTrackInfoPanel, closeTrackInfoPanel, goToTrackAlbum, goToTrackArtist,
   closeAllPanels, showQueueNotification, initPanels,
   enterTrackEditMode, showBulkEditModal
@@ -142,6 +142,16 @@ app.refreshMountedVolumes = refreshMountedVolumes
 app.displayDapSyncView = displayDapSyncView
 app.hideDapTopBar = hideDapTopBar
 app.renderSidebarDestinations = renderSidebarDestinations
+app.hasDapDestination = hasDapDestination
+app.getMountedDestinations = getMountedDestinations
+app.isAlbumSelectedForDap = isAlbumSelectedForDap
+app.isArtistFullySelectedForDap = isArtistFullySelectedForDap
+app.toggleAlbumDapSelection = toggleAlbumDapSelection
+app.toggleArtistDapSelection = toggleArtistDapSelection
+app.toggleAlbumsOnDest = toggleAlbumsOnDest
+app.showDapSyncModal = showDapSyncModal
+app.getDapDestinationName = getDapDestinationName
+app.startDapSync = startDapSync
 
 // Playback
 app.playTrack = playTrack
@@ -168,6 +178,7 @@ app.updateQueueDisplay = updateQueueDisplay
 app.updateQueueIndicators = updateQueueIndicators
 app.showContextMenu = showContextMenu
 app.showAlbumContextMenu = showAlbumContextMenu
+app.showArtistContextMenu = showArtistContextMenu
 app.closeContextMenu = closeContextMenu
 app.hideContextMenu = closeContextMenu
 app.showTrackInfoPanel = showTrackInfoPanel

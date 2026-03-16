@@ -2084,7 +2084,7 @@ export async function displayHomeView() {
     }
   })
 
-  // CONTEXT MENU on recent tracks
+  // CONTEXT MENU on recent tracks, carousel albums, and carousel artists
   homeContainer.addEventListener('contextmenu', (e) => {
     const recentItem = e.target.closest('.recent-track-item')
     if (recentItem) {
@@ -2094,6 +2094,23 @@ export async function displayHomeView() {
       const trackIndex = library.tracks.findIndex(t => t.path === trackPath)
       if (trackIndex !== -1) {
         app.showContextMenu(e, library.tracks[trackIndex], trackIndex)
+      }
+      return
+    }
+
+    const carouselItem = e.target.closest('.carousel-item')
+    if (carouselItem) {
+      // Artist carousel items
+      const artistName = carouselItem.dataset.artistName
+      if (artistName && library.artists[artistName]) {
+        app.showArtistContextMenu(e, artistName)
+        return
+      }
+      // Album carousel items
+      const albumKey = carouselItem.dataset.albumKey
+      if (albumKey && library.albums[albumKey]) {
+        app.showAlbumContextMenu(e, albumKey)
+        return
       }
     }
   })
@@ -2574,6 +2591,12 @@ export function displayArtistsGrid() {
     if (card?.dataset.artistKey) showArtistAlbums(card.dataset.artistKey)
   })
 
+  // Right-click context menu for artist cards
+  gridContainer.addEventListener('contextmenu', (e) => {
+    const card = e.target.closest('.artist-card')
+    if (card?.dataset.artistKey) app.showArtistContextMenu(e, card.dataset.artistKey)
+  })
+
   dom.albumsGridDiv.appendChild(gridContainer)
 
   if (artistSortMode === 'name-asc' || artistSortMode === 'name-desc') {
@@ -2713,6 +2736,12 @@ export function displayArtistPage(artistKey) {
   albumsGrid.addEventListener('mousedown', (e) => {
     const card = e.target.closest('.album-card')
     if (card?.dataset.albumKey) app.prepareAlbumDrag(e, card.dataset.albumKey, card)
+  })
+
+  // Right-click context menu on album cards in artist page
+  albumsGrid.addEventListener('contextmenu', (e) => {
+    const card = e.target.closest('.album-card')
+    if (card?.dataset.albumKey) app.showAlbumContextMenu(e, card.dataset.albumKey)
   })
 
   // Full albums
