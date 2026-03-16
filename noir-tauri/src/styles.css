@@ -230,7 +230,7 @@ body.sidebar-resizing * {
 }
 
 .app-logo {
-  height: 28px;
+  height: 32px;
   width: auto;
   flex-shrink: 0;
 }
@@ -6639,7 +6639,7 @@ body:not(.player-visible) .track-info-panel {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 24px;
-  padding-bottom: 16px;
+  padding: 0 24px 16px 24px;
   border-bottom: 1px solid #222;
 }
 
@@ -6781,6 +6781,7 @@ body:not(.player-visible) .track-info-panel {
   display: flex;
   flex-direction: column;
   min-height: 100px;
+  padding: 0 12px;
 }
 
 .playlist-track-item {
@@ -6882,7 +6883,9 @@ body:not(.player-visible) .track-info-panel {
   height: 14px;
 }
 
-.playlist-track-item:hover .playlist-track-remove {
+.playlist-track-item:hover .playlist-track-remove,
+.playlist-track-item:hover .track-add-queue,
+.playlist-track-item:hover .track-add-playlist {
   opacity: 1;
 }
 

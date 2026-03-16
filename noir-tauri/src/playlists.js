@@ -606,12 +606,23 @@ export function displayPlaylistView(playlist) {
       const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
       return `
         <div class="playlist-track-item" data-index="${index}" data-track-path="${track.path}">
+          ${getFavoriteButtonHtml(track.path)}
           <span class="playlist-track-number">${index + 1}</span>
           <div class="playlist-track-info">
             <span class="playlist-track-title">${escapeHtml(title)}</span>
             <span class="playlist-track-artist">${escapeHtml(artist)}</span>
           </div>
           <span class="playlist-track-duration">${duration}</span>
+          <button class="track-add-playlist" title="Add to playlist">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
+            </svg>
+          </button>
+          <button class="track-add-queue${queue.items.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
+            </svg>
+          </button>
           <button class="playlist-track-remove" title="Remove from playlist">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
@@ -634,6 +645,31 @@ export function displayPlaylistView(playlist) {
       if (e.target.closest('.playlist-track-remove')) {
         e.stopPropagation()
         removeTrackFromPlaylist(playlist.id, track.path)
+        return
+      }
+
+      // Bouton ajouter à la queue
+      if (e.target.closest('.track-add-queue')) {
+        e.stopPropagation()
+        app.addToQueue(track)
+        app.showQueueNotification(`"${track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'}" added to queue`)
+        const queueBtn = trackItem.querySelector('.track-add-queue')
+        if (queueBtn) queueBtn.classList.add('in-queue')
+        return
+      }
+
+      // Bouton ajouter à une playlist
+      if (e.target.closest('.track-add-playlist')) {
+        e.stopPropagation()
+        app.showAddToPlaylistMenu(e, track)
+        return
+      }
+
+      // Bouton favori
+      if (e.target.closest('.track-favorite-btn')) {
+        e.stopPropagation()
+        const favBtn = trackItem.querySelector('.track-favorite-btn')
+        if (favBtn) app.toggleFavorite(track.path, favBtn)
         return
       }
 
