@@ -211,6 +211,7 @@ pub fn execute_sync(
         }
     }
 
+    #[cfg(debug_assertions)]
     if covers_copied > 0 {
         eprintln!("[DAP-SYNC] Copied {} cover files", covers_copied);
     }

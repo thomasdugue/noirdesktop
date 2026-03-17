@@ -37,6 +37,7 @@ pub fn start_volume_watcher(app_handle: tauri::AppHandle) {
             return;
         }
 
+        #[cfg(debug_assertions)]
         println!("[DAP Watcher] Watching /Volumes for mount/unmount events");
 
         // Track known volumes
@@ -64,6 +65,7 @@ pub fn start_volume_watcher(app_handle: tauri::AppHandle) {
                                             volume_name: name_str,
                                             path: path.to_string_lossy().to_string(),
                                         };
+                                        #[cfg(debug_assertions)]
                                         println!("[DAP Watcher] Volume mounted: {}", evt.path);
                                         let _ = app_handle.emit("volume_change", evt);
                                     }
@@ -80,6 +82,7 @@ pub fn start_volume_watcher(app_handle: tauri::AppHandle) {
                                             volume_name: name_str,
                                             path: path.to_string_lossy().to_string(),
                                         };
+                                        #[cfg(debug_assertions)]
                                         println!("[DAP Watcher] Volume unmounted: {}", evt.path);
                                         let _ = app_handle.emit("volume_change", evt);
                                     }
