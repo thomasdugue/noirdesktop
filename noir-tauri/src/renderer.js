@@ -93,6 +93,78 @@ import {
   invalidateDiscoveryMixCache, invalidateSessionCarouselCaches, getVirtualScrollState
 } from './views.js'
 
+// === SPLASH SCREEN ===
+
+;(function initSplashParticles() {
+  const canvas = document.getElementById('splash-particles')
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  const dpr = window.devicePixelRatio || 1
+  const W = canvas.offsetWidth
+  const H = canvas.offsetHeight
+  canvas.width = W * dpr
+  canvas.height = H * dpr
+  ctx.scale(dpr, dpr)
+  const cx = W / 2, cy = H / 2, logoRx = 65, logoRy = 44
+
+  class Particle {
+    constructor() { this.reset() }
+    reset() {
+      const angle = Math.random() * Math.PI * 2
+      const edge = 0.85 + Math.random() * 0.3
+      this.x = cx + Math.cos(angle) * logoRx * edge
+      this.y = cy + Math.sin(angle) * logoRy * edge
+      const speed = 0.15 + Math.random() * 0.3
+      this.vx = Math.cos(angle) * speed + (Math.random() - 0.5) * 0.1
+      this.vy = Math.sin(angle) * speed - 0.05 - Math.random() * 0.08
+      this.life = 0
+      this.maxLife = 120 + Math.random() * 100
+      this.size = 0.5 + Math.random() * 1.2
+      this.opacity = 0
+    }
+    update() {
+      this.x += this.vx; this.y += this.vy; this.life++
+      const p = this.life / this.maxLife
+      this.opacity = p < 0.15 ? (p / 0.15) * 0.4 : p > 0.6 ? ((1 - p) / 0.4) * 0.4 : 0.4
+      if (this.life >= this.maxLife) this.reset()
+    }
+    draw() {
+      ctx.beginPath()
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255,255,255,${this.opacity})`
+      ctx.fill()
+    }
+  }
+
+  const particles = Array.from({ length: 28 }, () => {
+    const p = new Particle(); p.life = Math.floor(Math.random() * p.maxLife); return p
+  })
+  let raf
+  function animate() {
+    ctx.clearRect(0, 0, W, H)
+    for (const p of particles) { p.update(); p.draw() }
+    raf = requestAnimationFrame(animate)
+  }
+  animate()
+  // Expose stop function for cleanup
+  window.__stopSplashParticles = () => { if (raf) cancelAnimationFrame(raf) }
+})()
+
+const __splashStart = performance.now()
+const __SPLASH_MIN_MS = 800
+
+function dismissSplash() {
+  const splash = document.getElementById('splash-screen')
+  if (!splash) return
+  const elapsed = performance.now() - __splashStart
+  const remaining = Math.max(0, __SPLASH_MIN_MS - elapsed)
+  setTimeout(() => {
+    splash.classList.add('fade-out')
+    window.__stopSplashParticles?.()
+    setTimeout(() => splash.remove(), 400)
+  }, remaining)
+}
+
 // === WINDOW DRAG ===
 // Le drag est géré nativement par Tauri 2 via data-tauri-drag-region sur le titlebar HTML
 
@@ -970,4 +1042,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Auto-resume après délai
   setTimeout(handleAutoResume, 3000)
+
+  // Dismiss splash screen
+  dismissSplash()
 })
