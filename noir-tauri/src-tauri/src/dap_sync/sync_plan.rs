@@ -137,6 +137,7 @@ pub fn compute_sync_plan(
         .as_ref()
         .map(|m| m.files.iter().map(|f| (f.dest_relative_path.clone(), f)).collect())
         .unwrap_or_default();
+    #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] manifest_lookup build: {:?} ({} entries)", t0.elapsed(), manifest_lookup.len());
 
     // Scan the DAP filesystem once upfront: collect all existing files AND album folders.
@@ -174,13 +175,16 @@ pub fn compute_sync_plan(
         .iter()
         .map(|f| f.to_lowercase())
         .collect();
-    eprintln!("[PERF-RS] DAP filesystem scan: {:?} ({} files, {} folders with files)",
-        t_scan.elapsed(), dap_existing_files.len(), dap_folders_with_files.len());
-    if !dap_folders_with_files.is_empty() {
-        let mut sample: Vec<&String> = dap_folders_with_files.iter().collect();
-        sample.sort();
-        sample.truncate(15);
-        eprintln!("[DEBUG-RS] Sample DAP folders with files: {:?}", sample);
+    #[cfg(debug_assertions)]
+    {
+        eprintln!("[PERF-RS] DAP filesystem scan: {:?} ({} files, {} folders with files)",
+            t_scan.elapsed(), dap_existing_files.len(), dap_folders_with_files.len());
+        if !dap_folders_with_files.is_empty() {
+            let mut sample: Vec<&String> = dap_folders_with_files.iter().collect();
+            sample.sort();
+            sample.truncate(15);
+            eprintln!("[DEBUG-RS] Sample DAP folders with files: {:?}", sample);
+        }
     }
 
     let mut files_to_copy = Vec::new();
@@ -229,6 +233,7 @@ pub fn compute_sync_plan(
                 unchanged_album_id_set.insert(track.album_id);
             } else {
                 // Log first few mismatches for debugging
+                #[cfg(debug_assertions)]
                 if mismatch_log_count < 5 {
                     eprintln!("[DEBUG-RS] Track NOT on DAP: dest_rel={:?}, album_folder={:?}, artist={:?}, album={:?}",
                         dest_rel, album_folder, track.artist, track.album);
@@ -251,6 +256,7 @@ pub fn compute_sync_plan(
             }
         }
     }
+    #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] track loop: {:?} ({} tracks, {} unchanged ({} via disk, {} via folder match), {} to copy)",
         t2.elapsed(), tracks.len(), files_unchanged, files_found_on_disk, files_found_via_folder, files_to_copy.len());
 
@@ -343,12 +349,14 @@ pub fn compute_sync_plan(
                 covers_resolved += 1;
             } else {
                 covers_not_found += 1;
+                #[cfg(debug_assertions)]
                 if covers_not_found <= 3 {
                     eprintln!("[DEBUG-RS] Cover not found for: folder={:?}, track={:?}, artist={:?}, album={:?}",
                         folder, track_path, artist, album);
                 }
             }
         }
+        #[cfg(debug_assertions)]
         eprintln!("[PERF-RS] Cover resolution: {} albums, {} to copy, {} skipped (manifest), {} skipped (on DAP), {} not found",
             album_folders.len(), covers_resolved, covers_skipped_manifest, covers_skipped_on_dap, covers_not_found);
     }
@@ -356,6 +364,7 @@ pub fn compute_sync_plan(
     let net_bytes = (total_copy_bytes + total_cover_bytes) as i64 - total_delete_bytes as i64;
     let enough_space = net_bytes <= 0 || (net_bytes as u64) <= dest_free_bytes;
 
+    #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] compute_sync_plan TOTAL: {:?} | {} to copy, {} covers, {} to delete, {} unchanged",
         total_start.elapsed(), files_to_copy.len(), covers_to_copy.len(), files_to_delete.len(), files_unchanged);
 
