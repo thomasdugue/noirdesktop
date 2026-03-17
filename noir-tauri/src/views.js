@@ -1975,7 +1975,7 @@ export async function displayHomeView() {
     const emptyMessage = document.createElement('div')
     emptyMessage.className = 'home-empty'
     emptyMessage.innerHTML = `
-      <h2>Welcome to Noir</h2>
+      <h2>Welcome to Hean</h2>
       <p>Start listening to music to fill this page.</p>
     `
     homeContainer.appendChild(emptyMessage)

@@ -64,7 +64,7 @@ async function getAppVersion() {
 async function updateVersionDisplay() {
   const version = await getAppVersion()
   const el = document.getElementById('settings-version-label')
-  if (el) el.textContent = `Noir v${version}`
+  if (el) el.textContent = `Hean v${version}`
   const statusEl = document.getElementById('settings-update-status')
   if (statusEl) statusEl.textContent = `Current version: ${version}`
 }
