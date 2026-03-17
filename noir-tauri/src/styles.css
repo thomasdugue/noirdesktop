@@ -10794,3 +10794,87 @@ body:not(.player-visible) .track-info-panel {
 .dap-dest-toggle.open {
   transform: none;
 }
+
+/* ============================================================
+   SPLASH SCREEN
+   ============================================================ */
+
+.splash-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: #0a0a0a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 48px;
+  transition: opacity 0.4s ease-out;
+}
+
+.splash-screen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 60% 60% at 50% 50%, transparent 0%, rgba(0, 0, 0, 0.4) 100%);
+  pointer-events: none;
+}
+
+.splash-screen.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.splash-logo-wrap {
+  position: relative;
+  width: 120px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.splash-logo-wrap svg {
+  width: 120px;
+  height: auto;
+  filter: drop-shadow(0 0 24px rgba(255, 255, 255, 0.12))
+          drop-shadow(0 0 60px rgba(255, 255, 255, 0.04));
+  animation: splashLogoBreathe 4s ease-in-out infinite;
+}
+
+@keyframes splashLogoBreathe {
+  0%, 100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 24px rgba(255, 255, 255, 0.12))
+           drop-shadow(0 0 60px rgba(255, 255, 255, 0.04));
+  }
+  50% {
+    transform: scale(1.03);
+    filter: drop-shadow(0 0 36px rgba(255, 255, 255, 0.18))
+           drop-shadow(0 0 80px rgba(255, 255, 255, 0.06));
+  }
+}
+
+.splash-particles {
+  position: absolute;
+  inset: -80px;
+  width: calc(100% + 160px);
+  height: calc(100% + 160px);
+  pointer-events: none;
+}
+
+.splash-status {
+  font-family: 'Geist Mono', 'SF Mono', monospace;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+  animation: splashStatusPulse 3s ease-in-out infinite;
+  user-select: none;
+}
+
+@keyframes splashStatusPulse {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.6; }
+}
