@@ -587,7 +587,7 @@ function updateSyncButton() {
   const isDisabled = selectedAlbums.size === 0 || isSyncing
   const hasPendingChanges = syncPlan && ((syncPlan.filesToCopy?.length ?? 0) > 0 || (syncPlan.filesToDelete?.length ?? 0) > 0)
   btn.disabled = isDisabled
-  btn.innerHTML = isSyncing ? 'Syncing\u2026' : 'Sync <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l1.5-1.5M12 20v-8m0 0l3 3m-3-3l-3 3"/><path d="M20 12l-1.5 1.5M12 4v8m0 0l-3-3m3 3l3-3"/></svg>'
+  btn.innerHTML = isSyncing ? 'Syncing\u2026' : 'Sync <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/></svg>'
   btn.classList.toggle('has-changes', !isDisabled && hasPendingChanges)
 }
 
@@ -663,28 +663,29 @@ function renderAlbumsView(grid) {
   const syncDisabled = selectedAlbums.size === 0 || isSyncing
 
   wrapper.innerHTML = `
-    <div class="dap-dest-bar">
-      <span class="dap-dest-icon">${DAP_ICON_SVG}</span>
-      <div class="dap-dest-info">
-        <div class="dap-dest-path">${escapeHtml(dest.path)}</div>
-        <div class="dap-dest-space">${formatBytes(freeBytes)} free / ${formatBytes(totalBytes)}</div>
-        <div class="dap-storage-bar"><div class="dap-storage-fill" style="width:${usedPct}%"></div></div>
+    <div class="dap-dest-card">
+      <div class="dap-dest-bar ${detailsExpanded ? 'details-open' : ''}">
+        <span class="dap-dest-icon">${DAP_ICON_SVG}</span>
+        <div class="dap-dest-info">
+          <div class="dap-dest-path">${escapeHtml(dest.path)}</div>
+          <div class="dap-dest-space">${formatBytes(freeBytes)} free / ${formatBytes(totalBytes)}</div>
+          <div class="dap-storage-bar"><div class="dap-storage-fill" style="width:${usedPct}%"></div></div>
+        </div>
+        <button class="dap-dest-sync-btn" id="dap-sync-now-btn" ${syncDisabled ? 'disabled' : ''}>
+          ${isSyncing ? 'Syncing\u2026' : 'Sync <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/></svg>'}
+        </button>
+        <button class="dap-dest-toggle ${detailsExpanded ? 'open' : ''}" id="dap-dest-toggle" title="Show details">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <button class="dap-dest-gear" id="dap-goto-settings" title="Settings">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
       </div>
-      <button class="dap-dest-sync-btn" id="dap-sync-now-btn" ${syncDisabled ? 'disabled' : ''}>
-        ${isSyncing ? 'Syncing\u2026' : 'Sync <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l1.5-1.5M12 20v-8m0 0l3 3m-3-3l-3 3"/><path d="M20 12l-1.5 1.5M12 4v8m0 0l-3-3m3 3l3-3"/></svg>'}
-      </button>
-      <button class="dap-dest-toggle ${detailsExpanded ? 'open' : ''}" id="dap-dest-toggle" title="Show details">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
-      </button>
-      <button class="dap-dest-gear" id="dap-goto-settings" title="Settings">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-        </svg>
-      </button>
-    </div>
-
-    <div class="dap-dest-details ${detailsExpanded ? '' : 'collapsed'}" id="dap-dest-details">
-      <div class="dap-summary-loading">Computing sync plan\u2026</div>
+      <div class="dap-dest-details ${detailsExpanded ? '' : 'collapsed'}" id="dap-dest-details">
+        <div class="dap-summary-loading">Computing sync plan\u2026</div>
+      </div>
     </div>
 
     <div class="dap-sync-tabs">
@@ -1451,8 +1452,10 @@ function toggleDestDetails() {
   detailsExpanded = !detailsExpanded
   const panel = document.getElementById('dap-dest-details')
   const btn = document.getElementById('dap-dest-toggle')
+  const bar = panel?.previousElementSibling
   if (panel) panel.classList.toggle('collapsed', !detailsExpanded)
   if (btn) btn.classList.toggle('open', detailsExpanded)
+  if (bar?.classList.contains('dap-dest-bar')) bar.classList.toggle('details-open', detailsExpanded)
 }
 
 // === SCREEN 3: SYNCING ===
@@ -1558,32 +1561,108 @@ function renderCompleteView(grid) {
 
 function renderDisconnectedView(grid) {
   const dest = getCurrentDest()
+  const deviceName = dest?.name || 'Device'
+
+  // Subtle particles (muted, slower than success screen)
+  const particles = Array.from({ length: 4 }, (_, i) => {
+    const angle = (i / 4) * Math.PI * 2 + (Math.random() * 0.6 - 0.3)
+    const dist = 24 + Math.random() * 14
+    const tx = Math.round(Math.cos(angle) * dist)
+    const ty = Math.round(Math.sin(angle) * dist)
+    const dur = (2.5 + Math.random() * 1.5).toFixed(1)
+    const delay = (Math.random() * 3).toFixed(1)
+    const size = (1.5 + Math.random() * 1).toFixed(1)
+    return `<span class="dap-particle dap-particle-muted" style="--tx:${tx}px;--ty:${ty}px;--dur:${dur}s;--delay:${delay}s;width:${size}px;height:${size}px"></span>`
+  }).join('')
 
   const div = document.createElement('div')
   div.className = 'dap-setup-center dap-fade-in'
   div.innerHTML = `
-    <div class="dap-setup-icon">&#128268;</div>
-    <div class="dap-setup-title">DAP not connected</div>
-    <div class="dap-disc-subtitle">The destination folder is not available:</div>
-    <div class="dap-disc-path">${escapeHtml(dest?.path || '/Volumes/...')}</div>
-    <div class="dap-disc-desc">Insert your SD card into a card reader<br>or connect your DAP via USB, then click Retry.</div>
-    <div class="dap-disc-buttons">
+    <div class="dap-disc-icon">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="1" width="14" height="22" rx="2.5"/>
+        <rect x="7" y="3" width="10" height="8" rx="1"/>
+        <path d="M10 6l3 1.5-3 1.5V6z" fill="currentColor" stroke="none"/>
+        <circle cx="12" cy="17" r="3.5"/>
+        <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"/>
+      </svg>
+      <div class="dap-disc-badge">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
+        </svg>
+      </div>
+      ${particles}
+    </div>
+    <div class="dap-disc-title">${escapeHtml(deviceName)} disconnected</div>
+    <p class="dap-disc-text">
+      The destination volume is no longer available.
+      <br><span class="dap-disc-path-inline">${escapeHtml(dest?.path || '/Volumes/...')}</span>
+    </p>
+    <p class="dap-disc-hint" id="dap-disc-hint">Insert your SD card or connect your DAP via USB, then retry.</p>
+    <div class="dap-disc-status" id="dap-disc-status"></div>
+    <div class="dap-disc-actions">
       <button class="dap-btn-secondary" id="dap-change-dest-btn">Change destination</button>
-      <button class="dap-btn-primary" id="dap-retry-btn">Retry</button>
+      <button class="dap-btn-primary" id="dap-retry-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/></svg>
+        Retry
+      </button>
     </div>
   `
 
   grid.appendChild(div)
   div.querySelector('#dap-change-dest-btn').addEventListener('click', addDestination)
   div.querySelector('#dap-retry-btn').addEventListener('click', async () => {
+    const btn = div.querySelector('#dap-retry-btn')
+    const statusEl = div.querySelector('#dap-disc-status')
+    const iconEl = div.querySelector('.dap-disc-icon')
+
+    // Visual feedback: show "Checking..." state
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking\u2026' }
+    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'dap-disc-status' }
+
     await refreshMountedVolumes()
     const d = getCurrentDest()
-    if (d && mountedVolumes.has(d.path)) {
+
+    // Also try matching by volume name (macOS may remount at different path e.g. /Volumes/NAME 1)
+    let matched = d && mountedVolumes.has(d.path)
+    if (!matched && d && d.volumeName) {
+      const byName = _externalVolumes.find(v => v.name === d.volumeName)
+      if (byName) {
+        console.log('[DAP] Path mismatch but volumeName matched — updating dest path:', d.path, '→', byName.path)
+        // Update the destination path to the new mount point
+        try {
+          await invoke('dap_save_destination', { dest: { ...d, path: byName.path } })
+          d.path = byName.path
+          mountedVolumes.add(byName.path)
+          matched = true
+        } catch (e) {
+          console.warn('[DAP] Failed to update dest path:', e)
+        }
+      }
+    }
+
+    console.log('[DAP] Retry result — dest:', d?.name, 'destPath:', d?.path, 'matched:', matched, 'mountedPaths:', Array.from(mountedVolumes), 'volumes:', _externalVolumes.map(v => v.name + ':' + v.path))
+
+    if (matched) {
       dapSubView = 'albums'
       await loadSelections(d.id)
       app.displayCurrentView()
     } else {
-      showToast('Device still not connected', 'warning')
+      // Restore button
+      if (btn) {
+        btn.disabled = false
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/></svg> Retry'
+      }
+      // INLINE status feedback (visible right on the disconnected screen)
+      if (statusEl) {
+        statusEl.textContent = 'Device not detected — check your connection'
+        statusEl.className = 'dap-disc-status dap-disc-status-error'
+      }
+      // Shake the icon briefly to confirm the check happened
+      if (iconEl) {
+        iconEl.classList.add('dap-disc-shake')
+        setTimeout(() => iconEl.classList.remove('dap-disc-shake'), 500)
+      }
     }
   })
 }
