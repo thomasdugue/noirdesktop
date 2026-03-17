@@ -803,4 +803,135 @@ mod tests {
         );
         assert_eq!(plan.covers_to_copy.len(), 0, "Flat mode → no covers");
     }
+
+    fn make_track_with_album_id(path: &str, album: &str, artist: &str, size: u64, track_num: u32, album_id: i64) -> TrackForSync {
+        TrackForSync {
+            path: path.into(),
+            title: format!("Track {}", track_num),
+            artist: Some(artist.into()),
+            album: Some(album.into()),
+            album_artist: None,
+            genre: Some("Jazz".into()),
+            track_number: Some(track_num),
+            disc_number: Some(1),
+            size_bytes: size,
+            modified_at: "2026-01-01T00:00:00Z".into(),
+            album_id,
+        }
+    }
+
+    #[test]
+    fn test_sync_plan_mixed_scenario() {
+        // Manifest has 2 files: album 1 track + album 2 track
+        // Selected: album 1 track (unchanged) + album 3 track (new)
+        // Mirror on → album 2 track should be deleted
+        let track_a1 = make_track("/music/a1.flac", "Album A", "Artist A", 10_000_000, 1);
+        let track_b3 = make_track_with_album_id("/music/b3.flac", "Album C", "Artist C", 15_000_000, 1, 3);
+
+        let manifest = Some(SyncManifest {
+            hean_version: "0.1.0".into(),
+            last_sync: "2026-01-01T00:00:00Z".into(),
+            destination_path: "/Volumes/DAP".into(),
+            folder_structure: "artist_album_track".into(),
+            files: vec![
+                SyncedFile {
+                    source_path: "/music/a1.flac".into(),
+                    dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                    size_bytes: 10_000_000,
+                    modified_at: "2026-01-01T00:00:00Z".into(),
+                    quick_hash: "abc123".into(),
+                },
+                SyncedFile {
+                    source_path: "/music/b2.flac".into(),
+                    dest_relative_path: "Artist B/Album B/01 - Track 1.flac".into(),
+                    size_bytes: 12_000_000,
+                    modified_at: "2026-01-01T00:00:00Z".into(),
+                    quick_hash: "def456".into(),
+                },
+            ],
+        });
+
+        let plan = plan_no_covers(
+            &[track_a1, track_b3],
+            &manifest,
+            "artist_album_track",
+            true,
+            1_000_000_000,
+            2_000_000_000,
+        );
+
+        assert_eq!(plan.files_unchanged, 1, "album A track is unchanged");
+        assert_eq!(plan.files_to_copy.len(), 1, "album C track is new");
+        assert_eq!(plan.files_to_delete.len(), 1, "album B track should be deleted (mirror)");
+    }
+
+    #[test]
+    fn test_sync_plan_space_calculation() {
+        // 2 tracks to copy (10MB + 20MB = 30MB), 1 to delete (5MB)
+        // net = 30MB - 5MB = 25MB
+        let tracks = vec![
+            make_track("/music/new1.flac", "New Album", "Artist", 10_000_000, 1),
+            make_track_with_album_id("/music/new2.flac", "New Album 2", "Artist 2", 20_000_000, 1, 2),
+        ];
+
+        let manifest = Some(SyncManifest {
+            hean_version: "0.1.0".into(),
+            last_sync: "2026-01-01T00:00:00Z".into(),
+            destination_path: "/Volumes/DAP".into(),
+            folder_structure: "artist_album_track".into(),
+            files: vec![
+                SyncedFile {
+                    source_path: "/music/old.flac".into(),
+                    dest_relative_path: "Old/Old Album/01 - Old.flac".into(),
+                    size_bytes: 5_000_000,
+                    modified_at: "2026-01-01T00:00:00Z".into(),
+                    quick_hash: "hash1".into(),
+                },
+            ],
+        });
+
+        let plan = plan_no_covers(&tracks, &manifest, "artist_album_track", true, 100_000_000, 200_000_000);
+
+        let expected_net = (10_000_000i64 + 20_000_000) - 5_000_000;
+        assert_eq!(plan.net_bytes, expected_net);
+        assert!(plan.enough_space, "100MB free should be enough for 25MB net");
+
+        // Now test with tight space
+        let plan_tight = plan_no_covers(&tracks, &manifest, "artist_album_track", true, 20_000_000, 200_000_000);
+        assert!(!plan_tight.enough_space, "20MB free is not enough for 25MB net");
+    }
+
+    #[test]
+    fn test_sync_plan_empty_selection_mirror() {
+        // Manifest has 2 files, selected tracks is empty, mirror on
+        // All manifest files should be in files_to_delete
+        let manifest = Some(SyncManifest {
+            hean_version: "0.1.0".into(),
+            last_sync: "2026-01-01T00:00:00Z".into(),
+            destination_path: "/Volumes/DAP".into(),
+            folder_structure: "artist_album_track".into(),
+            files: vec![
+                SyncedFile {
+                    source_path: "/music/a.flac".into(),
+                    dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                    size_bytes: 10_000_000,
+                    modified_at: "2026-01-01T00:00:00Z".into(),
+                    quick_hash: "hash1".into(),
+                },
+                SyncedFile {
+                    source_path: "/music/b.flac".into(),
+                    dest_relative_path: "Artist B/Album B/01 - Track 1.flac".into(),
+                    size_bytes: 15_000_000,
+                    modified_at: "2026-01-01T00:00:00Z".into(),
+                    quick_hash: "hash2".into(),
+                },
+            ],
+        });
+
+        let plan = plan_no_covers(&[], &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
+
+        assert_eq!(plan.files_to_copy.len(), 0, "no tracks selected = nothing to copy");
+        assert_eq!(plan.files_to_delete.len(), 2, "mirror mode = all manifest files deleted");
+        assert_eq!(plan.files_unchanged, 0);
+    }
 }
