@@ -1755,13 +1755,13 @@ function renderFirstSyncView(grid) {
   div.innerHTML = `
     <div class="dap-warn-box">
       <div class="dap-warn-title">&#9888; Existing music detected on your DAP</div>
-      <div class="dap-warn-text">Your DAP already contains audio files that were not synced by Noir. Since sync mirror mode is enabled, files not in your selection would normally be deleted.</div>
+      <div class="dap-warn-text">Your DAP already contains audio files that were not synced by Hean. Since sync mirror mode is enabled, files not in your selection would normally be deleted.</div>
     </div>
     <div class="dap-first-sync-question">What would you like to do?</div>
     <div class="dap-radio-group">
       <div class="dap-radio-opt" data-value="keep">
         <div class="dap-radio-circle"></div>
-        <div><div class="dap-r-label">Keep existing files</div><div class="dap-r-desc">Noir will adopt existing files and only add new ones. Nothing will be deleted.</div></div>
+        <div><div class="dap-r-label">Keep existing files</div><div class="dap-r-desc">Hean will adopt existing files and only add new ones. Nothing will be deleted.</div></div>
       </div>
       <div class="dap-radio-opt sel" data-value="replace">
         <div class="dap-radio-circle"></div>

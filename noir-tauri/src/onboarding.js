@@ -76,9 +76,9 @@ export function showOnboarding() {
       <!-- ============ STEP 1: Source selection ============ -->
       <div class="step-view active" id="ob-step-1">
         <div class="modal-header">
-          <div class="greeting">Welcome to Noir</div>
+          <div class="greeting">Welcome to Hean</div>
           <h1>Where is your music?</h1>
-          <div class="subtitle">Point Noir to your library and start listening.</div>
+          <div class="subtitle">Point Hean to your library and start listening.</div>
         </div>
 
         <div class="cards-container">
