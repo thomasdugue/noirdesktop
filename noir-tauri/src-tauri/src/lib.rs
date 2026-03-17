@@ -4738,7 +4738,8 @@ pub fn run() {
                 *handle_guard = Some(app_handle.clone());
             }
 
-            let engine = AudioEngine::new(Some(app_handle.clone()));
+            let engine = AudioEngine::new(Some(app_handle.clone()))
+                .map_err(|e| format!("Audio engine init failed: {}", e))?;
 
             // Charge les paramètres EQ sauvegardés
             load_eq_settings(&engine.eq_state);
