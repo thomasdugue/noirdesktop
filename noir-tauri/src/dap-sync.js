@@ -525,7 +525,6 @@ function navigateToDapSync() {
 }
 
 async function openSyncPanel(dest) {
-  console.time('[PERF] openSyncPanel TOTAL')
   currentDestinationId = dest.id
   currentTab = 'albums'
   renderSidebarDestinations()
@@ -534,7 +533,6 @@ async function openSyncPanel(dest) {
   if (isSyncing) {
     dapSubView = 'syncing'
     navigateToDapSync()
-    console.timeEnd('[PERF] openSyncPanel TOTAL')
     return
   }
 
@@ -543,15 +541,10 @@ async function openSyncPanel(dest) {
     dapSubView = 'disconnected'
   } else {
     dapSubView = 'albums'
-    console.time('[PERF] loadSelections')
     await loadSelections(dest.id)
-    console.timeEnd('[PERF] loadSelections')
   }
 
-  console.time('[PERF] navigateToDapSync')
   navigateToDapSync()
-  console.timeEnd('[PERF] navigateToDapSync')
-  console.timeEnd('[PERF] openSyncPanel TOTAL')
 }
 
 // === DAP TOP BAR (persistent sync zone, replaces search bar in DAP view) ===
@@ -648,7 +641,6 @@ function renderSetupView(grid) {
 // === SCREEN 2: SYNC PANEL (Albums) ===
 
 function renderAlbumsView(grid) {
-  console.time('[PERF] renderAlbumsView TOTAL')
   const dest = getCurrentDest()
   if (!dest) { renderSetupView(grid); return }
 
@@ -748,14 +740,10 @@ function renderAlbumsView(grid) {
   grid.appendChild(wrapper)
 
   // Populate album rows
-  console.time('[PERF] renderAlbumRows (initial)')
   renderAlbumRows()
-  console.timeEnd('[PERF] renderAlbumRows (initial)')
 
   // Compute summary (also updates top bar stats)
-  console.log('[PERF] Starting computeAndRenderSummary (async, will log separately)')
   computeAndRenderSummary()
-  console.timeEnd('[PERF] renderAlbumsView TOTAL')
 
   // Wire events
   const syncBtn = wrapper.querySelector('#dap-sync-now-btn')
@@ -833,15 +821,12 @@ function renderAlbumsView(grid) {
 }
 
 function renderAlbumRows() {
-  console.time('[PERF] renderAlbumRows')
   const container = document.getElementById('dap-albums-list')
   if (!container) return
   container.innerHTML = ''
 
   const filter = albumSearchFilter.toLowerCase()
-  console.time('[PERF] renderAlbumRows → sort')
   const albumKeys = sortAlbumKeys(Object.keys(library.albums))
-  console.timeEnd('[PERF] renderAlbumRows → sort')
 
   // Build all rows into a DocumentFragment (single DOM reflow)
   const fragment = document.createDocumentFragment()
@@ -888,10 +873,9 @@ function renderAlbumRows() {
 
     // Event delegation: use a single click handler per row
     row.addEventListener('click', (e) => {
-      console.time('[PERF] album checkbox click handler')
-      if (e.target.closest('.quality-tag')) { console.timeEnd('[PERF] album checkbox click handler'); return }
+      if (e.target.closest('.quality-tag')) return
       const chk = row.querySelector('.dap-chk')
-      if (!chk) { console.timeEnd('[PERF] album checkbox click handler'); return }
+      if (!chk) return
       if (chk.classList.contains('on')) {
         selectedAlbums.delete(albumId)
         chk.classList.remove('on')
@@ -903,8 +887,6 @@ function renderAlbumRows() {
       saveSelections()
       updateSyncNowButton()
       debouncedComputeAndRenderSummary()
-      console.timeEnd('[PERF] album checkbox click handler')
-      console.log('[PERF] checkbox handler done — computeAndRenderSummary will fire after 500ms debounce')
     })
 
     // Queue thumbnail for deferred loading
@@ -915,13 +897,8 @@ function renderAlbumRows() {
     fragment.appendChild(row)
   }
 
-  console.time('[PERF] renderAlbumRows → DOM append')
   container.appendChild(fragment)
-  console.timeEnd('[PERF] renderAlbumRows → DOM append')
   updateSelectAllCheckbox()
-
-  console.log(`[PERF] renderAlbumRows: ${albumKeys.length} album keys, ${thumbQueue.length} thumbnails queued`)
-  console.timeEnd('[PERF] renderAlbumRows')
 
   // Load thumbnails in batches to avoid flooding IPC
   loadThumbsBatched(thumbQueue)
@@ -1260,43 +1237,33 @@ function precomputeSyncPlanLookups() {
 }
 
 async function computeAndRenderSummary() {
-  console.time('[PERF] computeAndRenderSummary TOTAL')
   const details = document.getElementById('dap-dest-details')
-  if (!details) { console.timeEnd('[PERF] computeAndRenderSummary TOTAL'); return }
+  if (!details) return
 
   const dest = getCurrentDest()
-  if (!dest) { console.timeEnd('[PERF] computeAndRenderSummary TOTAL'); return }
+  if (!dest) return
 
   if (!mountedVolumes.has(dest.path)) {
     details.innerHTML = '<div class="dap-summary-error">Volume not mounted</div>'
-    console.timeEnd('[PERF] computeAndRenderSummary TOTAL')
     return
   }
 
   details.innerHTML = '<div class="dap-summary-loading">Computing\u2026</div>'
 
   try {
-    console.time('[PERF] buildTracksForSync')
     const tracksForSync = buildTracksForSync()
-    console.timeEnd('[PERF] buildTracksForSync')
-    console.log(`[PERF] tracksForSync: ${tracksForSync.length} tracks built`)
     const folderStructure = dest.folderStructure || 'artist_album_track'
     const mirrorMode = dest.mirrorMode !== false
 
-    console.time('[PERF] invoke dap_compute_sync_plan (RUST IPC)')
     syncPlan = await invoke('dap_compute_sync_plan', {
       tracks: tracksForSync,
       destPath: dest.path,
       folderStructure,
       mirrorMode,
     })
-    console.timeEnd('[PERF] invoke dap_compute_sync_plan (RUST IPC)')
-    console.log(`[PERF] syncPlan: ${syncPlan?.filesToCopy?.length ?? 0} to copy, ${syncPlan?.coversToCopy?.length ?? 0} covers, ${syncPlan?.filesToDelete?.length ?? 0} to delete, ${syncPlan?.filesUnchanged ?? 0} unchanged`)
 
     // Pre-compute lookup sets for O(1) status badge checks
-    console.time('[PERF] precomputeSyncPlanLookups')
     precomputeSyncPlanLookups()
-    console.timeEnd('[PERF] precomputeSyncPlanLookups')
 
     // On first load: auto-select ONLY albums already on DAP
     // so the user sees a selection matching the device's current state
@@ -1315,22 +1282,15 @@ async function computeAndRenderSummary() {
       return
     }
 
-    console.time('[PERF] renderSummary')
     renderSummary(syncPlan, dest)
-    console.timeEnd('[PERF] renderSummary')
 
-    console.time('[PERF] updateSyncButton')
     updateSyncButton()          // Update Sync button state in dest-bar
     renderDapTopBar()           // Keep top bar in sync (hides search bar)
-    console.timeEnd('[PERF] updateSyncButton')
 
-    console.time('[PERF] updateStatusTagsInPlace')
     updateStatusTagsInPlace()   // Update status badges without full re-render
-    console.timeEnd('[PERF] updateStatusTagsInPlace')
   } catch (e) {
     details.innerHTML = `<div class="dap-summary-error">${escapeHtml(String(e))}</div>`
   }
-  console.timeEnd('[PERF] computeAndRenderSummary TOTAL')
 }
 
 function updateStatusTagsInPlace() {
@@ -1793,12 +1753,10 @@ function renderFirstSyncView(grid) {
 // === DATA HELPERS ===
 
 async function loadSelections(destId) {
-  console.time('[PERF] loadSelections IPC')
   selectedAlbums.clear()
   _needsOnDapPreselection = true
   try {
     const selections = await invoke('dap_get_selections', { destinationId: destId })
-    console.timeEnd('[PERF] loadSelections IPC')
     if (selections && selections.length > 0) {
       // Use saved selections from DB
       for (const sel of selections) {
@@ -1813,7 +1771,6 @@ async function loadSelections(destId) {
       }
     }
   } catch (e) {
-    console.timeEnd('[PERF] loadSelections IPC')
     console.error('[DAP] Failed to load selections (will auto-detect from DAP):', e)
     // Fallback: select all albums
     for (const albumKey of Object.keys(library.albums)) {
@@ -1864,7 +1821,6 @@ function buildTracksForSync() {
       })
     }
   }
-  console.log(`[PERF] buildTracksForSync: ${tracks.length} tracks, ${estimatedCount} with estimated size (no fileSize in metadata)`)
   return tracks
 }
 

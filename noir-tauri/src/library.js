@@ -472,7 +472,7 @@ async function loadThumbnailFromQueue(item) {
     const totalTime = performance.now() - startTime
     PERF.totalLoadTime += totalTime
   } catch (e) {
-    console.error('[PERF] Error loading thumbnail:', path, e)
+    console.error('Error loading thumbnail:', path, e)
     caches.thumbnailCache.set(path, null)
   }
 
