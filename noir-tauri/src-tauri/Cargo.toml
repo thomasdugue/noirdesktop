@@ -71,6 +71,10 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 notify = { version = "6", features = ["macos_fsevent"] }
 # SHA-256 pour quick hash des fichiers (détection modifications)
 sha2 = "0.10"
+# Unicode NFC normalization — exFAT requires NFC, macOS metadata often provides NFD
+unicode-normalization = "0.1"
+# ASCII transliteration — macOS exFAT driver corrupts dirs with accented chars (ô, ã, é)
+deunicode = "1"
 # tempfile pour tests unitaires sync engine
 tempfile = { version = "3", optional = true }
 

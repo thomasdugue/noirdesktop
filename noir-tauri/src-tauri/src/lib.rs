@@ -4620,6 +4620,12 @@ fn dap_execute_sync(
             return;
         }
 
+        // Build network source list for UUID → hostname SMB resolution
+        let net_sources: Vec<(String, String)> = NETWORK_SOURCES
+            .lock()
+            .map(|sources| sources.iter().map(|s| (s.id.clone(), s.host.clone())).collect())
+            .unwrap_or_default();
+
         match dap_sync::sync_engine::execute_sync(
             &app_handle,
             &dest_path,
@@ -4627,6 +4633,7 @@ fn dap_execute_sync(
             &manifest,
             &folder_structure,
             cancel_flag,
+            net_sources,
         ) {
             Ok(_) => {} // SyncComplete already emitted by execute_sync
             Err(e) => {

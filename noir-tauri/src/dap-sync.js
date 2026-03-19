@@ -17,7 +17,7 @@ let syncPlan = null
 let isSyncing = false
 let mountedVolumes = new Set()
 let _externalVolumes = [] // Full ExternalVolume objects from last refresh
-let dapSubView = 'setup' // setup | albums | syncing | complete | disconnected | settings | first-sync
+let dapSubView = 'setup' // setup | albums | syncing | complete | disconnected | settings | first-sync | error
 let syncProgress = { phase: '', current: 0, total: 0, currentFile: '', bytesCopied: 0, totalBytes: 0 }
 let syncResult = null
 let albumSearchFilter = ''
@@ -92,6 +92,7 @@ const TRANSFORMER_SVG = `<svg width="72" height="72" viewBox="0 0 20 20" fill="n
 // === HELPERS ===
 
 function formatBytes(bytes) {
+  if (bytes < 0) return '-' + formatBytes(-bytes)
   if (bytes === 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
@@ -623,6 +624,7 @@ export function displayDapSyncView() {
     case 'complete': renderCompleteView(grid); break
     case 'disconnected': renderDisconnectedView(grid); break
     case 'settings': renderSettingsView(grid); break
+    case 'error': renderErrorView(grid); break
     case 'first-sync': renderFirstSyncView(grid); break
     default: renderSetupView(grid); break
   }
@@ -1499,6 +1501,7 @@ function renderCompleteView(grid) {
   const dest = getCurrentDest()
   const deviceName = dest?.name || 'Device'
   const r = syncResult || {}
+  const hasErrors = r.errors?.length > 0
 
   const freeBytes = dest?._freeBytes || 0
   const totalBytes = dest?._totalBytes || 0
@@ -1518,6 +1521,21 @@ function renderCompleteView(grid) {
     return `<span class="dap-particle" style="--tx:${tx}px;--ty:${ty}px;--dur:${dur}s;--delay:${delay}s;width:${size}px;height:${size}px"></span>`
   }).join('')
 
+  // Title adapts to success vs partial success
+  const titleText = hasErrors ? 'Sync completed with errors' : 'Sync complete'
+  const subtitleText = hasErrors
+    ? `${r.filesCopied || 0} files synced to ${escapeHtml(deviceName)} — ${r.errors.length} failed`
+    : `All changes applied to ${escapeHtml(deviceName)}`
+
+  // Error report section (only if errors exist)
+  // Build error report: show ALL errors (not just 20), make text selectable/copiable
+  const errorReportHtml = hasErrors ? `
+    <div class="dap-complete-error-report">
+      <div class="dap-complete-error-header">${r.errors.length} file${r.errors.length > 1 ? 's' : ''} could not be synced</div>
+      <textarea class="dap-error-textarea" readonly rows="8" spellcheck="false">${r.errors.map(e => e).join('\n')}</textarea>
+    </div>
+  ` : ''
+
   div.innerHTML = `
     <div class="dap-complete-dap-icon">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -1527,23 +1545,26 @@ function renderCompleteView(grid) {
         <circle cx="12" cy="17" r="3.5"/>
         <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"/>
       </svg>
-      <div class="dap-check-badge">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-          <path class="dap-check-path" d="M5 12l5 5L19 7"/>
-        </svg>
+      <div class="${hasErrors ? 'dap-warn-badge' : 'dap-check-badge'}">
+        ${hasErrors
+          ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/></svg>'
+          : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path class="dap-check-path" d="M5 12l5 5L19 7"/></svg>'
+        }
       </div>
       ${particles}
     </div>
-    <div class="dap-complete-title">Sync complete</div>
-    <div class="dap-complete-subtitle">All changes applied to ${escapeHtml(deviceName)}</div>
+    <div class="dap-complete-title">${titleText}</div>
+    <div class="dap-complete-subtitle">${subtitleText}</div>
     <div class="dap-complete-stats">
       <div class="dap-complete-row"><span>Files copied</span><span class="g">+${r.filesCopied || 0}</span></div>
+      ${hasErrors ? `<div class="dap-complete-row"><span>Files failed</span><span class="r">${r.errors.length}</span></div>` : ''}
       <div class="dap-complete-row"><span>Files removed</span><span class="r">&minus;${r.filesDeleted || 0}</span></div>
       <div class="dap-complete-divider"></div>
       <div class="dap-complete-row"><span>DAP storage</span><span>${formatBytes(totalBytes - freeBytes)} / ${formatBytes(totalBytes)}</span></div>
       <div class="dap-storage-bar"><div class="dap-storage-fill" style="width:${usedPct}%"></div></div>
       <div class="dap-sum-footer-text">${formatBytes(freeBytes)} free</div>
     </div>
+    ${errorReportHtml}
     <div class="dap-complete-actions">
       <div class="dap-eject-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 10H5l7-10z"/><line x1="5" y1="21" x2="19" y2="21"/></svg> You can safely eject your SD card</div>
       <button class="dap-btn-primary" id="dap-done-btn" style="margin-top: 16px;">Done</button>
@@ -1718,7 +1739,7 @@ function renderSettingsView(grid) {
       <div class="dap-toggle ${dest.showInSidebar !== false ? 'on' : ''}" id="dap-settings-sidebar"></div>
     </div>
     <div class="dap-set-row last">
-      <div><div class="dap-set-label">Last sync</div><div class="dap-set-desc">${dest.lastSync ? new Date(dest.lastSync).toLocaleString() : 'Never'}</div></div>
+      <div><div class="dap-set-label">Last sync</div><div class="dap-set-desc">${dest.lastSyncAt ? new Date(dest.lastSyncAt).toLocaleString() : 'Never'}</div></div>
     </div>
   `
 
@@ -1743,6 +1764,64 @@ function renderSettingsView(grid) {
   div.querySelector('#dap-settings-back').addEventListener('click', () => {
     dapSubView = 'albums'
     app.displayCurrentView()
+  })
+}
+
+// === SCREEN 8: SYNC ERROR ===
+
+function renderErrorView(grid) {
+  const dest = getCurrentDest()
+  const deviceName = dest?.name || 'Device'
+  const r = syncResult || {}
+  const errorList = r.errors || []
+
+  // Separate the abort message from individual file errors
+  const abortMsg = errorList.find(e => e.startsWith('Aborting:') || e.startsWith('Destination not writable'))
+  const fileErrors = errorList.filter(e => !e.startsWith('Aborting:') && !e.startsWith('Destination not writable'))
+
+  const div = document.createElement('div')
+  div.className = 'dap-setup-center dap-fade-in'
+
+  div.innerHTML = `
+    <div class="dap-error-icon">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="1" width="14" height="22" rx="2.5"/>
+        <rect x="7" y="3" width="10" height="8" rx="1"/>
+        <path d="M10 6l3 1.5-3 1.5V6z" fill="currentColor" stroke="none"/>
+        <circle cx="12" cy="17" r="3.5"/>
+        <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"/>
+      </svg>
+      <div class="dap-error-badge">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 8v4"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/>
+        </svg>
+      </div>
+    </div>
+    <div class="dap-error-title">Sync failed</div>
+    <div class="dap-error-subtitle">${r.filesCopied > 0 ? `${r.filesCopied} files copied before failure` : 'No files were copied'}</div>
+    ${abortMsg ? `<div class="dap-error-reason">${escapeHtml(abortMsg)}</div>` : ''}
+    ${fileErrors.length > 0 ? `
+      <div class="dap-error-details">
+        <div class="dap-error-details-header">${fileErrors.length} error${fileErrors.length > 1 ? 's' : ''}</div>
+        <textarea class="dap-error-textarea" readonly rows="6" spellcheck="false">${fileErrors.join('\n')}</textarea>
+      </div>
+    ` : ''}
+    <div class="dap-error-actions">
+      <button class="dap-btn-secondary" id="dap-error-back-btn">Back to albums</button>
+      <button class="dap-btn-primary" id="dap-error-retry-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/></svg>
+        Retry sync
+      </button>
+    </div>
+  `
+
+  grid.appendChild(div)
+  div.querySelector('#dap-error-back-btn').addEventListener('click', () => {
+    dapSubView = 'albums'
+    app.displayCurrentView()
+  })
+  div.querySelector('#dap-error-retry-btn').addEventListener('click', () => {
+    startSync()
   })
 }
 
@@ -1870,10 +1949,16 @@ function buildTracksForSync() {
 
 function estimateFileSize(meta) {
   if (!meta?.duration) return 0
-  if (meta.bitrate) return Math.round(meta.duration * meta.bitrate / 8)
+  if (meta.bitrate && meta.bitrate > 0) return Math.round(meta.duration * meta.bitrate / 8)
   const sr = meta.sampleRate || 44100
   const bd = meta.bitDepth || 16
-  return Math.round(meta.duration * sr * bd * 2 / 8)
+  const rawPcmBytes = Math.round(meta.duration * sr * bd * 2 / 8)
+  // Lossless formats (FLAC, ALAC) compress to ~60-65% of raw PCM
+  const ext = (meta.format || meta.codec || meta.path || '').toLowerCase()
+  if (ext.includes('flac') || ext.includes('alac') || ext.includes('ape')) {
+    return Math.round(rawPcmBytes * 0.65)
+  }
+  return rawPcmBytes
 }
 
 async function saveDestSettings(dest) {
@@ -1957,19 +2042,21 @@ function setupEventListeners() {
     syncResult = c
     renderSidebarDestinations()
 
-    if (c.success) {
+    if (c.errors?.length > 0 && c.errors[0].includes('cancelled')) {
+      showToast('Sync cancelled', 'warning')
+      dapSubView = 'albums'
+    } else if (c.success) {
+      // Perfect sync — no errors at all
       dapSubView = 'complete'
-      // Await volume refresh so renderCompleteView() reads up-to-date free/total bytes
       await refreshMountedVolumes()
-    } else if (c.errors?.length > 0) {
-      const msg = c.errors[0]
-      if (msg.includes('cancelled')) {
-        showToast('Sync cancelled', 'warning')
-        dapSubView = 'albums'
-      } else {
-        showToast(`Sync failed: ${msg}`, 'error')
-        dapSubView = 'albums'
-      }
+    } else if (c.filesCopied > 0) {
+      // Partial success — some files copied, some errors
+      // Show complete screen (files were synced) but with error report
+      dapSubView = 'complete'
+      await refreshMountedVolumes()
+    } else {
+      // Total failure — no files copied
+      dapSubView = 'error'
     }
 
     if (ui.currentView === 'dap-sync') {

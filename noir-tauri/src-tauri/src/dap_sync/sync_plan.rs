@@ -158,8 +158,18 @@ pub fn compute_sync_plan(
                     if entry.path().is_dir() {
                         walk_dap(&entry.path(), &rel, files, folders_with_files);
                     } else {
-                        files.insert(rel);
-                        has_audio_files = true;
+                        files.insert(rel.clone());
+                        // Only count actual audio files for folder-match detection,
+                        // not cover.jpg, Thumbs.db, desktop.ini, etc.
+                        let lower = name.to_lowercase();
+                        if lower.ends_with(".flac") || lower.ends_with(".mp3")
+                            || lower.ends_with(".wav") || lower.ends_with(".m4a")
+                            || lower.ends_with(".aac") || lower.ends_with(".ogg")
+                            || lower.ends_with(".opus") || lower.ends_with(".alac")
+                            || lower.ends_with(".aiff") || lower.ends_with(".wma")
+                        {
+                            has_audio_files = true;
+                        }
                     }
                 }
                 if has_audio_files && !prefix.is_empty() {
@@ -186,7 +196,6 @@ pub fn compute_sync_plan(
     let mut files_to_copy = Vec::new();
     let mut files_unchanged: usize = 0;
     let mut files_found_on_disk: usize = 0;
-    let mut files_found_via_folder: usize = 0;
     let mut total_copy_bytes: u64 = 0;
     let mut unchanged_album_id_set: std::collections::HashSet<i64> = std::collections::HashSet::new();
 
@@ -212,26 +221,16 @@ pub fn compute_sync_plan(
             files_found_on_disk += 1;
             unchanged_album_id_set.insert(track.album_id);
         } else {
-            // Exact file path not found. Try album folder match:
-            // If the album folder exists on DAP (e.g., "St Germain/Tourist (2012 Remaster)")
-            // AND it contains audio files, consider this album as "on DAP" even if individual
-            // filenames differ (metadata may have changed since last sync).
-            // Uses case-insensitive fallback for exFAT/FAT32 volumes.
-            let album_folder = dest_rel.rfind('/').map(|pos| &dest_rel[..pos]);
-            let folder_has_files = album_folder.map(|f| {
-                dap_folders_with_files.contains(f) || dap_folders_lower.contains(&f.to_lowercase())
-            }).unwrap_or(false);
-
-            if folder_has_files {
-                // Album folder exists with files — treat as on DAP
-                files_unchanged += 1;
-                files_found_via_folder += 1;
-                unchanged_album_id_set.insert(track.album_id);
-            } else {
+            // File not in manifest AND not on disk → needs to be copied.
+            // NOTE: We no longer use album folder matching for copy decisions.
+            // Previous folder match caused false "on DAP" status after partial syncs
+            // (e.g., 1 file of 20 copied → entire album marked as "unchanged").
+            // The manifest is the only reliable source for unchanged-file detection.
+            {
                 // Log first few mismatches for debugging
                 if mismatch_log_count < 5 {
-                    eprintln!("[DEBUG-RS] Track NOT on DAP: dest_rel={:?}, album_folder={:?}, artist={:?}, album={:?}",
-                        dest_rel, album_folder, track.artist, track.album);
+                    eprintln!("[DEBUG-RS] Track NOT on DAP: dest_rel={:?}, artist={:?}, album={:?}",
+                        dest_rel, track.artist, track.album);
                     mismatch_log_count += 1;
                 }
                 // New file — use size_bytes from frontend (estimated from metadata).
@@ -251,8 +250,8 @@ pub fn compute_sync_plan(
             }
         }
     }
-    eprintln!("[PERF-RS] track loop: {:?} ({} tracks, {} unchanged ({} via disk, {} via folder match), {} to copy)",
-        t2.elapsed(), tracks.len(), files_unchanged, files_found_on_disk, files_found_via_folder, files_to_copy.len());
+    eprintln!("[PERF-RS] track loop: {:?} ({} tracks, {} unchanged ({} via disk), {} to copy)",
+        t2.elapsed(), tracks.len(), files_unchanged, files_found_on_disk, files_to_copy.len());
 
     // Mirror mode: find files in manifest that are no longer selected → delete
     let mut files_to_delete = Vec::new();
@@ -390,10 +389,12 @@ pub fn build_dest_path(track: &TrackForSync, structure: &str) -> String {
         .map(|e| e.to_string_lossy().to_string())
         .unwrap_or_else(|| "flac".into());
 
-    let filename = if track_num > 0 {
-        format!("{:02} - {}.{}", track_num, title, extension)
-    } else {
-        format!("{}.{}", title, extension)
+    let disc_num = track.disc_number.unwrap_or(0);
+    let filename = match (disc_num, track_num) {
+        // Multi-disc: prefix disc number for disc 2+ (disc 1 stays clean)
+        (d, n) if d > 1 && n > 0 => format!("{}-{:02} - {}.{}", d, n, title, extension),
+        (_, n) if n > 0 => format!("{:02} - {}.{}", n, title, extension),
+        _ => format!("{}.{}", title, extension),
     };
 
     match structure {
@@ -406,21 +407,95 @@ pub fn build_dest_path(track: &TrackForSync, structure: &str) -> String {
 }
 
 /// Sanitize a string for use as a filename on FAT32/exFAT/NTFS.
+/// CRITICAL: Normalizes to NFC (composed Unicode) — exFAT requires NFC,
+/// but macOS metadata and HFS+/APFS paths often use NFD (decomposed).
+/// Without NFC normalization, directories with accented characters (ô, é, ñ, etc.)
+/// are created on exFAT but become unusable (EINVAL on any child operation).
+///
+/// Additionally, the macOS exFAT driver has a known bug that corrupts directory entries
+/// when folder names contain certain Unicode accented characters (ô, ã, é). The only
+/// reliable fix is ASCII transliteration via `deunicode`. Metadata in the audio files
+/// retains the original characters — only filesystem paths are transliterated.
 pub fn sanitize_filename(name: &str) -> String {
-    let sanitized: String = name
+    use deunicode::deunicode;
+    use unicode_normalization::UnicodeNormalization;
+
+    // Step 1: Normalize to NFC (composed form)
+    let nfc: String = name.nfc().collect();
+
+    // Step 2: ASCII transliteration — prevents macOS exFAT driver corruption
+    // ô → o, ã → a, é → e, … → ..., — → -, etc.
+    let ascii = deunicode(&nfc);
+
+    // Step 3: Strip zero-width and invisible characters that deunicode may leave
+    let cleaned: String = ascii
+        .chars()
+        .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' | '\u{00AD}'))
+        .collect();
+
+    // Step 4: Replace filesystem-illegal characters
+    let sanitized: String = cleaned
         .chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
             _ => c,
         })
         .collect();
 
-    // Trim leading/trailing whitespace and dots
-    let trimmed = sanitized.trim().trim_end_matches('.');
+    // Step 5: Collapse consecutive dots (... → ·, .. → ·) — macOS exFAT driver
+    // returns EINVAL on create_dir_all when directory names contain consecutive dots.
+    // Also collapse leading dots to prevent hidden files on Unix.
+    let mut collapsed = String::with_capacity(sanitized.len());
+    let mut prev_dot = false;
+    for c in sanitized.chars() {
+        if c == '.' {
+            if !prev_dot {
+                collapsed.push(c);
+            }
+            prev_dot = true;
+        } else {
+            prev_dot = false;
+            collapsed.push(c);
+        }
+    }
 
-    // Truncate to 200 chars for FAT32 safety
+    // Step 6: Trim leading/trailing whitespace and dots
+    let trimmed = collapsed.trim().trim_end_matches('.');
+
+    // Step 6: Protect Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+    let upper = trimmed.to_uppercase();
+    let base = upper.split('.').next().unwrap_or("");
+    if matches!(
+        base,
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        return format!("_{}", trimmed);
+    }
+
+    // Step 7: Truncate to 200 chars for FAT32 safety
     if trimmed.len() > 200 {
-        // Find a word boundary near 200
         let truncated = &trimmed[..200];
         if let Some(pos) = truncated.rfind(' ') {
             truncated[..pos].to_string()
@@ -498,6 +573,72 @@ mod tests {
         let long_name = "A".repeat(250);
         let result = sanitize_filename(&long_name);
         assert!(result.len() <= 200);
+    }
+
+    #[test]
+    fn test_sanitize_filename_ascii_transliteration() {
+        // macOS exFAT driver corrupts dirs with accented chars — must be transliterated
+        assert_eq!(sanitize_filename("Antônio Carlos Jobim"), "Antonio Carlos Jobim");
+        assert_eq!(sanitize_filename("Nara Leão"), "Nara Leao");
+        assert_eq!(sanitize_filename("João Gilberto"), "Joao Gilberto");
+        assert_eq!(sanitize_filename("L'École du Micro d'Argent"), "L'Ecole du Micro d'Argent");
+        assert_eq!(sanitize_filename("Søn Of Dad"), "Son Of Dad");
+    }
+
+    #[test]
+    fn test_sanitize_filename_unicode_special_chars() {
+        // Ellipsis, em-dash, en-dash must be transliterated to ASCII equivalents
+        let result = sanitize_filename("One Nite Alone\u{2026} Live!");
+        assert!(!result.contains('\u{2026}'), "Ellipsis should be transliterated");
+        // Consecutive dots are collapsed: ... → .
+        assert!(!result.contains(".."), "Consecutive dots should be collapsed: {}", result);
+
+        let result2 = sanitize_filename("Track \u{2014} Version");
+        assert!(!result2.contains('\u{2014}'), "Em-dash should be transliterated");
+    }
+
+    #[test]
+    fn test_sanitize_filename_consecutive_dots() {
+        // macOS exFAT returns EINVAL on directories with consecutive dots
+        assert_eq!(sanitize_filename("One Nite Alone... Live!"), "One Nite Alone. Live!");
+        assert_eq!(sanitize_filename("The Vault... Old Friends 4 Sale"), "The Vault. Old Friends 4 Sale");
+        assert_eq!(sanitize_filename("N.E.W.S"), "N.E.W.S"); // single dots OK
+        assert_eq!(sanitize_filename("SEPT. 5TH"), "SEPT. 5TH"); // single dot OK
+        assert_eq!(sanitize_filename("test..name"), "test.name"); // double dot collapsed
+    }
+
+    #[test]
+    fn test_sanitize_filename_windows_reserved() {
+        assert_eq!(sanitize_filename("CON"), "_CON");
+        assert_eq!(sanitize_filename("PRN"), "_PRN");
+        assert_eq!(sanitize_filename("AUX"), "_AUX");
+        assert_eq!(sanitize_filename("NUL"), "_NUL");
+        assert_eq!(sanitize_filename("COM1"), "_COM1");
+        assert_eq!(sanitize_filename("LPT3"), "_LPT3");
+        // Normal names should not be affected
+        assert_eq!(sanitize_filename("Concert"), "Concert");
+        assert_eq!(sanitize_filename("Connections"), "Connections");
+    }
+
+    #[test]
+    fn test_sanitize_filename_pure_ascii_passthrough() {
+        // Pure ASCII should pass through unchanged
+        assert_eq!(sanitize_filename("Daft Punk"), "Daft Punk");
+        assert_eq!(sanitize_filename("Random Access Memories"), "Random Access Memories");
+    }
+
+    #[test]
+    fn test_build_dest_path_disc_number() {
+        let mut track = make_track("/music/a.flac", "Album A", "Artist A", 10_000_000, 1);
+        // Disc 1 — no prefix
+        track.disc_number = Some(1);
+        let path = build_dest_path(&track, "artist_album_track");
+        assert!(path.contains("/01 - "), "Disc 1 should not have disc prefix: {}", path);
+
+        // Disc 2 — prefix with disc number
+        track.disc_number = Some(2);
+        let path2 = build_dest_path(&track, "artist_album_track");
+        assert!(path2.contains("/2-01 - "), "Disc 2 should have disc prefix: {}", path2);
     }
 
     #[test]

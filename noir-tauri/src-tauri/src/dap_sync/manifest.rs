@@ -23,23 +23,41 @@ pub struct SyncedFile {
 
 const MANIFEST_FILENAME: &str = ".hean-sync.json";
 
-/// Lit le manifest depuis le dossier destination. Retourne None si absent.
+/// Lit le manifest depuis le dossier destination. Retourne None si absent ou corrompu.
 pub fn read_manifest(dest_path: &str) -> Result<Option<SyncManifest>, String> {
     let path = Path::new(dest_path).join(MANIFEST_FILENAME);
     if !path.exists() {
         return Ok(None);
     }
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read manifest: {}", e))?;
-    let manifest: SyncManifest =
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse manifest: {}", e))?;
-    Ok(Some(manifest))
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[DAP] Manifest corrupted ({}), deleting and treating as fresh sync",
+                e
+            );
+            let _ = std::fs::remove_file(&path);
+            return Ok(None);
+        }
+    };
+    match serde_json::from_str::<SyncManifest>(&content) {
+        Ok(manifest) => Ok(Some(manifest)),
+        Err(e) => {
+            eprintln!(
+                "[DAP] Manifest JSON invalid ({}), deleting and treating as fresh sync",
+                e
+            );
+            let _ = std::fs::remove_file(&path);
+            Ok(None)
+        }
+    }
 }
 
 /// Écrit le manifest dans le dossier destination.
 pub fn write_manifest(dest_path: &str, manifest: &SyncManifest) -> Result<(), String> {
     let path = Path::new(dest_path).join(MANIFEST_FILENAME);
-    let content =
-        serde_json::to_string_pretty(manifest).map_err(|e| format!("Failed to serialize manifest: {}", e))?;
+    let content = serde_json::to_string_pretty(manifest)
+        .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
     std::fs::write(&path, content).map_err(|e| format!("Failed to write manifest: {}", e))?;
     Ok(())
 }
@@ -64,15 +82,13 @@ mod tests {
             last_sync: "2026-03-11T12:00:00Z".into(),
             destination_path: dest.clone(),
             folder_structure: "artist_album_track".into(),
-            files: vec![
-                SyncedFile {
-                    source_path: "/music/test.flac".into(),
-                    dest_relative_path: "Artist/Album/01 - Track.flac".into(),
-                    size_bytes: 50_000_000,
-                    modified_at: "2026-01-01T00:00:00Z".into(),
-                    quick_hash: "abc123".into(),
-                },
-            ],
+            files: vec![SyncedFile {
+                source_path: "/music/test.flac".into(),
+                dest_relative_path: "Artist/Album/01 - Track.flac".into(),
+                size_bytes: 50_000_000,
+                modified_at: "2026-01-01T00:00:00Z".into(),
+                quick_hash: "abc123".into(),
+            }],
         };
 
         write_manifest(&dest, &manifest).unwrap();
