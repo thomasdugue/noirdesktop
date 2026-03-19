@@ -19,12 +19,26 @@ for f in src/*.js; do node --check "$f" && echo "OK: $f"; done
 There is no JS linter config and no bundler. The frontend is served as-is from `src/` (`tauri.conf.json` → `frontendDist: "../src"`).
 
 ```bash
-# JS tests (Jest, 4 test files in src/__tests__/)
+# JS tests (Jest, 13 test files in src/__tests__/, ~151 total, ~137 passing)
 npm test -- --watchAll=false          # Run once
 npm test -- --watchAll=false --testPathPattern=FormatDisplay  # Single test file
 ```
 
-Test files: `FormatDisplay.test.js`, `Navigation.test.js`, `PlayerControls.test.js`, `AlbumView.test.js`. Many tests are skipped (require Tauri `invoke` which isn't available in Node test environment).
+**Active test files (137 passing):**
+- `FormatDisplay.test.js` (11) — lossless/lossy format display
+- `AlbumGrouping.test.js` (10) — album grouping, normalizeKey
+- `UtilsPure.test.js` (25) — formatTime, formatAlbumDuration, getCodecFromPath, isValidImageSrc, escapeHtml
+- `StatePure.test.js` (13) — clearObject, state shape validation
+- `SearchIndex.test.js` (17) — buildSearchIndex, searchTracksWithIndex
+- `LibraryLookup.test.js` (8) — buildTrackLookup, normalizeKey edge cases
+- `QueueManagement.test.js` (14) — addToQueue, playNext, removeFromQueue, clearQueue
+- `PopulateQueue.test.js` (16) — populateQueueFromContext, replenishQueue
+- `TrackNavigation.test.js` (13) — getNextTrackPath, getNextTrackInfo, getCurrentTrackPath
+- `FavoritesLogic.test.js` (10) — getValidFavoritesCount, getFavoriteButtonHtml
+
+**Skipped test files (14 tests, require jsdom):** `Navigation.test.js`, `PlayerControls.test.js`, `AlbumView.test.js`
+
+**Test patterns:** dynamic imports in `beforeAll` (setup.js stubs run first), `makeTrack()` factory, state reset in `beforeEach`, `{ library, clearObject }` from `../state.js`, `{ app }` from `../app.js`.
 
 The `.claude/launch.json` entry (name: `"noir-tauri"`) runs `npm run tauri dev` with env vars sourced from `scripts/.env.local`. Used by `preview_start` to start the dev server in Claude sessions. The native window opens; there is no browser URL to preview.
 
