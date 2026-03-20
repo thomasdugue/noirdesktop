@@ -161,28 +161,8 @@ export const PERF = {
   },
 
   log() {
-    const hitRate = this.thumbnailCalls > 0 ? (this.thumbnailCacheHits / this.thumbnailCalls * 100).toFixed(1) : 0;
-    const avgTime = this.thumbnailCalls > 0 ? (this.totalLoadTime / this.thumbnailCalls).toFixed(0) : 0;
-    console.log(`%c[PERF] === THUMBNAIL PERFORMANCE REPORT ===`, 'color: #00ff00; font-weight: bold');
-    console.log(`[PERF] Total calls: ${this.thumbnailCalls}`);
-    console.log(`[PERF] Cache hits: ${this.thumbnailCacheHits} (${hitRate}%)`);
-    console.log(`[PERF] Cache misses: ${this.thumbnailCacheMisses}`);
-    console.log(`[PERF] Cover fallbacks: ${this.coverFallbacks}`);
-    console.log(`[PERF] Internet fallbacks: ${this.internetFallbacks}`);
-    console.log(`[PERF] Avg load time: ${avgTime}ms`);
-    console.log(`[PERF] Slow loads (>500ms): ${this.slowLoads.length}`);
-    if (this.slowLoads.length > 0) {
-      console.log(`[PERF] Top 10 slowest:`);
-      this.slowLoads.sort((a, b) => parseInt(b.time) - parseInt(a.time)).slice(0, 10).forEach((s, i) => {
-        console.log(`  ${i + 1}. ${s.time}ms - ${s.type} - ${s.path}`);
-      });
-    }
-    console.log(`%c[PERF] === END REPORT ===`, 'color: #00ff00; font-weight: bold');
   },
 };
-
-// Expose pour debug console
-window.PERF = PERF;
 
 // === DOM ELEMENTS ===
 // Références aux éléments principaux de la page

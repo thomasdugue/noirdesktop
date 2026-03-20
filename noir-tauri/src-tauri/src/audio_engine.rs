@@ -163,7 +163,7 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
-    pub fn new(app_handle: Option<AppHandle>) -> Self {
+    pub fn new(app_handle: Option<AppHandle>) -> Result<Self, String> {
         let (command_tx, command_rx) = bounded::<AudioCommand>(32);
         let state = Arc::new(PlaybackState::new());
         let state_clone = Arc::clone(&state);
@@ -176,10 +176,7 @@ impl AudioEngine {
                 b
             }
             Err(e) => {
-                eprintln!("Failed to create audio backend: {}. Using fallback.", e);
-                // Fallback: create a dummy backend that does nothing
-                // For now we panic since macOS should always work
-                panic!("Audio backend required: {}", e);
+                return Err(format!("Audio backend required: {}", e));
             }
         };
         let backend = Arc::new(Mutex::new(backend));
@@ -193,13 +190,13 @@ impl AudioEngine {
             Self::audio_thread_main(command_rx, state_clone, app_handle, backend_clone, eq_state_clone);
         });
 
-        Self {
+        Ok(Self {
             command_tx,
             state,
             _audio_thread: audio_thread,
             backend,
             eq_state,
-        }
+        })
     }
 
     // === Public API for device control ===

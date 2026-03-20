@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Noir",
-  "version": "0.1.0",
-  "identifier": "com.tdugue.noir",
+  "productName": "Hean",
+  "version": "0.2.0-beta.1",
+  "identifier": "com.tdugue.hean",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Noir",
+        "title": "Hean",
         "width": 1200,
         "height": 800,
         "minWidth": 320,

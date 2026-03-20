@@ -61,7 +61,8 @@
       "Bash(sort -t: -k2 -rn)",
       "Bash(npx @tauri-apps/cli@latest signer generate --help)",
       "Bash(npx @tauri-apps/cli signer generate -w ~/.tauri/noir-desktop.key -p \"noir-beta-2026\" --ci)",
-      "Bash(echo \"OK: $f\")"
+      "Bash(echo \"OK: $f\")",
+      "Bash(git push:*)"
     ]
   }
 }

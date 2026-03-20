@@ -128,47 +128,66 @@ export async function loadPlaylists() {
 // === PLAYLIST THUMBNAIL 2×2 ===
 
 /**
- * Retourne jusqu'à `limit` paths de tracks (1 par album unique si la librairie est chargée)
- * pour construire le thumbnail de playlist.
+ * Retourne jusqu'à `limit` objets { path, artist, album } (1 par album unique si la
+ * librairie est chargée) pour construire le thumbnail de playlist.
  * Résilient : si library.tracks est vide (init pas encore terminée), retourne les premiers
  * paths bruts sans déduplication — les covers se chargeront quand même via get_cover.
  * Synchrone — les URLs sont chargées après par loadPlaylistThumbs().
+ * artist/album sont nécessaires pour le fallback internet (MusicBrainz/Deezer).
+ *
+ * IMPORTANT : la déduplication utilise le nom d'album seul (trim + NFC), identique à
+ * la clé de `library.albums` (normalizeKey). Ne PAS dédupliquer par artist+album sinon
+ * les variations "feat." créent de faux doublons (même album → couverture identique × N).
  */
-function getPlaylistAlbumPaths(playlist, limit = 4) {
+function getPlaylistAlbumCovers(playlist, limit = 4) {
   const seenAlbums = new Set()
-  const paths = []
+  const covers = []
 
   for (const path of playlist.trackPaths) {
-    if (paths.length >= limit) break
+    if (covers.length >= limit) break
     const track = library.tracks.find(t => t.path === path)
 
     if (track) {
-      // Librairie chargée : déduplique par album (1 cover par album)
-      const albumKey = `${track.metadata?.artist || ''}::${track.metadata?.album || ''}`
+      // Librairie chargée : déduplique par album seul (même clé que library.albums)
+      const album = track.metadata?.album || ''
+      const albumKey = album.trim().normalize('NFC') || '__unknown__'
       if (seenAlbums.has(albumKey)) continue
       seenAlbums.add(albumKey)
+
+      const artist = track.metadata?.artist || ''
+      covers.push({ path, artist, album })
+    } else {
+      // Librairie pas encore chargée : prend le path directement sans dédup
+      // (acceptable en attendant le rebuild post-init)
+      covers.push({ path, artist: '', album: '' })
     }
-    // Librairie pas encore chargée : prend le path directement sans dédup
-    // (acceptable en attendant le rebuild post-init)
-    paths.push(path)
   }
 
-  return paths
+  return covers
 }
 
 /**
  * Construit le HTML du thumbnail playlist avec un layout adaptatif selon le nombre de covers.
- * - 0 paths : icône ♪ centrée sur fond sombre
- * - 1 path  : image pleine résolution (carré unique, pas de grille)
- * - 2 paths : deux images côte à côte (split vertical)
- * - 3-4 paths : grille 2×2 ; le 4e slot répète le 1er si seulement 3 covers
+ * - 0 covers : icône ♪ centrée sur fond sombre
+ * - 1 cover  : image pleine résolution (carré unique, pas de grille)
+ * - 2 covers : deux images côte à côte (split vertical)
+ * - 3-4 covers : grille 2×2 ; le 4e slot répète le 1er si seulement 3 covers
  * Utilise des <div> (pas <img>) pour éviter le rendu "broken image" du navigateur.
  * Le background-image est injecté async par loadPlaylistThumbs().
+ * `covers` = tableau d'objets { path, artist, album } (depuis getPlaylistAlbumCovers).
  * `size`: 'small' (sidebar 28×28) | 'large' (header 96×96)
  */
-function buildPlaylistThumbHtml(paths, size = 'small') {
+function buildPlaylistThumbHtml(covers, size = 'small') {
   const sizeClass = size === 'large' ? 'playlist-cover-grid-lg' : 'playlist-cover-grid-sm'
-  const count = paths.length
+  const count = covers.length
+
+  // Génère les attributs data-* d'une cellule (path + artist/album pour fallback internet)
+  const cellAttrs = (c) => {
+    let attrs = `data-cover-path="${escapeHtml(c.path)}"`
+    if (c.artist) attrs += ` data-cover-artist="${escapeHtml(c.artist)}"`
+    if (c.album) attrs += ` data-cover-album="${escapeHtml(c.album)}"`
+    return attrs
+  }
 
   // 0 covers : placeholder musical
   if (count === 0) {
@@ -177,29 +196,30 @@ function buildPlaylistThumbHtml(paths, size = 'small') {
 
   // 1 cover : image pleine (une seule colonne)
   if (count === 1) {
-    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-single"><div class="playlist-cover-cell" data-cover-path="${escapeHtml(paths[0])}"></div></div>`
+    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-single"><div class="playlist-cover-cell" ${cellAttrs(covers[0])}></div></div>`
   }
 
   // 2 covers : côte à côte (2 colonnes, 1 rangée pleine hauteur)
   if (count === 2) {
-    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-duo"><div class="playlist-cover-cell" data-cover-path="${escapeHtml(paths[0])}"></div><div class="playlist-cover-cell" data-cover-path="${escapeHtml(paths[1])}"></div></div>`
+    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-duo"><div class="playlist-cover-cell" ${cellAttrs(covers[0])}></div><div class="playlist-cover-cell" ${cellAttrs(covers[1])}></div></div>`
   }
 
   // 3-4 covers : grille 2×2 ; répète le 1er pour le 4e slot si nécessaire
   const cells = []
   for (let i = 0; i < 4; i++) {
-    const p = paths[i] || paths[0] // le 4e slot répète le 1er si seulement 3 covers
-    cells.push(`<div class="playlist-cover-cell" data-cover-path="${escapeHtml(p)}"></div>`)
+    const c = covers[i] || covers[0] // le 4e slot répète le 1er si seulement 3 covers
+    cells.push(`<div class="playlist-cover-cell" ${cellAttrs(c)}></div>`)
   }
   return `<div class="${sizeClass} playlist-cover-grid">${cells.join('')}</div>`
 }
 
 /**
  * Charge de manière asynchrone les thumbnails pour toutes les cellules [data-cover-path]
- * dans `containerEl`. Chaîne de fallback :
+ * dans `containerEl`. Chaîne de fallback 4 niveaux :
  *   1. thumbnailCache / coverCache (mémoire)
  *   2. get_cover_thumbnail (cache disque, instantané si pré-généré)
- *   3. get_cover (extrait depuis le fichier audio si besoin — toujours fiable)
+ *   3. get_cover (extrait depuis le fichier audio si besoin)
+ *   4. fetch_internet_cover (MusicBrainz/Deezer — nécessite artist + album)
  * Fire-and-forget : appelé après le rendu HTML (innerHTML ou appendChild).
  */
 async function loadPlaylistThumbs(containerEl) {
@@ -220,6 +240,15 @@ async function loadPlaylistThumbs(containerEl) {
         //    (génère et cache automatiquement ; toujours fiable si la track a une cover)
         if (!url) {
           url = await invoke('get_cover', { path })
+        }
+
+        // 4. Fallback internet : MusicBrainz / Deezer (si pas de cover embarquée)
+        if (!url) {
+          const artist = cell.dataset.coverArtist
+          const album = cell.dataset.coverAlbum
+          if (artist && album) {
+            url = await invoke('fetch_internet_cover', { artist, album })
+          }
         }
 
         if (url) {
@@ -266,8 +295,8 @@ export function updatePlaylistsSidebar() {
            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
          </svg>`
     } else {
-      const albumPaths = getPlaylistAlbumPaths(playlist)
-      icon = buildPlaylistThumbHtml(albumPaths, 'small')
+      const albumCovers = getPlaylistAlbumCovers(playlist)
+      icon = buildPlaylistThumbHtml(albumCovers, 'small')
     }
 
     return `
@@ -540,13 +569,12 @@ export function displayPlaylistView(playlist) {
   const totalDuration = playlistTracks.reduce((acc, t) => acc + (t.metadata?.duration || 0), 0)
 
   // Thumbnail 2×2 pour la vue détail (chargement async des covers)
-  const albumPaths = getPlaylistAlbumPaths(playlist)
-  const coverUrls = albumPaths  // alias pour la compatibilité ci-dessous
+  const albumCovers = getPlaylistAlbumCovers(playlist)
   const coverHtml = playlist.id === 'favorites'
     ? `<div class="playlist-cover-grid-lg playlist-cover-grid playlist-cover-favorites">
          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
        </div>`
-    : buildPlaylistThumbHtml(albumPaths, 'large')
+    : buildPlaylistThumbHtml(albumCovers, 'large')
 
   header.innerHTML = `
     <div class="playlist-header-left">
@@ -606,12 +634,23 @@ export function displayPlaylistView(playlist) {
       const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
       return `
         <div class="playlist-track-item" data-index="${index}" data-track-path="${track.path}">
+          ${getFavoriteButtonHtml(track.path)}
           <span class="playlist-track-number">${index + 1}</span>
           <div class="playlist-track-info">
             <span class="playlist-track-title">${escapeHtml(title)}</span>
             <span class="playlist-track-artist">${escapeHtml(artist)}</span>
           </div>
           <span class="playlist-track-duration">${duration}</span>
+          <button class="track-add-playlist" title="Add to playlist">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>
+            </svg>
+          </button>
+          <button class="track-add-queue${queue.items.some(q => q.path === track.path) ? ' in-queue' : ''}" title="Add to queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
+            </svg>
+          </button>
           <button class="playlist-track-remove" title="Remove from playlist">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
@@ -634,6 +673,31 @@ export function displayPlaylistView(playlist) {
       if (e.target.closest('.playlist-track-remove')) {
         e.stopPropagation()
         removeTrackFromPlaylist(playlist.id, track.path)
+        return
+      }
+
+      // Bouton ajouter à la queue
+      if (e.target.closest('.track-add-queue')) {
+        e.stopPropagation()
+        app.addToQueue(track)
+        app.showQueueNotification(`"${track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown'}" added to queue`)
+        const queueBtn = trackItem.querySelector('.track-add-queue')
+        if (queueBtn) queueBtn.classList.add('in-queue')
+        return
+      }
+
+      // Bouton ajouter à une playlist
+      if (e.target.closest('.track-add-playlist')) {
+        e.stopPropagation()
+        app.showAddToPlaylistMenu(e, track)
+        return
+      }
+
+      // Bouton favori
+      if (e.target.closest('.track-favorite-btn')) {
+        e.stopPropagation()
+        const favBtn = trackItem.querySelector('.track-favorite-btn')
+        if (favBtn) app.toggleFavorite(track.path, favBtn)
         return
       }
 

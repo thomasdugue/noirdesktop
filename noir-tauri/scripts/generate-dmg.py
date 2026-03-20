@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Génère le DMG Noir avec fenêtre personnalisée.
+Génère le DMG Hean avec fenêtre personnalisée.
 Branding landing page : Geist Mono, #000, minimaliste.
 """
 
@@ -12,13 +12,13 @@ import tempfile
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 APP_PATH   = os.path.expanduser(
-    "~/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/target/release/bundle/macos/Noir.app"
+    "~/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/target/release/bundle/macos/Hean.app"
 )
 ICON_PATH  = os.path.expanduser(
     "~/Documents/Thomas/noir logo/Mac/256.png"
 )
 OUT_DMG    = os.path.expanduser(
-    "~/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/target/release/bundle/dmg/Noir_0.1.0_aarch64.dmg"
+    "~/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/target/release/bundle/dmg/Hean_0.1.0_aarch64.dmg"
 )
 
 # Taille de la fenêtre DMG en points (1x — corrige la troncature)
@@ -102,12 +102,12 @@ def generate_background():
             tx = (W - tw) // 2
             draw.text((tx, ay + 14 + i * 13), txt, fill=TEXT_COL, font=font_small)
 
-        # "N O I R" watermark en haut centré
+        # "H E A N" watermark en haut centré
         MARK_COL = (55, 55, 55)
-        bbox = draw.textbbox((0, 0), "N O I R", font=font_title)
+        bbox = draw.textbbox((0, 0), "H E A N", font=font_title)
         tw = bbox[2] - bbox[0]
         tx = (W - tw) // 2
-        draw.text((tx, 22), "N O I R", fill=MARK_COL, font=font_title)
+        draw.text((tx, 22), "H E A N", fill=MARK_COL, font=font_title)
 
         # "v0.1.0 beta" coin bas droit
         draw.text((W - 80, H - 20), "v0.1.0 beta", fill=(55, 55, 55), font=font_small)
@@ -115,7 +115,7 @@ def generate_background():
     except Exception as e:
         print(f"   (texte PIL non disponible : {e})")
 
-    out = "/tmp/noir_dmg_background.png"
+    out = "/tmp/hean_dmg_background.png"
     img.save(out, "PNG")
     print(f"✅ Background généré : {out}  ({W}×{H}px 1x)")
     return out
@@ -128,7 +128,7 @@ def generate_background():
         except:
             font = ImageFont.load_default()
         draw = ImageDraw.Draw(img)
-        text = "N O I R"
+        text = "H E A N"
         bbox = draw.textbbox((0, 0), text, font=font)
         tw = bbox[2] - bbox[0]
         tx = (W - tw) // 2
@@ -136,10 +136,10 @@ def generate_background():
     except Exception as e:
         pass  # Sans texte si font indispo
 
-    # Instruction "Dépose Noir dans Applications" en bas
+    # Instruction "Dépose Hean dans Applications" en bas
     try:
         draw = ImageDraw.Draw(img)
-        inst = "Dépose Noir dans Applications pour l'installer"
+        inst = "Dépose Hean dans Applications pour l'installer"
         try:
             font_inst = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 24)
         except:
@@ -164,7 +164,7 @@ def generate_background():
 
     # Convertir en RGB pour PNG final
     bg = img.convert("RGB")
-    out = "/tmp/noir_dmg_background.png"
+    out = "/tmp/hean_dmg_background.png"
     bg.save(out, "PNG")
     print(f"✅ Background généré : {out}  ({W}×{H}px @2x)")
     return out
@@ -172,14 +172,14 @@ def generate_background():
 
 # ─── 2. Créer le DMG avec background + AppleScript ────────────────────────────
 def build_dmg(bg_path):
-    staging = tempfile.mkdtemp(prefix="noir_dmg_")
-    rw_dmg  = "/tmp/noir_rw.dmg"
-    vol_name = "Noir"
+    staging = tempfile.mkdtemp(prefix="hean_dmg_")
+    rw_dmg  = "/tmp/hean_rw.dmg"
+    vol_name = "Hean"
 
     try:
         print("📦 Préparation du staging...")
         # Copier l'app
-        app_dest = os.path.join(staging, "Noir.app")
+        app_dest = os.path.join(staging, "Hean.app")
         if os.path.exists(app_dest):
             shutil.rmtree(app_dest)
         shutil.copytree(APP_PATH, app_dest)
@@ -243,7 +243,7 @@ tell application "Finder"
         set arrangement of viewOptions to not arranged
         set icon size of viewOptions to 88
         set background picture of viewOptions to (POSIX file "{bg_in_vol}") as alias
-        set position of item "Noir.app" of container window to {{{APP_ICON_X}, {APP_ICON_Y}}}
+        set position of item "Hean.app" of container window to {{{APP_ICON_X}, {APP_ICON_Y}}}
         set position of item "Applications" of container window to {{{APPS_ICON_X}, {APPS_ICON_Y}}}
         close
         open
@@ -290,7 +290,7 @@ end tell
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("🖤 Noir DMG Builder\n")
+    print("🖤 Hean DMG Builder\n")
 
     if not os.path.exists(APP_PATH):
         print(f"❌ App introuvable : {APP_PATH}")
