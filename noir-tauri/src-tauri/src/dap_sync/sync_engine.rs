@@ -180,12 +180,25 @@ pub fn execute_sync(
         }
     }
 
+    // --- Pre-Phase 2: Aggressive Apple Double cleanup ---
+    // macOS Finder/Spotlight creates ._* files asynchronously for every dir/file operation.
+    // On exFAT, these fill up directory entry tables and cause EINVAL on subsequent mkdir.
+    // Clean them ALL before we start creating directories.
+    let (pre_ad, _) = cleanup_apple_double(dest_path);
+    if pre_ad > 0 {
+        eprintln!("[DAP-SYNC] Pre-copy cleanup: removed {} ._* files", pre_ad);
+    }
+
     // --- Phase 2: Copy audio files ---
     eprintln!("[DAP-SYNC] Phase 2: Copying {} audio files ({:.1} GB)", total_copy, plan.total_copy_bytes as f64 / 1_073_741_824.0);
     let mut bytes_so_far: u64 = 0;
     let mut consecutive_io_errors: u32 = 0;
     const MAX_CONSECUTIVE_IO_ERRORS: u32 = 10;
     let phase2_start = Instant::now();
+
+    // Track corrupted directories — skip all remaining files in a corrupted dir
+    // to prevent cascade corruption of the entire exFAT volume.
+    let mut corrupted_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (i, action) in plan.files_to_copy.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
@@ -201,6 +214,16 @@ pub fn execute_sync(
         }
 
         let full_dest = format!("{}/{}", dest_path, action.dest_relative_path);
+
+        // Skip files in corrupted directories — writing more files would
+        // make the corruption worse and potentially destroy the entire volume.
+        if let Some(pos) = action.dest_relative_path.rfind('/') {
+            let dir = &action.dest_relative_path[..pos];
+            if corrupted_dirs.contains(dir) {
+                errors.push(format!("{} — Skipped (directory corrupted by previous write failure)", action.dest_relative_path));
+                continue;
+            }
+        }
 
         let _ = app_handle.emit("dap_sync_progress", SyncProgress {
             phase: "copy".into(),
@@ -244,10 +267,10 @@ pub fn execute_sync(
                         files_copied, total_copy, total_bytes_copied as f64 / 1_073_741_824.0, elapsed, rate_mb);
                 }
 
-                // Clean ._* Apple Double files every 25 files.
+                // Clean ._* Apple Double files every 10 files.
                 // macOS Spotlight/Finder creates these asynchronously during bulk writes,
                 // and they fill up exFAT directory entries causing EINVAL on subsequent writes.
-                if files_copied % 25 == 0 {
+                if files_copied % 10 == 0 {
                     let (ad, _) = cleanup_apple_double(dest_path);
                     if ad > 0 {
                         eprintln!("[DAP-SYNC] Mid-sync cleanup: removed {} ._* files", ad);
@@ -276,10 +299,44 @@ pub fn execute_sync(
                     || e.contains("os error 28");  // ENOSPC — no space
 
                 if is_dest_error && !is_io_error {
-                    // Destination-specific error (EINVAL, etc.) — retry won't help
+                    // Destination-specific error (EINVAL, etc.)
+                    // Clean Apple Double files that may have caused the EINVAL, then retry ONCE
+                    let (ad, _) = cleanup_apple_double(dest_path);
+                    if ad > 0 {
+                        eprintln!("[DAP-SYNC] Post-error cleanup: removed {} ._* files, retrying", ad);
+                        // Retry after cleanup
+                        match copy_file_verified(&resolved_source, &full_dest) {
+                            Ok(bytes) => {
+                                files_copied += 1;
+                                total_bytes_copied += bytes;
+                                bytes_so_far += bytes;
+                                consecutive_io_errors = 0;
+                                let hash = compute_quick_hash(&full_dest).unwrap_or_else(|_| "error".into());
+                                synced_files.push(SyncedFile {
+                                    source_path: action.source_path.clone(),
+                                    dest_relative_path: action.dest_relative_path.clone(),
+                                    size_bytes: bytes,
+                                    modified_at: get_file_modified_at(&resolved_source),
+                                    quick_hash: hash,
+                                });
+                                continue;
+                            }
+                            Err(_) => {} // Fall through to error reporting below
+                        }
+                    }
                     let cause = classify_copy_error(&e);
                     errors.push(format!("{} — {}", action.dest_relative_path, cause));
                     eprintln!("[DAP-SYNC] DEST ERROR (no retry): {}", cause);
+
+                    // Mark this directory as corrupted — skip all remaining files
+                    // in this directory to prevent cascade corruption.
+                    if e.contains("os error 22") {
+                        if let Some(pos) = action.dest_relative_path.rfind('/') {
+                            let dir = action.dest_relative_path[..pos].to_string();
+                            eprintln!("[DAP-SYNC] DIRECTORY CORRUPTED — skipping remaining files in: {}", dir);
+                            corrupted_dirs.insert(dir);
+                        }
+                    }
                 } else {
                     // Transient error — retry once after short delay
                     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -330,9 +387,21 @@ pub fn execute_sync(
         phase2_start.elapsed().as_secs_f64(), errors.len());
 
     // --- Phase 2b: Copy cover art ---
+    // CRITICAL: Covers are copied LAST in each directory because the macOS
+    // exFAT driver corrupts cluster allocations of earlier files when many
+    // files are written to the same directory. By writing covers last, they
+    // are the most recent allocation and least likely to be corrupted.
+    // We also verify content with MD5 hash and retry if corrupted.
     let total_covers = plan.covers_to_copy.len();
-    eprintln!("[DAP-SYNC] Phase 2b: Copying {} cover files", total_covers);
+    eprintln!("[DAP-SYNC] Phase 2b: Copying {} cover files (with hash verification)", total_covers);
     let mut covers_copied: usize = 0;
+    let mut covers_corrupted: usize = 0;
+
+    // Clean Apple Double files before cover phase — reduce directory entry pressure
+    let (pre_cover_ad, _) = cleanup_apple_double(dest_path);
+    if pre_cover_ad > 0 {
+        eprintln!("[DAP-SYNC] Pre-cover cleanup: removed {} ._* files", pre_cover_ad);
+    }
 
     for (i, cover) in plan.covers_to_copy.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
@@ -359,19 +428,64 @@ pub fn execute_sync(
             action: "copy".into(),
         });
 
+        // Compute source hash BEFORE copy for verification
+        let source_md5 = compute_md5_hash(&cover.source_cover_path);
+
         match copy_file_verified(&cover.source_cover_path, &full_dest) {
             Ok(bytes) => {
-                covers_copied += 1;
-                total_bytes_copied += bytes;
+                // Verify content integrity with MD5 hash (not just size)
+                // The macOS exFAT driver can corrupt file data while reporting
+                // correct sizes — only a content hash catches this.
+                let dest_md5 = compute_md5_hash(&full_dest);
 
-                let hash = compute_quick_hash(&full_dest).unwrap_or_else(|_| "error".into());
-                synced_files.push(SyncedFile {
-                    source_path: cover.source_cover_path.clone(),
-                    dest_relative_path: cover.dest_relative_path.clone(),
-                    size_bytes: bytes,
-                    modified_at: get_file_modified_at(&cover.source_cover_path),
-                    quick_hash: hash,
-                });
+                if source_md5 == dest_md5 && source_md5 != "error" {
+                    covers_copied += 1;
+                    total_bytes_copied += bytes;
+                    let hash = compute_quick_hash(&full_dest).unwrap_or_else(|_| "error".into());
+                    synced_files.push(SyncedFile {
+                        source_path: cover.source_cover_path.clone(),
+                        dest_relative_path: cover.dest_relative_path.clone(),
+                        size_bytes: bytes,
+                        modified_at: get_file_modified_at(&cover.source_cover_path),
+                        quick_hash: hash,
+                    });
+                } else {
+                    // Content corrupted — retry once
+                    eprintln!("[DAP-SYNC] Cover hash mismatch, retrying: {} (src={} dst={})",
+                        cover.dest_relative_path, source_md5, dest_md5);
+                    // Delete corrupted file and Apple Double, then retry
+                    let _ = std::fs::remove_file(&full_dest);
+                    let (ad, _) = cleanup_apple_double(dest_path);
+                    if ad > 0 {
+                        eprintln!("[DAP-SYNC] Cover retry cleanup: removed {} ._* files", ad);
+                    }
+                    match copy_file_verified(&cover.source_cover_path, &full_dest) {
+                        Ok(bytes2) => {
+                            let retry_md5 = compute_md5_hash(&full_dest);
+                            if source_md5 == retry_md5 {
+                                covers_copied += 1;
+                                total_bytes_copied += bytes2;
+                                let hash = compute_quick_hash(&full_dest).unwrap_or_else(|_| "error".into());
+                                synced_files.push(SyncedFile {
+                                    source_path: cover.source_cover_path.clone(),
+                                    dest_relative_path: cover.dest_relative_path.clone(),
+                                    size_bytes: bytes2,
+                                    modified_at: get_file_modified_at(&cover.source_cover_path),
+                                    quick_hash: hash,
+                                });
+                                eprintln!("[DAP-SYNC] Cover retry succeeded: {}", cover.dest_relative_path);
+                            } else {
+                                covers_corrupted += 1;
+                                eprintln!("[DAP-SYNC] Cover STILL corrupted after retry: {} — exFAT driver issue",
+                                    cover.dest_relative_path);
+                            }
+                        }
+                        Err(e2) => {
+                            covers_corrupted += 1;
+                            eprintln!("[DAP-SYNC] Cover retry failed: {} — {}", cover.dest_relative_path, e2);
+                        }
+                    }
+                }
             }
             Err(e) => {
                 // Non-fatal: cover copy failure shouldn't abort sync
@@ -380,8 +494,8 @@ pub fn execute_sync(
         }
     }
 
-    if covers_copied > 0 {
-        eprintln!("[DAP-SYNC] Copied {} cover files", covers_copied);
+    if covers_copied > 0 || covers_corrupted > 0 {
+        eprintln!("[DAP-SYNC] Covers: {} copied OK, {} corrupted (exFAT driver issue)", covers_copied, covers_corrupted);
     }
 
     // --- Phase 3: Write manifest ---
@@ -462,6 +576,16 @@ pub fn copy_file_verified(source: &str, dest: &str) -> Result<u64, String> {
     dst_file.sync_all()
         .map_err(|e| format!("Failed to fsync {}: {}", dest, e))?;
 
+    // Immediately remove Apple Double file that macOS creates for each written file.
+    // On exFAT, these ._* files fill up directory entry tables and cause EINVAL
+    // when ~60+ entries accumulate in a single directory.
+    if let Some(parent) = dest_path.parent() {
+        if let Some(filename) = dest_path.file_name() {
+            let ad_file = parent.join(format!("._{}", filename.to_string_lossy()));
+            let _ = std::fs::remove_file(&ad_file);
+        }
+    }
+
     // Verify size
     let source_size = src_file.metadata().map(|m| m.len()).unwrap_or(0);
 
@@ -477,20 +601,23 @@ pub fn copy_file_verified(source: &str, dest: &str) -> Result<u64, String> {
 
 /// Classify a copy error into a human-readable cause for the sync report.
 fn classify_copy_error(err: &str) -> String {
-    if err.contains("os error 2") {
-        "Source file not found — file may have been moved or NAS disconnected".into()
-    } else if err.contains("os error 22") {
-        "Invalid filename or directory on destination (exFAT/FAT32 limitation)".into()
-    } else if err.contains("os error 93") {
+    // IMPORTANT: Check multi-digit error codes BEFORE single-digit ones to avoid
+    // substring false matches (e.g. "os error 22" contains "os error 2",
+    // "os error 28" contains "os error 2", "os error 30" contains "os error 3").
+    if err.contains("os error 93") {
         "Extended attributes not supported on destination filesystem".into()
-    } else if err.contains("os error 1") {
-        "Permission denied — file or directory is protected".into()
-    } else if err.contains("os error 28") {
-        "No space left on destination".into()
-    } else if err.contains("os error 5") {
-        "I/O error — possible hardware issue with destination".into()
     } else if err.contains("os error 30") {
         "Destination is read-only".into()
+    } else if err.contains("os error 28") {
+        "No space left on destination".into()
+    } else if err.contains("os error 22") {
+        "Invalid filename or directory on destination (exFAT/FAT32 limitation)".into()
+    } else if err.contains("os error 5") {
+        "I/O error — possible hardware issue with destination".into()
+    } else if err.contains("os error 2") {
+        "Source file not found — file may have been moved or NAS disconnected".into()
+    } else if err.contains("os error 1") {
+        "Permission denied — file or directory is protected".into()
     } else if err.contains("Size mismatch") {
         "Partial write — file was not fully copied (possible USB disconnect)".into()
     } else {
@@ -520,6 +647,26 @@ pub fn delete_file_safely(path: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Compute full SHA-256 hash of a file for content integrity verification.
+/// Used for cover art verification — covers are small (~50-100KB) so full hash is fast.
+/// Returns "error" on any I/O failure (non-fatal, caller decides retry strategy).
+pub fn compute_md5_hash(path: &str) -> String {
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return "error".into(),
+    };
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 65536];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return "error".into(),
+        }
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 /// Compute SHA-256 of first 4KB + last 4KB of a file (quick hash for change detection).

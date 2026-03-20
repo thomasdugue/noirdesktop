@@ -207,8 +207,46 @@ pub fn compute_sync_plan(
 
     let t2 = std::time::Instant::now();
 
+    // Pre-compute track count per album_id — needed for disc split decision.
+    // Albums with >MAX_FILES_PER_DIR tracks get split into disc subdirectories
+    // to avoid macOS exFAT driver corruption.
+    let mut album_track_counts: HashMap<i64, usize> = HashMap::new();
     for track in tracks {
-        let dest_rel = build_dest_path(track, folder_structure);
+        *album_track_counts.entry(track.album_id).or_insert(0) += 1;
+    }
+
+    // Pre-compute a canonical album_artist per album_id.
+    // When tracks of the same album have different artist/album_artist values
+    // (compilations, multi-artist OSTs like Zelda), pick the most common
+    // album_artist to group ALL tracks under one folder.
+    let mut album_artist_votes: HashMap<i64, HashMap<String, usize>> = HashMap::new();
+    for track in tracks {
+        let aa = track.album_artist.as_deref()
+            .filter(|s| !s.is_empty())
+            .or(track.artist.as_deref())
+            .unwrap_or("Unknown Artist");
+        *album_artist_votes
+            .entry(track.album_id)
+            .or_default()
+            .entry(aa.to_string())
+            .or_insert(0) += 1;
+    }
+    let canonical_album_artist: HashMap<i64, String> = album_artist_votes
+        .into_iter()
+        .map(|(album_id, votes)| {
+            let best = votes.into_iter()
+                .max_by_key(|(_, count)| *count)
+                .map(|(name, _)| name)
+                .unwrap_or_else(|| "Unknown Artist".to_string());
+            (album_id, best)
+        })
+        .collect();
+
+    for track in tracks {
+        let atc = album_track_counts.get(&track.album_id).copied().unwrap_or(0);
+        // Override album_artist with the canonical one for this album
+        let canonical_aa = canonical_album_artist.get(&track.album_id).map(|s| s.as_str());
+        let dest_rel = build_dest_path(track, folder_structure, atc, canonical_aa);
         selected_dest_paths.insert(dest_rel.clone());
 
         if manifest_lookup.contains_key(&dest_rel) {
@@ -286,7 +324,9 @@ pub fn compute_sync_plan(
         let mut album_folders: HashMap<String, (&str, &str, &str)> = HashMap::new(); // folder → (track_path, artist, album)
 
         for track in tracks {
-            let dest_rel = build_dest_path(track, folder_structure);
+            let atc = album_track_counts.get(&track.album_id).copied().unwrap_or(0);
+            let canonical_aa = canonical_album_artist.get(&track.album_id).map(|s| s.as_str());
+            let dest_rel = build_dest_path(track, folder_structure, atc, canonical_aa);
             // Extract album folder = everything before the last '/'
             if let Some(pos) = dest_rel.rfind('/') {
                 let folder = &dest_rel[..pos];
@@ -374,10 +414,36 @@ pub fn compute_sync_plan(
     }
 }
 
+/// Maximum files per directory to avoid macOS exFAT driver corruption.
+/// The macOS kernel exFAT driver has a bug that corrupts directory cluster
+/// allocation tables when too many files (~55-60) are written to a single
+/// directory. This limit keeps us safely below that threshold.
+const MAX_FILES_PER_DIR: usize = 45;
+
 /// Build the destination relative path for a track based on folder structure.
-pub fn build_dest_path(track: &TrackForSync, structure: &str) -> String {
+///
+/// When `album_track_count` exceeds MAX_FILES_PER_DIR, tracks are split into
+/// disc subdirectories (e.g. "Artist/Album/Disc 1/01 - Track.flac") to avoid
+/// macOS exFAT driver corruption. The DAP reads metadata tags, not folder
+/// structure, so this is invisible to the user during playback.
+pub fn build_dest_path(track: &TrackForSync, structure: &str, album_track_count: usize, canonical_album_artist: Option<&str>) -> String {
     let artist = sanitize_filename(track.artist.as_deref().unwrap_or("Unknown Artist"));
-    let album_artist = sanitize_filename(track.album_artist.as_deref().unwrap_or(&artist));
+
+    // Use canonical_album_artist (pre-computed from the most common album_artist
+    // across all tracks of this album). This ensures compilations and multi-artist
+    // albums (OSTs, etc.) group ALL tracks under one folder instead of scattering
+    // them across one folder per track artist.
+    let album_artist = if let Some(canonical) = canonical_album_artist {
+        sanitize_filename(canonical)
+    } else {
+        let album_artist_raw = track.album_artist.as_deref().unwrap_or("");
+        if !album_artist_raw.is_empty() {
+            sanitize_filename(album_artist_raw)
+        } else {
+            artist.clone()
+        }
+    };
+
     let album = sanitize_filename(track.album.as_deref().unwrap_or("Unknown Album"));
     let genre = sanitize_filename(track.genre.as_deref().unwrap_or("Unknown Genre"));
 
@@ -390,19 +456,32 @@ pub fn build_dest_path(track: &TrackForSync, structure: &str) -> String {
         .unwrap_or_else(|| "flac".into());
 
     let disc_num = track.disc_number.unwrap_or(0);
-    let filename = match (disc_num, track_num) {
-        // Multi-disc: prefix disc number for disc 2+ (disc 1 stays clean)
-        (d, n) if d > 1 && n > 0 => format!("{}-{:02} - {}.{}", d, n, title, extension),
-        (_, n) if n > 0 => format!("{:02} - {}.{}", n, title, extension),
-        _ => format!("{}.{}", title, extension),
+
+    // Filename: always use track number only (disc is in the subfolder)
+    let filename = if track_num > 0 {
+        format!("{:02} - {}.{}", track_num, title, extension)
+    } else {
+        format!("{}.{}", title, extension)
+    };
+
+    // Decide if we need disc subdirectories:
+    // 1. Album has more tracks than MAX_FILES_PER_DIR → MUST split to avoid exFAT corruption
+    // 2. Album is multi-disc (disc_num > 1 exists) → split for organization
+    let needs_disc_split = album_track_count > MAX_FILES_PER_DIR || disc_num > 1;
+
+    let album_path = if needs_disc_split && disc_num > 0 {
+        format!("{}/Disc {}", album, disc_num)
+    } else {
+        album.clone()
     };
 
     match structure {
-        "artist_album_track" => format!("{}/{}/{}", artist, album, filename),
-        "albumartist_album_track" => format!("{}/{}/{}", album_artist, album, filename),
-        "genre_artist_album_track" => format!("{}/{}/{}/{}", genre, artist, album, filename),
+        "artist_album_track" | "albumartist_album_track" | _ if structure != "flat" && structure != "genre_artist_album_track" => {
+            format!("{}/{}/{}", album_artist, album_path, filename)
+        }
+        "genre_artist_album_track" => format!("{}/{}/{}/{}", genre, album_artist, album_path, filename),
         "flat" => filename,
-        _ => format!("{}/{}/{}", artist, album, filename),
+        _ => format!("{}/{}/{}", album_artist, album_path, filename),
     }
 }
 
@@ -443,25 +522,37 @@ pub fn sanitize_filename(name: &str) -> String {
         })
         .collect();
 
-    // Step 5: Collapse consecutive dots (... → ·, .. → ·) — macOS exFAT driver
+    // Step 5: Collapse consecutive dots (... → ., .. → .) — macOS exFAT driver
     // returns EINVAL on create_dir_all when directory names contain consecutive dots.
+    // Also collapse consecutive spaces — exFAT/FAT32 rejects double spaces with EINVAL.
     // Also collapse leading dots to prevent hidden files on Unix.
     let mut collapsed = String::with_capacity(sanitized.len());
     let mut prev_dot = false;
+    let mut prev_space = false;
     for c in sanitized.chars() {
         if c == '.' {
             if !prev_dot {
                 collapsed.push(c);
             }
             prev_dot = true;
+            prev_space = false;
+        } else if c == ' ' {
+            if !prev_space {
+                collapsed.push(c);
+            }
+            prev_space = true;
+            prev_dot = false;
         } else {
             prev_dot = false;
+            prev_space = false;
             collapsed.push(c);
         }
     }
 
-    // Step 6: Trim leading/trailing whitespace and dots
-    let trimmed = collapsed.trim().trim_end_matches('.');
+    // Step 6: Trim leading/trailing whitespace, dots, and underscores
+    // Trailing underscores appear when ':' is replaced (e.g. "Zelda:" → "Zelda_")
+    // Some exFAT implementations reject trailing underscores on directory names.
+    let trimmed = collapsed.trim().trim_end_matches('.').trim_end_matches('_').trim();
 
     // Step 6: Protect Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
     let upper = trimmed.to_uppercase();
@@ -545,22 +636,44 @@ mod tests {
     #[test]
     fn test_build_dest_path_artist_album_track() {
         let track = make_track("/music/test.flac", "Kind of Blue", "Miles Davis", 50_000_000, 1);
-        let path = build_dest_path(&track, "artist_album_track");
+        let path = build_dest_path(&track, "artist_album_track", 10, None);
         assert_eq!(path, "Miles Davis/Kind of Blue/01 - Track 1.flac");
     }
 
     #[test]
     fn test_build_dest_path_flat() {
         let track = make_track("/music/test.flac", "Kind of Blue", "Miles Davis", 50_000_000, 1);
-        let path = build_dest_path(&track, "flat");
+        let path = build_dest_path(&track, "flat", 10, None);
         assert_eq!(path, "01 - Track 1.flac");
     }
 
     #[test]
     fn test_build_dest_path_genre() {
         let track = make_track("/music/test.flac", "Kind of Blue", "Miles Davis", 50_000_000, 1);
-        let path = build_dest_path(&track, "genre_artist_album_track");
+        let path = build_dest_path(&track, "genre_artist_album_track", 10, None);
         assert_eq!(path, "Jazz/Miles Davis/Kind of Blue/01 - Track 1.flac");
+    }
+
+    #[test]
+    fn test_build_dest_path_disc_split_large_album() {
+        // Album with >45 tracks should get disc subdirectories
+        let mut track = make_track("/music/a.flac", "Big Album", "Artist", 10_000_000, 1);
+        track.disc_number = Some(1);
+        let path = build_dest_path(&track, "artist_album_track", 60, None);
+        assert!(path.contains("/Disc 1/"), "Large album disc 1 should have Disc 1 subfolder: {}", path);
+
+        track.disc_number = Some(3);
+        let path3 = build_dest_path(&track, "artist_album_track", 60, None);
+        assert!(path3.contains("/Disc 3/"), "Large album disc 3 should have Disc 3 subfolder: {}", path3);
+    }
+
+    #[test]
+    fn test_build_dest_path_no_disc_split_small_album() {
+        // Album with <45 tracks, disc 1 — no subdirectory
+        let mut track = make_track("/music/a.flac", "Small Album", "Artist", 10_000_000, 1);
+        track.disc_number = Some(1);
+        let path = build_dest_path(&track, "artist_album_track", 10, None);
+        assert!(!path.contains("/Disc "), "Small album should not have disc subfolder: {}", path);
     }
 
     #[test]
@@ -630,15 +743,16 @@ mod tests {
     #[test]
     fn test_build_dest_path_disc_number() {
         let mut track = make_track("/music/a.flac", "Album A", "Artist A", 10_000_000, 1);
-        // Disc 1 — no prefix
+        // Disc 1, small album — no disc subfolder
         track.disc_number = Some(1);
-        let path = build_dest_path(&track, "artist_album_track");
-        assert!(path.contains("/01 - "), "Disc 1 should not have disc prefix: {}", path);
+        let path = build_dest_path(&track, "artist_album_track", 10, None);
+        assert!(path.contains("/01 - "), "Disc 1 small album should have track num: {}", path);
+        assert!(!path.contains("/Disc "), "Disc 1 small album should not have disc subfolder: {}", path);
 
-        // Disc 2 — prefix with disc number
+        // Disc 2 — disc subfolder because multi-disc
         track.disc_number = Some(2);
-        let path2 = build_dest_path(&track, "artist_album_track");
-        assert!(path2.contains("/2-01 - "), "Disc 2 should have disc prefix: {}", path2);
+        let path2 = build_dest_path(&track, "artist_album_track", 10, None);
+        assert!(path2.contains("/Disc 2/"), "Disc 2 should have disc subfolder: {}", path2);
     }
 
     #[test]
