@@ -40,6 +40,44 @@ pub fn build_smb_mount_map() -> HashMap<String, String> {
     map
 }
 
+/// Extend the SMB mount map with UUID-based keys from NetworkSources.
+///
+/// Track paths use `smb://UUID/share/path` where UUID is the NetworkSource ID,
+/// but `mount` output uses hostnames/IPs. This function creates additional
+/// entries mapping `smb://UUID/share` → mount_point so resolve_smb_path
+/// can find the correct mount for UUID-based paths.
+pub fn extend_mount_map_with_sources(
+    map: &mut HashMap<String, String>,
+    sources: &[(String, String)], // Vec of (source_id, hostname)
+) {
+    // Collect existing hostname → mount entries
+    let existing: Vec<(String, String)> = map.iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    for (source_id, hostname) in sources {
+        for (smb_prefix, mount_point) in &existing {
+            // Match by hostname: smb://192.168.1.100/share contains "192.168.1.100"
+            // Also match by .local hostname variants
+            let host_lower = hostname.to_lowercase();
+            let prefix_lower = smb_prefix.to_lowercase();
+            if prefix_lower.contains(&host_lower) {
+                // Extract share name from the existing prefix
+                // smb://192.168.1.100/music → share = "music"
+                if let Some(share_start) = smb_prefix.rfind('/') {
+                    let share = &smb_prefix[share_start + 1..];
+                    let uuid_key = format!("smb://{}/{}", source_id, share);
+                    if !map.contains_key(&uuid_key) {
+                        eprintln!("[DAP-SYNC] SMB map: {} → {} (UUID alias for {})",
+                            uuid_key, mount_point, smb_prefix);
+                        map.insert(uuid_key, mount_point.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Resolve an SMB URL to a local filesystem path using a pre-built mount map.
 /// Non-SMB paths are returned unchanged.
 pub fn resolve_smb_path(path: &str, mount_map: &HashMap<String, String>) -> String {
@@ -66,11 +104,28 @@ pub fn resolve_smb_path(path: &str, mount_map: &HashMap<String, String>) -> Stri
     if parts.len() >= 2 {
         let share = parts[1];
         let remaining = if parts.len() == 3 { parts[2] } else { "" };
-        if remaining.is_empty() {
+        let resolved = if remaining.is_empty() {
             format!("/Volumes/{}", share)
         } else {
             format!("/Volumes/{}/{}", share, remaining)
+        };
+        // Log once per session to aid debugging — only log if path doesn't exist
+        if !std::path::Path::new(&resolved).exists() {
+            eprintln!("[DAP-SYNC] SMB FALLBACK resolution failed: {} → {} (file not found)", path, resolved);
+            // Try alternate mount points: /Volumes/{share} 1, /Volumes/{share} 2, etc.
+            for suffix in 1..=5 {
+                let alt = if remaining.is_empty() {
+                    format!("/Volumes/{} {}", share, suffix)
+                } else {
+                    format!("/Volumes/{} {}/{}", share, suffix, remaining)
+                };
+                if std::path::Path::new(&alt).exists() {
+                    eprintln!("[DAP-SYNC] SMB FALLBACK found alternate: {}", alt);
+                    return alt;
+                }
+            }
         }
+        resolved
     } else {
         path.to_string()
     }
@@ -106,5 +161,40 @@ mod tests {
             resolve_smb_path("smb://nas/music/album/track.flac", &map),
             "/Volumes/music/album/track.flac"
         );
+    }
+
+    #[test]
+    fn test_extend_mount_map_with_sources_uuid() {
+        let mut map = HashMap::new();
+        map.insert("smb://192.168.1.100/music".to_string(), "/Volumes/music".to_string());
+
+        let sources = vec![
+            ("4215ec2a-b5d2-4e93-8bbf-1f697590c73d".to_string(), "192.168.1.100".to_string()),
+        ];
+        extend_mount_map_with_sources(&mut map, &sources);
+
+        assert_eq!(
+            resolve_smb_path(
+                "smb://4215ec2a-b5d2-4e93-8bbf-1f697590c73d/music/LOSSLESS/track.flac",
+                &map
+            ),
+            "/Volumes/music/LOSSLESS/track.flac"
+        );
+    }
+
+    #[test]
+    fn test_extend_mount_map_no_duplicate() {
+        let mut map = HashMap::new();
+        map.insert("smb://nas.local/music".to_string(), "/Volumes/music".to_string());
+
+        let sources = vec![
+            ("uuid-1".to_string(), "nas.local".to_string()),
+        ];
+        extend_mount_map_with_sources(&mut map, &sources);
+
+        // UUID key should be added
+        assert!(map.contains_key("smb://uuid-1/music"));
+        // Original should still exist
+        assert!(map.contains_key("smb://nas.local/music"));
     }
 }

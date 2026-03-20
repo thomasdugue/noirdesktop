@@ -3286,6 +3286,25 @@ async fn audio_play(path: String) -> Result<(), String> {
     if path.starts_with("smb://") {
         use std::sync::atomic::Ordering as AOrdering;
 
+        // ── LOCAL MOUNT FALLBACK ────────────────────────────────────────────
+        // Before attempting SMB direct streaming, check if the file is accessible
+        // via a local mount (AFP, NFS, or SMB Finder mount). This is faster, more
+        // reliable, and handles cases where SMB credentials are unavailable.
+        let local_path = dap_sync::smb_utils::resolve_smb_path(
+            &path,
+            &dap_sync::smb_utils::build_smb_mount_map(),
+        );
+        if local_path != path && std::path::Path::new(&local_path).exists() {
+            println!("[SMB FALLBACK] Playing via local mount: {}", &local_path[..local_path.len().min(100)]);
+            if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+                if let Some(ref engine) = *engine_guard {
+                    let result = engine.play(&local_path);
+                    return result.map_err(|e| format!("Playback error: {}", e));
+                }
+            }
+            return Err("Audio engine not initialized".into());
+        }
+
         // ── [TIMING T0] Entrée audio_play SMB ──────────────────────────────
         let t0 = std::time::Instant::now();
         #[cfg(debug_assertions)]
@@ -3467,7 +3486,22 @@ async fn audio_preload_next(path: String) -> Result<(), String> {
     if path.starts_with("smb://") {
         use std::sync::atomic::Ordering as AOrdering;
 
-        #[cfg(debug_assertions)]
+        // LOCAL MOUNT FALLBACK — same as audio_play
+        let local_path = dap_sync::smb_utils::resolve_smb_path(
+            &path,
+            &dap_sync::smb_utils::build_smb_mount_map(),
+        );
+        if local_path != path && std::path::Path::new(&local_path).exists() {
+            println!("[SMB FALLBACK] Preloading via local mount: {}", &local_path[..local_path.len().min(100)]);
+            if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+                if let Some(ref engine) = *engine_guard {
+                    let result = engine.preload_next(&local_path);
+                    return result.map_err(|e| format!("Preload error: {}", e));
+                }
+            }
+            return Err("Audio engine not initialized".into());
+        }
+
         println!("[SMB Preload] preload gapless démarré: {}", &path[..path.len().min(80)]);
 
         // 1. Parse URI
@@ -4676,6 +4710,12 @@ fn dap_execute_sync(
             return;
         }
 
+        // Build network source list for UUID → hostname SMB resolution
+        let net_sources: Vec<(String, String)> = NETWORK_SOURCES
+            .lock()
+            .map(|sources| sources.iter().map(|s| (s.id.clone(), s.host.clone())).collect())
+            .unwrap_or_default();
+
         match dap_sync::sync_engine::execute_sync(
             &app_handle,
             &dest_path,
@@ -4683,6 +4723,7 @@ fn dap_execute_sync(
             &manifest,
             &folder_structure,
             cancel_flag,
+            net_sources,
         ) {
             Ok(_) => {} // SyncComplete already emitted by execute_sync
             Err(e) => {

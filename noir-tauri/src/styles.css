@@ -10074,6 +10074,24 @@ body:not(.player-visible) .track-info-panel {
   color: #0a0a0a;
 }
 
+.dap-complete-dap-icon .dap-warn-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 22px;
+  height: 22px;
+  background: #f8a171;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-bg);
+}
+
+.dap-complete-dap-icon .dap-warn-badge svg {
+  color: #0a0a0a;
+}
+
 .dap-complete-dap-icon .dap-check-badge .dap-check-path {
   stroke-dasharray: 20;
   animation: dapCheckDraw 0.5s ease-out 0.3s both;
@@ -10176,6 +10194,22 @@ body:not(.player-visible) .track-info-panel {
   align-items: center;
   gap: 0;
   margin-top: 32px;
+}
+
+/* Complete view — error report for partial sync */
+.dap-complete-error-report {
+  width: 100%;
+  max-width: 420px;
+  margin-top: 16px;
+}
+
+.dap-complete-error-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #f8a171;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 8px;
 }
 
 /* --- Screen 7: Disconnected --- */
@@ -10294,6 +10328,140 @@ body:not(.player-visible) .track-info-panel {
 }
 
 .dap-disc-actions .dap-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --- Screen: Sync Error --- */
+
+.dap-error-icon {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(248, 113, 113, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 20px;
+}
+
+.dap-error-icon svg {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.dap-error-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 22px;
+  height: 22px;
+  background: #f87171;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-bg);
+}
+
+.dap-error-badge svg {
+  color: #0a0a0a;
+}
+
+.dap-error-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #f87171;
+  margin: 0 0 6px;
+  text-align: center;
+}
+
+.dap-error-subtitle {
+  font-size: 13px;
+  color: #aaa;
+  margin: 0 0 16px;
+  text-align: center;
+}
+
+.dap-error-reason {
+  font-size: 12px;
+  color: #f8a171;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.15);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 0 0 16px;
+  text-align: center;
+  max-width: 420px;
+}
+
+.dap-error-details {
+  width: 100%;
+  max-width: 420px;
+  margin: 0 0 20px;
+}
+
+.dap-error-details-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 8px;
+}
+
+.dap-error-list {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.dap-error-textarea {
+  width: 100%;
+  max-width: 480px;
+  min-height: 120px;
+  max-height: 240px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  color: #ccc;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  resize: vertical;
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.dap-error-item {
+  font-size: 11px;
+  color: #ccc;
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  word-break: break-all;
+}
+
+.dap-error-item:last-child {
+  border-bottom: none;
+}
+
+.dap-error-more {
+  color: #888;
+  font-style: italic;
+}
+
+.dap-error-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.dap-error-actions .dap-btn-primary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
