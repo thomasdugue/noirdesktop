@@ -650,17 +650,34 @@ pub fn delete_file_safely(path: &str) -> Result<(), String> {
 }
 
 /// Compute full SHA-256 hash of a file for content integrity verification.
-/// Used for cover art verification — covers are small (~50-100KB) so full hash is fast.
+/// Uses F_NOCACHE on macOS to bypass the kernel buffer cache and read directly
+/// from the physical device. This is CRITICAL for exFAT integrity verification:
+/// the macOS exFAT driver can corrupt file data while the kernel cache still
+/// holds the correct pre-corruption data. Without F_NOCACHE, read-back verification
+/// always passes even when the on-disk data is corrupted.
+///
 /// Returns "error" on any I/O failure (non-fatal, caller decides retry strategy).
 pub fn compute_md5_hash(path: &str) -> String {
-    let mut file = match std::fs::File::open(path) {
+    use std::os::unix::io::AsRawFd;
+
+    let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return "error".into(),
     };
+
+    // Disable kernel buffer cache for this file descriptor.
+    // F_NOCACHE = 48 on macOS — reads go directly to the device.
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" { fn fcntl(fd: i32, cmd: i32, ...) -> i32; }
+        unsafe { fcntl(file.as_raw_fd(), 48 /* F_NOCACHE */, 1i32); }
+    }
+
+    let mut reader = std::io::BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 65536];
     loop {
-        match file.read(&mut buf) {
+        match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => hasher.update(&buf[..n]),
             Err(_) => return "error".into(),

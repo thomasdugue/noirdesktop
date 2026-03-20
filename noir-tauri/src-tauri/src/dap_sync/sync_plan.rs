@@ -81,6 +81,13 @@ fn normalize_path(path: &str) -> String {
 /// Resolve the cover file path for an album from local cache.
 /// Returns Some((absolute_cover_path, size_bytes)) or None.
 /// NO network I/O, NO SMB access — local disk only.
+///
+/// Resolution strategy (in order):
+/// 1. Exact track_path match in cover_cache (fastest)
+/// 2. Fuzzy match: find any cover_cache entry for the same album name
+///    (handles UUID changes, NAS reorganization, path changes after rescan)
+/// 3. Internet cover: internet_{md5(artist|||album)}.jpg
+/// 4. Scan covers directory for any file whose embedded cover matches the album
 fn resolve_cover_for_album(
     track_path: &str,
     artist: &str,
@@ -88,7 +95,7 @@ fn resolve_cover_for_album(
     cover_cache: &HashMap<String, String>,
     covers_dir: &Path,
 ) -> Option<(String, u64)> {
-    // 1. Check COVER_CACHE: track_path → absolute cover file on disk
+    // 1. Check COVER_CACHE: exact track_path → absolute cover file on disk
     if let Some(cover_path) = cover_cache.get(track_path) {
         let p = Path::new(cover_path);
         if p.exists() {
@@ -98,13 +105,43 @@ fn resolve_cover_for_album(
         }
     }
 
-    // 2. Check for internet cover: internet_{md5(artist|||album)}.jpg
-    let album_key = format!("{}|||{}", artist.to_lowercase(), album.to_lowercase());
-    let hash = format!("{:x}", md5_hash(&album_key));
-    let internet_cover = covers_dir.join(format!("internet_{}.jpg", hash));
-    if internet_cover.exists() {
-        if let Ok(meta) = std::fs::metadata(&internet_cover) {
-            return Some((internet_cover.to_string_lossy().to_string(), meta.len()));
+    // 2. Fuzzy match: find any cover_cache entry whose track_path ends with
+    //    a filename from the same album. This handles:
+    //    - UUID changes (NAS got a new ID after reset)
+    //    - Path changes (NAS files reorganized, different base path)
+    //    - Mount point changes (different /Volumes/xxx)
+    //
+    //    We match on album name appearing in the key path, then verify
+    //    the cover file still exists on disk.
+    let album_lower = album.to_lowercase();
+    if !album_lower.is_empty() && album_lower != "unknown album" {
+        // Find the first cover_cache entry whose path contains this album name
+        for (cached_path, cover_path) in cover_cache.iter() {
+            if cached_path.to_lowercase().contains(&album_lower) {
+                let p = Path::new(cover_path);
+                if p.exists() {
+                    if let Ok(meta) = std::fs::metadata(p) {
+                        return Some((cover_path.clone(), meta.len()));
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Check for internet cover: internet_{md5(artist|||album)}.jpg
+    //    Try multiple artist variants (the artist used at download time
+    //    may differ from the current canonical album_artist).
+    let artists_to_try = [
+        format!("{}|||{}", artist.to_lowercase(), album.to_lowercase()),
+        format!("{}|||{}", "various artists", album.to_lowercase()),
+    ];
+    for album_key in &artists_to_try {
+        let hash = format!("{:x}", md5_hash(album_key));
+        let internet_cover = covers_dir.join(format!("internet_{}.jpg", hash));
+        if internet_cover.exists() {
+            if let Ok(meta) = std::fs::metadata(&internet_cover) {
+                return Some((internet_cover.to_string_lossy().to_string(), meta.len()));
+            }
         }
     }
 
@@ -207,45 +244,73 @@ pub fn compute_sync_plan(
 
     let t2 = std::time::Instant::now();
 
-    // Pre-compute track count per album_id — needed for disc split decision.
-    // Albums with >MAX_FILES_PER_DIR tracks get split into disc subdirectories
-    // to avoid macOS exFAT driver corruption.
-    let mut album_track_counts: HashMap<i64, usize> = HashMap::new();
+    // ── Pre-compute canonical album_artist per album folder ──────────────
+    // Compilations and multi-artist albums (OSTs, etc.) have different artist
+    // tags per track. We group by ALBUM NAME (not album_id) to catch albums
+    // that were imported multiple times or from different sources (e.g. Zelda
+    // OST with tracks from different NAS folders → different album_ids).
+    //
+    // Strategy: vote on album_artist per sanitized album name. The most common
+    // album_artist wins and is used for ALL tracks with that album name.
+    let mut album_artist_votes: HashMap<String, HashMap<String, usize>> = HashMap::new();
     for track in tracks {
-        *album_track_counts.entry(track.album_id).or_insert(0) += 1;
-    }
-
-    // Pre-compute a canonical album_artist per album_id.
-    // When tracks of the same album have different artist/album_artist values
-    // (compilations, multi-artist OSTs like Zelda), pick the most common
-    // album_artist to group ALL tracks under one folder.
-    let mut album_artist_votes: HashMap<i64, HashMap<String, usize>> = HashMap::new();
-    for track in tracks {
+        let album_key = sanitize_filename(track.album.as_deref().unwrap_or("Unknown Album"));
         let aa = track.album_artist.as_deref()
             .filter(|s| !s.is_empty())
             .or(track.artist.as_deref())
             .unwrap_or("Unknown Artist");
         *album_artist_votes
-            .entry(track.album_id)
+            .entry(album_key)
             .or_default()
             .entry(aa.to_string())
             .or_insert(0) += 1;
     }
-    let canonical_album_artist: HashMap<i64, String> = album_artist_votes
+    let canonical_album_artist: HashMap<String, String> = album_artist_votes
         .into_iter()
-        .map(|(album_id, votes)| {
-            let best = votes.into_iter()
-                .max_by_key(|(_, count)| *count)
-                .map(|(name, _)| name)
-                .unwrap_or_else(|| "Unknown Artist".to_string());
-            (album_id, best)
+        .map(|(album_key, votes)| {
+            let unique_artists = votes.len();
+            // If 4+ different artists contribute to the same album name,
+            // it's a compilation → use "Various Artists" as the folder name.
+            // This handles Larry Levan, DJ mixes, soundtrack compilations, etc.
+            if unique_artists >= 4 {
+                (album_key, "Various Artists".to_string())
+            } else {
+                let best = votes.into_iter()
+                    .max_by_key(|(_, count)| *count)
+                    .map(|(name, _)| name)
+                    .unwrap_or_else(|| "Unknown Artist".to_string());
+                (album_key, best)
+            }
         })
         .collect();
 
+    // ── Pre-compute track count per destination album folder ──────────────
+    // Count by (canonical_artist, sanitized_album) — not album_id — so that
+    // tracks from the same real album but different DB album_ids (e.g. Zelda
+    // imported from multiple sources) are counted together for the disc split.
+    let mut folder_track_counts: HashMap<String, usize> = HashMap::new();
     for track in tracks {
-        let atc = album_track_counts.get(&track.album_id).copied().unwrap_or(0);
-        // Override album_artist with the canonical one for this album
-        let canonical_aa = canonical_album_artist.get(&track.album_id).map(|s| s.as_str());
+        let album_key = sanitize_filename(track.album.as_deref().unwrap_or("Unknown Album"));
+        let canonical_aa = canonical_album_artist.get(&album_key).map(|s| s.as_str());
+        let artist_folder = if let Some(canonical) = canonical_aa {
+            sanitize_filename(canonical)
+        } else {
+            sanitize_filename(track.artist.as_deref().unwrap_or("Unknown Artist"))
+        };
+        let folder_key = format!("{}/{}", artist_folder, album_key);
+        *folder_track_counts.entry(folder_key).or_insert(0) += 1;
+    }
+
+    for track in tracks {
+        let album_key = sanitize_filename(track.album.as_deref().unwrap_or("Unknown Album"));
+        let canonical_aa = canonical_album_artist.get(&album_key).map(|s| s.as_str());
+        let artist_folder = if let Some(canonical) = canonical_aa {
+            sanitize_filename(canonical)
+        } else {
+            sanitize_filename(track.artist.as_deref().unwrap_or("Unknown Artist"))
+        };
+        let folder_key = format!("{}/{}", artist_folder, album_key);
+        let atc = folder_track_counts.get(&folder_key).copied().unwrap_or(0);
         let dest_rel = build_dest_path(track, folder_structure, atc, canonical_aa);
         selected_dest_paths.insert(dest_rel.clone());
 
@@ -324,8 +389,15 @@ pub fn compute_sync_plan(
         let mut album_folders: HashMap<String, (&str, &str, &str)> = HashMap::new(); // folder → (track_path, artist, album)
 
         for track in tracks {
-            let atc = album_track_counts.get(&track.album_id).copied().unwrap_or(0);
-            let canonical_aa = canonical_album_artist.get(&track.album_id).map(|s| s.as_str());
+            let album_key = sanitize_filename(track.album.as_deref().unwrap_or("Unknown Album"));
+            let canonical_aa = canonical_album_artist.get(&album_key).map(|s| s.as_str());
+            let artist_folder = if let Some(canonical) = canonical_aa {
+                sanitize_filename(canonical)
+            } else {
+                sanitize_filename(track.artist.as_deref().unwrap_or("Unknown Artist"))
+            };
+            let folder_key = format!("{}/{}", artist_folder, album_key);
+            let atc = folder_track_counts.get(&folder_key).copied().unwrap_or(0);
             let dest_rel = build_dest_path(track, folder_structure, atc, canonical_aa);
             // Extract album folder = everything before the last '/'
             if let Some(pos) = dest_rel.rfind('/') {
@@ -340,38 +412,15 @@ pub fn compute_sync_plan(
 
         let mut covers_resolved = 0usize;
         let mut covers_not_found = 0usize;
-        let mut covers_skipped_manifest = 0usize;
-        let mut covers_skipped_on_dap = 0usize;
 
+        // ALWAYS re-copy ALL covers on every sync.
+        // The macOS exFAT driver corrupts existing file clusters when new files
+        // are written to the same volume. Covers written in a previous sync will
+        // have their data silently overwritten. Re-copying is cheap (~50-150KB
+        // per cover) and guarantees covers are always intact.
         for (folder, (track_path, artist, album)) in &album_folders {
             let cover_dest = format!("{}/cover.jpg", folder);
 
-            // Check if cover already in manifest (same size → skip)
-            if let Some(existing) = manifest_lookup.get(&cover_dest) {
-                // Cover already on DAP — check if local cover changed
-                if let Some((source, size)) = resolve_cover_for_album(track_path, artist, album, cover_cache, covers_dir) {
-                    if size != existing.size_bytes {
-                        // Cover updated locally → overwrite
-                        total_cover_bytes += size;
-                        covers_to_copy.push(CoverSyncAction {
-                            source_cover_path: source,
-                            dest_relative_path: cover_dest,
-                            size_bytes: size,
-                        });
-                    }
-                    // else: same size → unchanged, skip
-                }
-                covers_skipped_manifest += 1;
-                continue;
-            }
-
-            // Check if cover already exists on DAP filesystem (not in manifest but present)
-            if dap_existing_files.contains(&cover_dest) {
-                covers_skipped_on_dap += 1;
-                continue;
-            }
-
-            // No cover in manifest or on DAP → resolve and add
             if let Some((source, size)) = resolve_cover_for_album(track_path, artist, album, cover_cache, covers_dir) {
                 total_cover_bytes += size;
                 covers_to_copy.push(CoverSyncAction {
@@ -388,8 +437,8 @@ pub fn compute_sync_plan(
                 }
             }
         }
-        eprintln!("[PERF-RS] Cover resolution: {} albums, {} to copy, {} skipped (manifest), {} skipped (on DAP), {} not found",
-            album_folders.len(), covers_resolved, covers_skipped_manifest, covers_skipped_on_dap, covers_not_found);
+        eprintln!("[PERF-RS] Cover resolution: {} albums, {} to copy, {} not found",
+            album_folders.len(), covers_resolved, covers_not_found);
     }
 
     let net_bytes = (total_copy_bytes + total_cover_bytes) as i64 - total_delete_bytes as i64;
@@ -1025,7 +1074,9 @@ mod tests {
             1_000_000_000, 2_000_000_000, &cache, dir.path(),
             &dest_dir.path().to_string_lossy(),
         );
-        assert_eq!(plan.covers_to_copy.len(), 0, "Same size → cover unchanged, skip");
+        // Covers are ALWAYS re-copied on every sync to protect against exFAT
+        // cluster corruption that silently destroys cover data between syncs.
+        assert_eq!(plan.covers_to_copy.len(), 1, "Cover should always be re-copied");
     }
 
     #[test]

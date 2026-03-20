@@ -302,6 +302,8 @@ function renderSidebarDestinations() {
 
   for (const dest of destinations) {
     const isMounted = mountedVolumes.has(dest.path)
+    // Hide offline volumes — only show mounted devices
+    if (!isMounted) continue
     const isActive = dest.id === currentDestinationId && ui.currentView === 'dap-sync'
     const isSyncingDev = isSyncing && isActive
 
