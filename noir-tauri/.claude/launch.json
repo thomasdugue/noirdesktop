@@ -6,7 +6,7 @@
       "runtimeExecutable": "sh",
       "runtimeArgs": [
         "-c",
-        "export $(grep -v '^#' scripts/.env.local | grep -E 'NOIR_GITHUB' | xargs) 2>/dev/null; npm run tauri dev"
+        "export $(grep -v '^#' scripts/.env.local | grep -E 'NOIR_WORKER' | xargs) 2>/dev/null; npm run tauri dev"
       ],
       "port": 1420
     }

@@ -159,9 +159,8 @@ async function submitFeedback() {
       }
     })
     closeFeedbackModal()
-    // result est l'URL de l'issue GitHub (ou un message "saved locally")
-    const sentToGithub = result && result.startsWith('https://github.com/')
-    showToast(sentToGithub ? 'Feedback sent ✓' : 'Feedback saved ✓')
+    const sentRemotely = result && !result.startsWith('Feedback saved locally')
+    showToast(sentRemotely ? 'Feedback sent ✓' : 'Feedback saved ✓')
   } catch (err) {
     console.error('[FEEDBACK] submit error:', err)
     // Si l'erreur contient "saved locally but GitHub upload failed", le feedback

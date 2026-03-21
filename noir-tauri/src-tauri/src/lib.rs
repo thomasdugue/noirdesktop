@@ -3942,12 +3942,13 @@ fn get_top_artists(limit: usize) -> Vec<TopArtist> {
 
 // === FEEDBACK ===
 
-/// Token GitHub injecté à la compilation.
-/// Set via : export NOIR_GITHUB_FEEDBACK_TOKEN=ghp_...
-/// Permet de créer des issues sur thomasdugue/noir-feedback sans exposer
-/// le token dans le code source.
-const FEEDBACK_GITHUB_TOKEN: Option<&str> = option_env!("NOIR_GITHUB_FEEDBACK_TOKEN");
-const FEEDBACK_GITHUB_REPO: &str = "thomasdugue/noir-feedback";
+/// URL du Cloudflare Worker proxy pour le feedback.
+/// Le token GitHub reste côté serveur (secret Cloudflare), jamais dans le binaire.
+/// Set via : export NOIR_WORKER_URL=https://noir-feedback.xxx.workers.dev
+const FEEDBACK_WORKER_URL: Option<&str> = option_env!("NOIR_WORKER_URL");
+/// Secret partagé app↔worker pour authentifier les requêtes.
+/// Set via : export NOIR_WORKER_SECRET=<openssl rand -hex 32>
+const FEEDBACK_WORKER_SECRET: Option<&str> = option_env!("NOIR_WORKER_SECRET");
 
 #[derive(Deserialize)]
 struct FeedbackContext {
@@ -4011,9 +4012,9 @@ fn format_github_issue_body(payload: &FeedbackPayload) -> String {
     lines.join("\n")
 }
 
-/// Crée une GitHub Issue sur noir-feedback via l'API GitHub.
-/// Retourne l'URL de l'issue créée, ou une erreur.
-async fn create_github_feedback_issue(token: &str, payload: &FeedbackPayload) -> Result<String, String> {
+/// Envoie le feedback au Cloudflare Worker proxy (qui crée l'issue GitHub côté serveur).
+/// Le token GitHub n'est jamais dans le binaire — uniquement dans les secrets du Worker.
+async fn send_feedback_to_worker(worker_url: &str, worker_secret: &str, payload: &FeedbackPayload) -> Result<String, String> {
     let type_emoji = match payload.feedback_type.as_str() {
         "bug"     => "🐛",
         "feature" => "✨",
@@ -4035,11 +4036,10 @@ async fn create_github_feedback_issue(token: &str, payload: &FeedbackPayload) ->
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("https://api.github.com/repos/{}/issues", FEEDBACK_GITHUB_REPO))
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .header("User-Agent", "Noir-Desktop-Feedback/1.0")
+        .post(worker_url)
+        .header("X-Noir-Secret", worker_secret)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "Hean-Desktop-Feedback/1.0")
         .json(&serde_json::json!({
             "title":  issue_title,
             "body":   issue_body,
@@ -4052,18 +4052,12 @@ async fn create_github_feedback_issue(token: &str, payload: &FeedbackPayload) ->
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("GitHub API {} — {}", status, text));
+        return Err(format!("Worker error {} — {}", status, text));
     }
 
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
-
-    let issue_url = json["html_url"].as_str().unwrap_or("").to_string();
     #[cfg(debug_assertions)]
-    println!("[FEEDBACK] GitHub issue created: {}", issue_url);
-    Ok(issue_url)
+    println!("[FEEDBACK] Feedback sent via worker proxy");
+    Ok("Feedback sent".to_string())
 }
 
 // === MEDIA CONTROLS COMMANDS ===
@@ -4125,30 +4119,28 @@ async fn submit_feedback(payload: FeedbackPayload) -> Result<String, String> {
     #[cfg(debug_assertions)]
     println!("[FEEDBACK] Saved locally: {:?}", filepath);
 
-    // === 2. Envoi vers GitHub Issues ===
-    // Le token est injecté à la compilation via NOIR_GITHUB_FEEDBACK_TOKEN.
-    // Sans token (mode dev sans env var), le feedback est conservé en local seulement.
-    match FEEDBACK_GITHUB_TOKEN {
-        Some(token) if !token.is_empty() => {
-            match create_github_feedback_issue(token, &payload).await {
-                Ok(issue_url) => {
+    // === 2. Envoi vers le Cloudflare Worker proxy ===
+    // Le token GitHub reste côté serveur (secret Cloudflare), jamais dans le binaire.
+    // Sans URL worker (mode dev sans env var), le feedback est conservé en local seulement.
+    match (FEEDBACK_WORKER_URL, FEEDBACK_WORKER_SECRET) {
+        (Some(url), Some(secret)) if !url.is_empty() && !secret.is_empty() => {
+            match send_feedback_to_worker(url, secret, &payload).await {
+                Ok(_) => {
                     #[cfg(debug_assertions)]
-                    println!("[FEEDBACK] Issue créée : {}", issue_url);
-                    Ok(issue_url)
+                    println!("[FEEDBACK] Sent via worker proxy");
+                    Ok("Feedback sent".to_string())
                 }
                 Err(e) => {
-                    // L'envoi GitHub a échoué mais la sauvegarde locale a réussi.
-                    // On retourne une erreur pour que le JS affiche un toast d'avertissement.
-                    #[cfg(debug_assertions)]
-                    eprintln!("[FEEDBACK] GitHub issue creation failed: {}", e);
-                    Err(format!("Feedback saved locally but GitHub upload failed: {}", e))
+                    // L'envoi via worker a échoué mais la sauvegarde locale a réussi.
+                    eprintln!("[FEEDBACK] Worker proxy failed: {}", e);
+                    Err(format!("Feedback saved locally but upload failed: {}", e))
                 }
             }
         }
         _ => {
-            // Pas de token — mode dev ou build sans token configuré.
+            // Pas de worker configuré — mode dev ou build sans env vars.
             #[cfg(debug_assertions)]
-            println!("[FEEDBACK] No NOIR_GITHUB_FEEDBACK_TOKEN — saved locally only.");
+            println!("[FEEDBACK] No NOIR_WORKER_URL — saved locally only.");
             Ok(format!("Feedback saved locally: {}", filename))
         }
     }
