@@ -446,6 +446,7 @@ fn load_listening_history() -> ListeningHistory {
                 history.played_paths.insert(entry.path.clone());
             }
             save_listening_history(&history);
+            #[cfg(debug_assertions)]
             println!("[ListeningHistory] Backfilled {} played paths from entries", history.played_paths.len());
         }
 
@@ -1021,10 +1022,12 @@ async fn enrich_genres_from_deezer(app_handle: tauri::AppHandle) {
 
     let total = albums_to_enrich.len();
     if total == 0 {
+        #[cfg(debug_assertions)]
         println!("[Genre Enrichment] No albums to enrich");
         return;
     }
 
+    #[cfg(debug_assertions)]
     println!("[Genre Enrichment] Starting: {} albums to query on Deezer", total);
 
     let mut enriched_count = 0usize;
@@ -1043,6 +1046,7 @@ async fn enrich_genres_from_deezer(app_handle: tauri::AppHandle) {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             let mb_genre = fetch_genre_from_musicbrainz(artist, album).await;
             if mb_genre.is_some() {
+                #[cfg(debug_assertions)]
                 println!("[Genre Enrichment] {}/{} {} - {} → {:?} (MusicBrainz fallback)",
                     idx + 1, total, artist, album, mb_genre);
             }
@@ -1055,6 +1059,7 @@ async fn enrich_genres_from_deezer(app_handle: tauri::AppHandle) {
             enriched_count += 1;
         }
 
+        #[cfg(debug_assertions)]
         println!("[Genre Enrichment] {}/{} {} - {} → {:?}",
             idx + 1, total, artist, album, genre);
 
@@ -1117,6 +1122,7 @@ async fn enrich_genres_from_deezer(app_handle: tauri::AppHandle) {
         save_metadata_cache_to_file(&metadata_cache);
     }
 
+    #[cfg(debug_assertions)]
     println!("[Genre Enrichment] Complete: {}/{} albums enriched with genre", enriched_count, total);
 
     let _ = app_handle.emit("genre_enrichment_complete", serde_json::json!({
@@ -1157,6 +1163,7 @@ fn init_cache() -> bool {
     // Car il peut avoir été modifié depuis le dernier chargement (redémarrage, etc.)
     if let Ok(mut cache) = TRACKS_CACHE.lock() {
         let fresh_cache = load_tracks_cache();
+        #[cfg(debug_assertions)]
         println!("[init_cache] Reloading tracks cache from disk: {} tracks found", fresh_cache.tracks.len());
         *cache = fresh_cache;
 
@@ -1170,6 +1177,7 @@ fn init_cache() -> bool {
             cache.tracks.retain(|t| !excluded.contains(&t.path));
             let removed = before - cache.tracks.len();
             if removed > 0 {
+                #[cfg(debug_assertions)]
                 println!("[init_cache] Filtered out {} excluded tracks from cache", removed);
                 save_tracks_cache(&cache);
             }
@@ -1727,18 +1735,22 @@ fn get_metadata_internal(path: &str) -> Metadata {
 #[tauri::command]
 fn scan_folder_with_metadata(path: &str) -> Vec<TrackWithMetadata> {
     let start = std::time::Instant::now();
+    #[cfg(debug_assertions)]
     println!("=== Scan starting for: {} ===", path);
 
     // Vérifie si le chemin existe
     let path_obj = Path::new(path);
     if !path_obj.exists() {
+        #[cfg(debug_assertions)]
         println!("ERROR: Path does not exist: {}", path);
         return Vec::new();
     }
     if !path_obj.is_dir() {
+        #[cfg(debug_assertions)]
         println!("ERROR: Path is not a directory: {}", path);
         return Vec::new();
     }
+    #[cfg(debug_assertions)]
     println!("Path exists and is directory: {}", path);
 
     // 1. Collecte tous les chemins de fichiers audio (rapide, séquentiel)
@@ -1751,6 +1763,7 @@ fn scan_folder_with_metadata(path: &str) -> Vec<TrackWithMetadata> {
             match e {
                 Ok(entry) => Some(entry),
                 Err(err) => {
+                    #[cfg(debug_assertions)]
                     println!("WalkDir error: {}", err);
                     None
                 }
@@ -1761,6 +1774,7 @@ fn scan_folder_with_metadata(path: &str) -> Vec<TrackWithMetadata> {
         .collect();
 
     let file_count = paths.len();
+    #[cfg(debug_assertions)]
     println!("Found {} audio files in {:?}", file_count, start.elapsed());
 
     // 2. Charge les métadonnées EN PARALLÈLE avec Rayon
@@ -1786,6 +1800,7 @@ fn scan_folder_with_metadata(path: &str) -> Vec<TrackWithMetadata> {
         })
         .collect();
 
+    #[cfg(debug_assertions)]
     println!("Metadata loaded in {:?} ({} files)", parallel_start.elapsed(), file_count);
 
     // 3. Met à jour le cache avec les nouvelles métadonnées
@@ -1819,6 +1834,7 @@ fn scan_folder_with_metadata(path: &str) -> Vec<TrackWithMetadata> {
         }
     }
 
+    #[cfg(debug_assertions)]
     println!("Total scan time: {:?}", start.elapsed());
     results
 }
@@ -1872,8 +1888,10 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
             .collect();
 
         if !inaccessible_paths.is_empty() {
+            #[cfg(debug_assertions)]
             println!("[Scan] WARNING: {} inaccessible paths detected", inaccessible_paths.len());
             for path in &inaccessible_paths {
+                #[cfg(debug_assertions)]
                 println!("[Scan]   - {}", path);
             }
             // Émet un événement pour notifier le frontend
@@ -1901,6 +1919,7 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
             .collect();
 
         if !excluded_paths.is_empty() {
+            #[cfg(debug_assertions)]
             println!("[Scan] {} excluded tracks will be filtered out", excluded_paths.len());
         }
 
@@ -1995,6 +2014,7 @@ fn start_background_scan(app_handle: tauri::AppHandle) {
             save_metadata_cache_to_file(&cache);
         }
 
+        #[cfg(debug_assertions)]
         println!("Background scan complete in {:?}: {} tracks (local+SMB), {} new, {} removed",
             start.elapsed(), stats.total_tracks, added_count, removed_count);
 
@@ -2060,6 +2080,7 @@ fn reset_genre_enrichment(app_handle: tauri::AppHandle) {
         save_metadata_cache_to_file(&cache);
     }
 
+    #[cfg(debug_assertions)]
     println!("[Genre Enrichment] Reset {} tracks for re-enrichment", reset_count);
 
     // Relance l'enrichissement
@@ -2275,11 +2296,13 @@ fn write_metadata(
 
         let data = if cache_path.exists() && cache_path.metadata().map(|m| m.len() > 1_000_000).unwrap_or(false) {
             // Cache hit : utiliser le fichier déjà téléchargé
+            #[cfg(debug_assertions)]
             println!("[write_metadata] Using cached file: {}", cache_path.display());
             std::fs::read(&cache_path)
                 .map_err(|e| format!("Cannot read cached file: {}", e))?
         } else {
             // Cache miss : télécharger depuis le NAS
+            #[cfg(debug_assertions)]
             println!("[write_metadata] Downloading from NAS: {}/{}{}", source.host, share, remote_path);
             network::smb::read_file(&source.host, &share, &remote_path)?
         };
@@ -2486,6 +2509,7 @@ fn get_cover(path: &str) -> Option<String> {
             let filename = Path::new(&cache_file).file_name()?.to_str()?;
             let elapsed = start.elapsed().as_millis();
             if elapsed > 50 {
+                #[cfg(debug_assertions)]
                 println!("[RUST-PERF] get_cover (CACHE HIT): {}ms for {}",
                          elapsed, path.split('/').last().unwrap_or(path));
             }
@@ -2528,6 +2552,7 @@ fn get_cover(path: &str) -> Option<String> {
                 let probe_time = probe_start.elapsed().as_millis();
                 let size_kb = picture.data().len() / 1024;
                 if elapsed > 100 {
+                    #[cfg(debug_assertions)]
                     println!("[RUST-PERF] get_cover (EXTRACTED): {}ms (probe: {}ms, {} KB cover) for {}",
                              elapsed, probe_time, size_kb, path.split('/').last().unwrap_or(path));
                 }
@@ -2541,6 +2566,7 @@ fn get_cover(path: &str) -> Option<String> {
 
     let elapsed = start.elapsed().as_millis();
     if elapsed > 50 {
+        #[cfg(debug_assertions)]
         println!("[RUST-PERF] get_cover (NO COVER): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
     }
     None
@@ -2636,6 +2662,7 @@ fn get_cover_thumbnail(path: &str) -> Option<String> {
     if thumb_path_jpg.exists() {
         let elapsed = start.elapsed().as_millis();
         if elapsed > 50 {
+            #[cfg(debug_assertions)]
             println!("[RUST-PERF] get_cover_thumbnail (JPG cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
         }
         return Some(format!("noir://localhost/thumbnails/{}_thumb.jpg", hash));
@@ -2644,6 +2671,7 @@ fn get_cover_thumbnail(path: &str) -> Option<String> {
     if thumb_path_webp.exists() {
         let elapsed = start.elapsed().as_millis();
         if elapsed > 50 {
+            #[cfg(debug_assertions)]
             println!("[RUST-PERF] get_cover_thumbnail (WebP cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
         }
         return Some(format!("noir://localhost/thumbnails/{}_thumb.webp", hash));
@@ -2653,6 +2681,7 @@ fn get_cover_thumbnail(path: &str) -> Option<String> {
     // Le frontend utilisera get_cover comme fallback
     let elapsed = start.elapsed().as_millis();
     if elapsed > 10 {
+        #[cfg(debug_assertions)]
         println!("[RUST-PERF] get_cover_thumbnail (MISS): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
     }
     None
@@ -2663,6 +2692,7 @@ fn get_cover_thumbnail(path: &str) -> Option<String> {
 fn generate_thumbnails_batch(paths: Vec<String>) -> u32 {
     let batch_start = std::time::Instant::now();
     let count = paths.len();
+    #[cfg(debug_assertions)]
     println!("[RUST-PERF] generate_thumbnails_batch: starting batch of {} images", count);
 
     let thumb_dir = get_thumbnail_cache_dir();
@@ -2690,6 +2720,7 @@ fn generate_thumbnails_batch(paths: Vec<String>) -> u32 {
                 generated += 1;
                 let img_elapsed = img_start.elapsed().as_millis();
                 if img_elapsed > 200 {
+                    #[cfg(debug_assertions)]
                     println!("[RUST-PERF]   [{}/{}] Generated in {}ms ({} KB source): {}",
                              i+1, count, img_elapsed, bytes_len/1024, path.split('/').last().unwrap_or(path));
                 }
@@ -2703,6 +2734,7 @@ fn generate_thumbnails_batch(paths: Vec<String>) -> u32 {
 
     let batch_elapsed = batch_start.elapsed().as_millis();
     let avg = if generated > 0 { batch_elapsed / generated as u128 } else { 0 };
+    #[cfg(debug_assertions)]
     println!("[RUST-PERF] generate_thumbnails_batch: DONE in {}ms - {} generated, {} skipped, {} failed ({}ms/image avg)",
              batch_elapsed, generated, skipped, failed, avg);
 
@@ -2877,6 +2909,7 @@ fn remove_library_path(path: &str) {
         let before = cache.tracks.len();
         cache.tracks.retain(|t| !t.path.starts_with(path));
         let removed = before - cache.tracks.len();
+        #[cfg(debug_assertions)]
         println!("[remove_library_path] Removed {} tracks from cache for: {}", removed, path);
         save_tracks_cache(&cache);
     }
@@ -2920,6 +2953,7 @@ fn exclude_tracks_from_library(paths: Vec<String>) -> usize {
         save_metadata_cache_to_file(&meta_cache);
     }
 
+    #[cfg(debug_assertions)]
     println!("[exclude_tracks] Excluded {} paths, removed {} from cache", added, removed);
     removed
 }
@@ -3252,8 +3286,28 @@ async fn audio_play(path: String) -> Result<(), String> {
     if path.starts_with("smb://") {
         use std::sync::atomic::Ordering as AOrdering;
 
+        // ── LOCAL MOUNT FALLBACK ────────────────────────────────────────────
+        // Before attempting SMB direct streaming, check if the file is accessible
+        // via a local mount (AFP, NFS, or SMB Finder mount). This is faster, more
+        // reliable, and handles cases where SMB credentials are unavailable.
+        let local_path = dap_sync::smb_utils::resolve_smb_path(
+            &path,
+            &dap_sync::smb_utils::build_smb_mount_map(),
+        );
+        if local_path != path && std::path::Path::new(&local_path).exists() {
+            println!("[SMB FALLBACK] Playing via local mount: {}", &local_path[..local_path.len().min(100)]);
+            if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+                if let Some(ref engine) = *engine_guard {
+                    let result = engine.play(&local_path);
+                    return result.map_err(|e| format!("Playback error: {}", e));
+                }
+            }
+            return Err("Audio engine not initialized".into());
+        }
+
         // ── [TIMING T0] Entrée audio_play SMB ──────────────────────────────
         let t0 = std::time::Instant::now();
+        #[cfg(debug_assertions)]
         println!("[SMB TIMING] T+0ms — audio_play SMB PROGRESSIVE start: {}",
             &path[..path.len().min(80)]);
 
@@ -3275,6 +3329,7 @@ async fn audio_play(path: String) -> Result<(), String> {
             match network::credentials::retrieve_password(&source.id) {
                 Ok(pw) => pw,
                 Err(e) => {
+                    #[cfg(debug_assertions)]
                     println!("[SMB TIMING] Keychain retrieve failed: {}", e);
                     return Err(format!("SMB credentials not available for source {}: {}. Try reconnecting the NAS source.", source.name, e));
                 }
@@ -3286,12 +3341,14 @@ async fn audio_play(path: String) -> Result<(), String> {
             source.credentials.domain.as_deref(),
             source.credentials.is_guest,
         );
+        #[cfg(debug_assertions)]
         println!("[SMB TIMING] T+{}ms — credentials ready", t0.elapsed().as_millis());
 
         // 3. Démarrer le téléchargement progressif en arrière-plan (retourne immédiatement)
         // cancel_previous = true : annule le download précédent → libère CONNECTION mutex en ~2ms
         let (temp_path, bytes_written, download_done) =
             network::scanner::start_progressive_download(&source, &share, &remote_path, true)?;
+        #[cfg(debug_assertions)]
         println!("[SMB TIMING] T+{}ms — progressive download started, waiting for 4MB…",
             t0.elapsed().as_millis());
 
@@ -3312,6 +3369,7 @@ async fn audio_play(path: String) -> Result<(), String> {
         }
 
         let available = bytes_written.load(AOrdering::Acquire);
+        #[cfg(debug_assertions)]
         println!("[SMB TIMING] T+{}ms — {}MB disponibles → engine.play()",
             t0.elapsed().as_millis(), available / (1024 * 1024));
 
@@ -3327,6 +3385,7 @@ async fn audio_play(path: String) -> Result<(), String> {
         if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
             if let Some(ref engine) = *engine_guard {
                 let result = engine.play(&temp_str);
+                #[cfg(debug_assertions)]
                 println!("[SMB TIMING] T+{}ms — engine.play() command sent ← TOTAL: {}ms",
                     t0.elapsed().as_millis(), t0.elapsed().as_millis());
                 return result;
@@ -3427,6 +3486,22 @@ async fn audio_preload_next(path: String) -> Result<(), String> {
     if path.starts_with("smb://") {
         use std::sync::atomic::Ordering as AOrdering;
 
+        // LOCAL MOUNT FALLBACK — same as audio_play
+        let local_path = dap_sync::smb_utils::resolve_smb_path(
+            &path,
+            &dap_sync::smb_utils::build_smb_mount_map(),
+        );
+        if local_path != path && std::path::Path::new(&local_path).exists() {
+            println!("[SMB FALLBACK] Preloading via local mount: {}", &local_path[..local_path.len().min(100)]);
+            if let Ok(engine_guard) = AUDIO_ENGINE.lock() {
+                if let Some(ref engine) = *engine_guard {
+                    let result = engine.preload_next(&local_path);
+                    return result.map_err(|e| format!("Preload error: {}", e));
+                }
+            }
+            return Err("Audio engine not initialized".into());
+        }
+
         println!("[SMB Preload] preload gapless démarré: {}", &path[..path.len().min(80)]);
 
         // 1. Parse URI
@@ -3465,12 +3540,14 @@ async fn audio_preload_next(path: String) -> Result<(), String> {
             let available = bytes_written.load(AOrdering::Acquire);
             let done = download_done.load(AOrdering::Acquire);
             if available >= min_bytes || done {
+                #[cfg(debug_assertions)]
                 println!("[SMB Preload] {} MB disponibles → engine.preload_next()",
                     available / (1024 * 1024));
                 break;
             }
             if std::time::Instant::now() > deadline {
                 // Timeout non-fatal : le gapless ne sera pas disponible mais la lecture continue
+                #[cfg(debug_assertions)]
                 println!("[SMB Preload] Timeout — preload abandonné pour: {}", path);
                 return Ok(());
             }
@@ -3702,6 +3779,7 @@ fn load_eq_settings(eq_state: &eq::EqSharedState) {
                     .collect();
                 eq_state.set_all_gains(&gain_values);
             }
+            #[cfg(debug_assertions)]
             println!("[EQ] Settings loaded: enabled={}, gains={:?}",
                 eq_state.is_enabled(), eq_state.get_all_gains());
         }
@@ -4038,6 +4116,7 @@ async fn submit_feedback(payload: FeedbackPayload) -> Result<String, String> {
 
     let json_string = serde_json::to_string_pretty(&feedback_json).map_err(|e| e.to_string())?;
     fs::write(&filepath, &json_string).map_err(|e| e.to_string())?;
+    #[cfg(debug_assertions)]
     println!("[FEEDBACK] Saved locally: {:?}", filepath);
 
     // === 2. Envoi vers le Cloudflare Worker proxy ===
@@ -4290,6 +4369,7 @@ async fn reconnect_network_source(source_id: String) -> Result<(), String> {
         String::new()
     } else {
         if !network::credentials::has_password_in_session(&source.id) {
+            #[cfg(debug_assertions)]
             println!("[RECONNECT] Skipping {} — no session credentials (Keychain not accessed at startup)", source.name);
             return Ok(());
         }
@@ -4334,6 +4414,7 @@ async fn scan_network_source_cmd(source_id: String, app_handle: tauri::AppHandle
             source.credentials.domain.as_deref(),
             source.credentials.is_guest,
         ) {
+            #[cfg(debug_assertions)]
             println!("[Network Scan] Connection failed for {}: {}", source.name, e);
             return;
         }
@@ -4367,6 +4448,7 @@ async fn scan_network_source_cmd(source_id: String, app_handle: tauri::AppHandle
                         .filter(|t| !excluded.contains(&t.path))
                         .collect();
                     if !excluded.is_empty() {
+                        #[cfg(debug_assertions)]
                         println!("[Network Scan] Filtered out excluded tracks from NAS scan results");
                     }
                     // Enregistre les dates d'ajout pour les nouvelles tracks NAS
@@ -4508,15 +4590,18 @@ fn dap_compute_sync_plan(
     mirror_mode: bool,
 ) -> Result<dap_sync::sync_plan::SyncPlan, String> {
     let cmd_start = std::time::Instant::now();
+    #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] dap_compute_sync_plan called with {} tracks, dest={}", tracks.len(), dest_path);
 
     let t0 = std::time::Instant::now();
     let manifest = dap_sync::manifest::read_manifest(&dest_path)?;
+    #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] read_manifest: {:?} ({} files)", t0.elapsed(),
         manifest.as_ref().map(|m| m.files.len()).unwrap_or(0));
 
     let t1 = std::time::Instant::now();
     let vol_info = dap_sync::volumes::get_volume_info(&dest_path)?;
+    #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] get_volume_info: {:?}", t1.elapsed());
 
     // Clone cover cache entries (brief lock) for cover art resolution
@@ -4536,6 +4621,7 @@ fn dap_compute_sync_plan(
         &covers_dir,
         &dest_path,
     );
+    #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] dap_compute_sync_plan TOTAL: {:?}", cmd_start.elapsed());
     Ok(result)
 }
@@ -4616,6 +4702,12 @@ fn dap_execute_sync(
             return;
         }
 
+        // Build network source list for UUID → hostname SMB resolution
+        let net_sources: Vec<(String, String)> = NETWORK_SOURCES
+            .lock()
+            .map(|sources| sources.iter().map(|s| (s.id.clone(), s.host.clone())).collect())
+            .unwrap_or_default();
+
         match dap_sync::sync_engine::execute_sync(
             &app_handle,
             &dest_path,
@@ -4623,6 +4715,7 @@ fn dap_execute_sync(
             &manifest,
             &folder_structure,
             cancel_flag,
+            net_sources,
         ) {
             Ok(_) => {} // SyncComplete already emitted by execute_sync
             Err(e) => {
@@ -4734,7 +4827,8 @@ pub fn run() {
                 *handle_guard = Some(app_handle.clone());
             }
 
-            let engine = AudioEngine::new(Some(app_handle.clone()));
+            let engine = AudioEngine::new(Some(app_handle.clone()))
+                .map_err(|e| format!("Audio engine init failed: {}", e))?;
 
             // Charge les paramètres EQ sauvegardés
             load_eq_settings(&engine.eq_state);
@@ -4743,6 +4837,7 @@ pub fn run() {
                 *engine_guard = Some(engine);
             }
 
+            #[cfg(debug_assertions)]
             println!("Audio Engine initialized!");
 
             // Enregistre Noir comme propriétaire de MPRemoteCommandCenter
