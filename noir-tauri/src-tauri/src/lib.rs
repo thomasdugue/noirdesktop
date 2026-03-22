@@ -4593,6 +4593,14 @@ fn dap_compute_sync_plan(
     #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] dap_compute_sync_plan called with {} tracks, dest={}", tracks.len(), dest_path);
 
+    // Migrate DAP filesystem if sanitize_filename rules changed since last sync.
+    // Renames files/dirs with outdated names (e.g., parentheses, $) and updates manifest.
+    // Must run BEFORE reading the manifest so we get the migrated version.
+    let migrated = dap_sync::sync_plan::migrate_dap_filesystem(&dest_path);
+    if migrated > 0 {
+        eprintln!("[DAP-SYNC] Migrated {} manifest entries to match current sanitization rules", migrated);
+    }
+
     let t0 = std::time::Instant::now();
     let manifest = dap_sync::manifest::read_manifest(&dest_path)?;
     #[cfg(debug_assertions)]

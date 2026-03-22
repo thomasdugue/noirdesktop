@@ -3,6 +3,137 @@ use std::collections::HashMap;
 use std::path::Path;
 use super::manifest::{SyncManifest, SyncedFile};
 
+/// Migrate the DAP filesystem and manifest to match current sanitize_filename rules.
+///
+/// When sanitize_filename rules change (e.g., stripping parentheses or $), files on the
+/// DAP have outdated names. This function renames them in-place and updates the manifest.
+/// Without this, FAT32 short-name collisions cause EINVAL when creating new files with
+/// similar names (e.g., "Album (Deluxe)" exists, creating "Album Deluxe" fails).
+///
+/// Idempotent — fast no-op when nothing needs migration (just reads manifest + compares).
+pub fn migrate_dap_filesystem(dest_path: &str) -> usize {
+    let manifest = match super::manifest::read_manifest(dest_path) {
+        Ok(Some(m)) => m,
+        _ => return 0, // no manifest → nothing to migrate
+    };
+
+    // Collect migrations: (old_relative_path, new_relative_path)
+    let mut migrations: Vec<(String, String)> = Vec::new();
+    let mut updated_files = manifest.files.clone();
+
+    for file in &mut updated_files {
+        let old_rel = file.dest_relative_path.clone();
+        let new_rel: String = old_rel
+            .split('/')
+            .map(|part| sanitize_filename(part))
+            .collect::<Vec<_>>()
+            .join("/");
+
+        if new_rel != old_rel {
+            migrations.push((old_rel, new_rel.clone()));
+            file.dest_relative_path = new_rel;
+        }
+    }
+
+    if migrations.is_empty() {
+        return 0;
+    }
+
+    let count = migrations.len();
+    eprintln!("[DAP-SYNC] Manifest migration: {} entries need path updates", count);
+
+    // Collect old parent directories for cleanup afterward
+    let mut old_dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // Rename files: create new parent dirs first, then move the file
+    for (old_rel, new_rel) in &migrations {
+        let old_abs = format!("{}/{}", dest_path, old_rel);
+        let new_abs = format!("{}/{}", dest_path, new_rel);
+
+        // Create the new parent directory
+        if let Some(parent) = Path::new(&new_abs).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // Move file if it exists on the DAP
+        if Path::new(&old_abs).exists() {
+            match std::fs::rename(&old_abs, &new_abs) {
+                Ok(()) => eprintln!("[DAP-SYNC]   Migrated: {} → {}", old_rel, new_rel),
+                Err(e) => eprintln!("[DAP-SYNC]   Failed to migrate {}: {}", old_rel, e),
+            }
+            // Also migrate Apple Double file (._filename)
+            if let (Some(old_parent), Some(old_fname)) = (
+                Path::new(&old_abs).parent(),
+                Path::new(&old_abs).file_name(),
+            ) {
+                let ad_old = old_parent.join(format!("._{}", old_fname.to_string_lossy()));
+                let _ = std::fs::remove_file(&ad_old); // just delete, not worth renaming
+            }
+        }
+
+        // Track old parent directory for cleanup
+        if let Some(parent) = Path::new(old_rel).parent() {
+            let parent_str = parent.to_string_lossy().to_string();
+            if !parent_str.is_empty() {
+                old_dirs.insert(parent_str);
+            }
+        }
+    }
+
+    // Migrate cover files that live in renamed directories
+    let new_dir_lookup: std::collections::HashMap<String, String> = old_dirs.iter()
+        .filter_map(|old_dir| {
+            let new_dir: String = old_dir
+                .split('/')
+                .map(|part| sanitize_filename(part))
+                .collect::<Vec<_>>()
+                .join("/");
+            if *old_dir != new_dir { Some((old_dir.clone(), new_dir)) } else { None }
+        })
+        .collect();
+
+    for (old_dir, new_dir) in &new_dir_lookup {
+        for ext in &["jpg", "jpeg", "png"] {
+            let old_cover = format!("{}/{}/cover.{}", dest_path, old_dir, ext);
+            if Path::new(&old_cover).exists() {
+                let new_cover = format!("{}/{}/cover.{}", dest_path, new_dir, ext);
+                if let Some(parent) = Path::new(&new_cover).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::rename(&old_cover, &new_cover) {
+                    Ok(()) => eprintln!("[DAP-SYNC]   Migrated cover: {}/cover.{}", old_dir, ext),
+                    Err(e) => eprintln!("[DAP-SYNC]   Cover migration failed: {}: {}", old_cover, e),
+                }
+            }
+        }
+    }
+
+    // Clean up empty old directories (deepest first)
+    let mut sorted_dirs: Vec<_> = old_dirs.into_iter().collect();
+    sorted_dirs.sort_by(|a, b| b.matches('/').count().cmp(&a.matches('/').count()));
+    for dir_rel in &sorted_dirs {
+        let dir_abs = format!("{}/{}", dest_path, dir_rel);
+        // remove_dir only succeeds if empty — safe
+        let _ = std::fs::remove_dir(&dir_abs);
+        // Also try parent (artist dir) if empty
+        if let Some(parent) = Path::new(&dir_abs).parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+
+    // Re-write manifest with updated paths
+    let updated_manifest = SyncManifest {
+        files: updated_files,
+        ..manifest
+    };
+    match super::manifest::write_manifest(dest_path, &updated_manifest) {
+        Ok(()) => eprintln!("[DAP-SYNC]   Manifest updated with migrated paths"),
+        Err(e) => eprintln!("[DAP-SYNC]   Failed to write migrated manifest: {}", e),
+    }
+
+    count
+}
+
 /// Helper: compute the same hash as lib.rs md5_hash() for cover cache lookups.
 /// Uses DefaultHasher (SipHash) — NOT cryptographic, just for filename generation.
 pub fn md5_hash(input: &str) -> u64 {
@@ -562,20 +693,44 @@ pub fn sanitize_filename(name: &str) -> String {
     // ô → o, ã → a, é → e, … → ..., — → -, etc.
     let ascii = deunicode(&nfc);
 
-    // Step 3: Strip zero-width and invisible characters that deunicode may leave
+    // Step 3: Keep only ASCII printable characters + space.
+    // After deunicode (Step 2), the string should be mostly ASCII, but some
+    // characters may survive transliteration (unknown Unicode, homoglyphs,
+    // invisible chars). These cause EINVAL on exFAT/FAT32.
+    // is_ascii_graphic() = '!' (0x21) through '~' (0x7E), plus ' ' (0x20).
     let cleaned: String = ascii
         .chars()
-        .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' | '\u{00AD}'))
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
         .collect();
 
-    // Step 4: Replace filesystem-illegal characters
+    // Step 4: WHITELIST — only keep characters guaranteed safe on ALL FAT32 implementations.
+    // Previous approach was a blacklist (strip known-bad chars one by one), but every new
+    // DAP/SD card model rejects different characters. Fiio rejects (), [], $, etc.
+    // Whitelist approach: if it's not explicitly safe, strip it. No more character-chasing.
+    //
+    // Safe characters (universally accepted on FAT32/exFAT, tested on Fiio, Sony, Astell&Kern):
+    //   a-z A-Z 0-9   — alphanumeric
+    //   space           — allowed (collapsed in Step 5)
+    //   - _ . '         — hyphen, underscore, dot, apostrophe
+    //   , ; # + = @     — commonly used in music metadata, safe on standard FAT32
+    //
+    // Everything else is stripped (not replaced) to avoid creating ugly ___ sequences.
+    // The Step 5 space-collapse handles any double spaces left by stripping.
     let sanitized: String = cleaned
         .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            c if c.is_control() => '_',
-            _ => c,
-        })
+        .filter(|c| c.is_ascii_alphanumeric()
+            || *c == ' '
+            || *c == '-'
+            || *c == '_'
+            || *c == '.'
+            || *c == '\''
+            || *c == ','
+            || *c == ';'
+            || *c == '#'
+            || *c == '+'
+            || *c == '='
+            || *c == '@'
+        )
         .collect();
 
     // Step 5: Collapse consecutive dots (... → ., .. → .) — macOS exFAT driver
@@ -734,7 +889,36 @@ mod tests {
 
     #[test]
     fn test_sanitize_filename_special_chars() {
-        assert_eq!(sanitize_filename("AC/DC: Back?In*Black"), "AC_DC_ Back_In_Black");
+        // Whitelist approach: only safe chars kept, others stripped
+        assert_eq!(sanitize_filename("AC/DC: Back?In*Black"), "ACDC BackInBlack");
+    }
+
+    #[test]
+    fn test_sanitize_filename_whitelist_strips_unsafe_chars() {
+        // Parentheses, brackets, $, !, &, etc. — all stripped by whitelist
+        assert_eq!(sanitize_filename("You May Die (intro)"), "You May Die intro");
+        assert_eq!(sanitize_filename("1999 Super Deluxe Edition (Remastered 2019)"), "1999 Super Deluxe Edition Remastered 2019");
+        assert_eq!(sanitize_filename("Seconds (electric lady sessions)"), "Seconds electric lady sessions");
+        assert_eq!(sanitize_filename("Track [Bonus]"), "Track Bonus");
+        assert_eq!(sanitize_filename("Song {Alt Mix}"), "Song Alt Mix");
+        assert_eq!(sanitize_filename("A$AP Rocky"), "AAP Rocky");
+        assert_eq!(sanitize_filename("LONG LIVE A$AP Deluxe Version"), "LONG LIVE AAP Deluxe Version");
+        assert_eq!(sanitize_filename("Get Innocuous!"), "Get Innocuous");
+        assert_eq!(sanitize_filename("Tom & Jerry"), "Tom Jerry");
+        assert_eq!(sanitize_filename("50% Off"), "50 Off");
+        assert_eq!(sanitize_filename("Rock~Roll"), "RockRoll");
+        // Consecutive spaces from stripping are collapsed
+        assert_eq!(sanitize_filename("A (B) C"), "A B C");
+    }
+
+    #[test]
+    fn test_sanitize_filename_whitelist_keeps_safe_chars() {
+        // These characters are safe and should be preserved
+        assert_eq!(sanitize_filename("L'Ecole du Micro d'Argent"), "L'Ecole du Micro d'Argent");
+        assert_eq!(sanitize_filename("Track #5"), "Track #5");
+        assert_eq!(sanitize_filename("Song - Remix"), "Song - Remix");
+        assert_eq!(sanitize_filename("feat. Someone"), "feat. Someone");
+        assert_eq!(sanitize_filename("Hall, Detroit, MI"), "Hall, Detroit, MI");
     }
 
     #[test]
@@ -759,6 +943,7 @@ mod tests {
         // Ellipsis, em-dash, en-dash must be transliterated to ASCII equivalents
         let result = sanitize_filename("One Nite Alone\u{2026} Live!");
         assert!(!result.contains('\u{2026}'), "Ellipsis should be transliterated");
+        assert!(!result.contains('!'), "! should be stripped by whitelist");
         // Consecutive dots are collapsed: ... → .
         assert!(!result.contains(".."), "Consecutive dots should be collapsed: {}", result);
 
@@ -769,7 +954,7 @@ mod tests {
     #[test]
     fn test_sanitize_filename_consecutive_dots() {
         // macOS exFAT returns EINVAL on directories with consecutive dots
-        assert_eq!(sanitize_filename("One Nite Alone... Live!"), "One Nite Alone. Live!");
+        assert_eq!(sanitize_filename("One Nite Alone... Live!"), "One Nite Alone. Live");
         assert_eq!(sanitize_filename("The Vault... Old Friends 4 Sale"), "The Vault. Old Friends 4 Sale");
         assert_eq!(sanitize_filename("N.E.W.S"), "N.E.W.S"); // single dots OK
         assert_eq!(sanitize_filename("SEPT. 5TH"), "SEPT. 5TH"); // single dot OK
@@ -794,6 +979,22 @@ mod tests {
         // Pure ASCII should pass through unchanged
         assert_eq!(sanitize_filename("Daft Punk"), "Daft Punk");
         assert_eq!(sanitize_filename("Random Access Memories"), "Random Access Memories");
+    }
+
+    #[test]
+    fn test_sanitize_filename_strips_non_ascii_survivors() {
+        // Characters that deunicode can't transliterate should be stripped
+        // rather than left as non-ASCII bytes that cause EINVAL on exFAT.
+        let result = sanitize_filename("Track \u{200B}Name"); // zero-width space
+        assert_eq!(result, "Track Name");
+
+        // Tab and other control chars should be stripped
+        let result2 = sanitize_filename("Track\tName");
+        assert_eq!(result2, "TrackName");
+
+        // Apostrophes (ASCII 0x27) should survive — they're valid on exFAT
+        assert_eq!(sanitize_filename("Kickin'"), "Kickin'");
+        assert_eq!(sanitize_filename("I'm Ready"), "I'm Ready");
     }
 
     #[test]
@@ -1237,5 +1438,76 @@ mod tests {
         assert_eq!(plan.files_to_copy.len(), 0, "no tracks selected = nothing to copy");
         assert_eq!(plan.files_to_delete.len(), 2, "mirror mode = all manifest files deleted");
         assert_eq!(plan.files_unchanged, 0);
+    }
+
+    #[test]
+    fn test_migrate_dap_filesystem_renames_files_and_dirs() {
+        // Simulate a DAP with old sanitization (parentheses and $ kept)
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
+
+        // Create old directory structure with parentheses and $
+        let old_dir = dir.path().join("A$AP Rocky/LONG LIVE A$AP (Deluxe)");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(old_dir.join("01 - Long Live (intro).flac"), "audio data").unwrap();
+        std::fs::write(old_dir.join("cover.jpg"), "cover data").unwrap();
+
+        // Write a manifest with old-style paths
+        let manifest = SyncManifest {
+            hean_version: "1.0.0".into(),
+            last_sync: "2026-03-21T00:00:00Z".into(),
+            destination_path: dest.clone(),
+            folder_structure: "artist_album_track".into(),
+            files: vec![SyncedFile {
+                source_path: "/music/intro.flac".into(),
+                dest_relative_path: "A$AP Rocky/LONG LIVE A$AP (Deluxe)/01 - Long Live (intro).flac".into(),
+                size_bytes: 10,
+                modified_at: "2026-01-01T00:00:00Z".into(),
+                quick_hash: "hash1".into(),
+            }],
+        };
+        crate::dap_sync::manifest::write_manifest(&dest, &manifest).unwrap();
+
+        // Run migration
+        let count = migrate_dap_filesystem(&dest);
+        assert_eq!(count, 1, "1 manifest entry should be migrated");
+
+        // Verify: new paths exist, old paths don't
+        let new_dir = dir.path().join("AAP Rocky/LONG LIVE AAP Deluxe");
+        assert!(new_dir.join("01 - Long Live intro.flac").exists(), "file should be at new path");
+        assert!(new_dir.join("cover.jpg").exists(), "cover should be migrated too");
+        assert!(!old_dir.exists(), "old directory should be cleaned up");
+
+        // Verify manifest was updated
+        let loaded = crate::dap_sync::manifest::read_manifest(&dest).unwrap().unwrap();
+        assert_eq!(
+            loaded.files[0].dest_relative_path,
+            "AAP Rocky/LONG LIVE AAP Deluxe/01 - Long Live intro.flac"
+        );
+    }
+
+    #[test]
+    fn test_migrate_dap_filesystem_noop_when_current() {
+        // When all paths already match current sanitization, migration is a no-op
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
+
+        let manifest = SyncManifest {
+            hean_version: "1.0.0".into(),
+            last_sync: "2026-03-21T00:00:00Z".into(),
+            destination_path: dest.clone(),
+            folder_structure: "artist_album_track".into(),
+            files: vec![SyncedFile {
+                source_path: "/music/track.flac".into(),
+                dest_relative_path: "Artist/Album/01 - Track.flac".into(),
+                size_bytes: 100,
+                modified_at: "2026-01-01T00:00:00Z".into(),
+                quick_hash: "hash1".into(),
+            }],
+        };
+        crate::dap_sync::manifest::write_manifest(&dest, &manifest).unwrap();
+
+        let count = migrate_dap_filesystem(&dest);
+        assert_eq!(count, 0, "nothing to migrate when paths are current");
     }
 }

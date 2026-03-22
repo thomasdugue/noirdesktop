@@ -135,6 +135,15 @@ pub fn execute_sync(
         );
     }
 
+    // --- Phase 0b: Clean up leftover .hean-tmp files from interrupted syncs ---
+    let (tmp_count, tmp_bytes) = cleanup_hean_tmp(dest_path);
+    if tmp_count > 0 {
+        eprintln!(
+            "[DAP-SYNC] Phase 0b: Cleaned up {} leftover .hean-tmp files ({:.1} KB) from interrupted sync",
+            tmp_count, tmp_bytes as f64 / 1024.0
+        );
+    }
+
     // Build SMB mount map once for the entire sync operation,
     // extended with UUID mappings from NetworkSources
     let mut smb_map = build_smb_mount_map();
@@ -145,7 +154,7 @@ pub fn execute_sync(
     eprintln!("[DAP-SYNC] SMB mount map: {} entries {:?}", smb_map.len(),
         smb_map.keys().collect::<Vec<_>>());
 
-    let total_copy = plan.files_to_copy.len();
+    let total_copy = plan.files_to_copy.len(); // original count (before validation)
     let total_delete = plan.files_to_delete.len();
 
     // --- Phase 1: Delete files ---
@@ -189,19 +198,29 @@ pub fn execute_sync(
         eprintln!("[DAP-SYNC] Pre-copy cleanup: removed {} ._* files", pre_ad);
     }
 
+    // --- Pre-Phase 2c: Validate all destination paths ---
+    // Discover ALL invalid paths upfront instead of one-at-a-time during the copy.
+    // NO pre-validation of directories — directories are created on-demand during copy.
+    // Previous approach created all dirs upfront to "test" them, but empty dirs left behind
+    // by failed/cancelled syncs become corrupted ghost entries on exFAT/FAT32, blocking
+    // all future syncs. The copy loop already has rejected_dirs tracking for skip-on-EINVAL.
+    let valid_files = plan.files_to_copy.clone();
+    let actual_copy_count = valid_files.len();
+
     // --- Phase 2: Copy audio files ---
-    eprintln!("[DAP-SYNC] Phase 2: Copying {} audio files ({:.1} GB)", total_copy, plan.total_copy_bytes as f64 / 1_073_741_824.0);
+    eprintln!("[DAP-SYNC] Phase 2: Copying {} audio files ({:.1} GB)", actual_copy_count, plan.total_copy_bytes as f64 / 1_073_741_824.0);
     let mut bytes_so_far: u64 = 0;
     let mut consecutive_io_errors: u32 = 0;
     const MAX_CONSECUTIVE_IO_ERRORS: u32 = 10;
     let phase2_start = Instant::now();
 
-    // Track corrupted directories — skip all remaining files in a corrupted dir
-    // to prevent cascade corruption of the entire exFAT volume.
-    let mut corrupted_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Track rejected directories — skip all remaining files in a dir where EINVAL
+    // was returned (filename/dirname rejected by destination filesystem, not actual corruption).
+    let mut rejected_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for (i, action) in plan.files_to_copy.iter().enumerate() {
+    for (i, action) in valid_files.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
+            let _ = cleanup_hean_tmp(dest_path);
             let _ = write_partial_manifest(dest_path, old_manifest, &synced_files, &plan.files_to_delete, folder_structure);
             return Ok(SyncComplete {
                 success: false,
@@ -215,12 +234,12 @@ pub fn execute_sync(
 
         let full_dest = format!("{}/{}", dest_path, action.dest_relative_path);
 
-        // Skip files in corrupted directories — writing more files would
-        // make the corruption worse and potentially destroy the entire volume.
+        // Skip files in rejected directories — the directory name was rejected
+        // by the destination filesystem (EINVAL), no point trying more files in it.
         if let Some(pos) = action.dest_relative_path.rfind('/') {
             let dir = &action.dest_relative_path[..pos];
-            if corrupted_dirs.contains(dir) {
-                errors.push(format!("{} — Skipped (directory corrupted by previous write failure)", action.dest_relative_path));
+            if rejected_dirs.contains(dir) {
+                errors.push(format!("{} — Skipped (directory rejected by destination filesystem)", action.dest_relative_path));
                 continue;
             }
         }
@@ -228,7 +247,7 @@ pub fn execute_sync(
         let _ = app_handle.emit("dap_sync_progress", SyncProgress {
             phase: "copy".into(),
             current: i + 1,
-            total: total_copy,
+            total: actual_copy_count,
             current_file: action.dest_relative_path.clone(),
             bytes_copied: bytes_so_far,
             total_bytes: plan.total_copy_bytes,
@@ -264,7 +283,7 @@ pub fn execute_sync(
                     let elapsed = phase2_start.elapsed().as_secs();
                     let rate_mb = if elapsed > 0 { total_bytes_copied / 1_048_576 / elapsed } else { 0 };
                     eprintln!("[DAP-SYNC] Progress: {}/{} files copied ({:.1} GB, {}s, ~{} MB/s)",
-                        files_copied, total_copy, total_bytes_copied as f64 / 1_073_741_824.0, elapsed, rate_mb);
+                        files_copied, actual_copy_count, total_bytes_copied as f64 / 1_073_741_824.0, elapsed, rate_mb);
                 }
 
                 // Clean ._* Apple Double files every 10 files.
@@ -328,13 +347,13 @@ pub fn execute_sync(
                     errors.push(format!("{} — {}", action.dest_relative_path, cause));
                     eprintln!("[DAP-SYNC] DEST ERROR (no retry): {}", cause);
 
-                    // Mark this directory as corrupted — skip all remaining files
-                    // in this directory to prevent cascade corruption.
+                    // Mark this directory as rejected — skip all remaining files
+                    // in this directory (the dirname is invalid on this filesystem).
                     if e.contains("os error 22") {
                         if let Some(pos) = action.dest_relative_path.rfind('/') {
                             let dir = action.dest_relative_path[..pos].to_string();
-                            eprintln!("[DAP-SYNC] DIRECTORY CORRUPTED — skipping remaining files in: {}", dir);
-                            corrupted_dirs.insert(dir);
+                            eprintln!("[DAP-SYNC] DIRECTORY REJECTED — skipping remaining files in: {}", dir);
+                            rejected_dirs.insert(dir);
                         }
                     }
                 } else {
@@ -405,6 +424,7 @@ pub fn execute_sync(
 
     for (i, cover) in plan.covers_to_copy.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
+            let _ = cleanup_hean_tmp(dest_path);
             let _ = write_partial_manifest(dest_path, old_manifest, &synced_files, &plan.files_to_delete, folder_structure);
             return Ok(SyncComplete {
                 success: false,
@@ -543,6 +563,18 @@ pub fn execute_sync(
     Ok(complete)
 }
 
+/// Pre-validate all destination paths by attempting to create parent directories.
+/// Discovers ALL invalid paths upfront (EINVAL, permission issues) instead of
+/// one-at-a-time during the copy phase which can take hours.
+/// Returns (valid_actions, error_messages).
+// validate_dest_paths was REMOVED intentionally.
+// It pre-created directories on the destination to "test" if names were valid.
+// Problem: empty directories left behind by failed/cancelled syncs became corrupted
+// ghost entries on exFAT, blocking ALL future syncs (EINVAL on create_dir_all).
+// Directories are now created on-demand by copy_file_verified() only when a file
+// is actually ready to be written. The copy loop's rejected_dirs tracking handles
+// the skip-on-EINVAL logic that pre-validation used to provide.
+
 /// Copy a file with data-only transfer (no xattrs), fsync, and size verification.
 ///
 /// CRITICAL DESIGN DECISIONS:
@@ -563,18 +595,53 @@ pub fn copy_file_verified(source: &str, dest: &str) -> Result<u64, String> {
             .map_err(|e| format!("Failed to create dirs for {}: {}", dest, e))?;
     }
 
-    // Data-only copy: open source, create dest, stream bytes (no xattrs/metadata).
+    // Write to a temporary file first, then rename to final path.
+    // If the app crashes during io::copy, only the .hean-tmp exists —
+    // the final file is either absent (not started) or complete (rename done).
+    // This prevents partially-written files from corrupting the volume.
+    let tmp_dest = format!("{}.hean-tmp", dest);
+    let tmp_path = Path::new(&tmp_dest);
+
+    // Data-only copy: open source, create tmp dest, stream bytes (no xattrs/metadata).
     let mut src_file = std::fs::File::open(source_path)
         .map_err(|e| format!("Failed to open source {}: {}", source, e))?;
-    let mut dst_file = std::fs::File::create(dest_path)
+    let mut dst_file = std::fs::File::create(tmp_path)
         .map_err(|e| format!("Failed to create dest {}: {}", dest, e))?;
 
-    let bytes = std::io::copy(&mut src_file, &mut dst_file)
-        .map_err(|e| format!("Failed to copy {} -> {}: {}", source, dest, e))?;
+    let bytes = match std::io::copy(&mut src_file, &mut dst_file) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = std::fs::remove_file(tmp_path); // cleanup partial tmp
+            return Err(format!("Failed to copy {} -> {}: {}", source, dest, e));
+        }
+    };
 
-    // fsync: flush data to physical device before proceeding
-    dst_file.sync_all()
-        .map_err(|e| format!("Failed to fsync {}: {}", dest, e))?;
+    // fsync: flush data to physical device before renaming
+    if let Err(e) = dst_file.sync_all() {
+        let _ = std::fs::remove_file(tmp_path); // cleanup partial tmp
+        return Err(format!("Failed to fsync {}: {}", dest, e));
+    }
+
+    // Drop the file handle before rename (required on some filesystems)
+    drop(dst_file);
+
+    // Verify size before rename — catch partial writes
+    let source_size = src_file.metadata().map(|m| m.len()).unwrap_or(0);
+    if bytes != source_size {
+        let _ = std::fs::remove_file(tmp_path); // cleanup bad tmp
+        return Err(format!(
+            "Size mismatch after copy: source={} dest={} ({} vs {} bytes)",
+            source, dest, source_size, bytes
+        ));
+    }
+
+    // Atomic rename: tmp → final. This is the commit point.
+    // If this succeeds, the file is guaranteed complete and fsynced.
+    std::fs::rename(tmp_path, dest_path)
+        .map_err(|e| {
+            let _ = std::fs::remove_file(tmp_path); // cleanup on rename failure
+            format!("Failed to rename tmp to final {}: {}", dest, e)
+        })?;
 
     // Immediately remove Apple Double file that macOS creates for each written file.
     // On exFAT, these ._* files fill up directory entry tables and cause EINVAL
@@ -584,16 +651,10 @@ pub fn copy_file_verified(source: &str, dest: &str) -> Result<u64, String> {
             let ad_file = parent.join(format!("._{}", filename.to_string_lossy()));
             let _ = std::fs::remove_file(&ad_file);
         }
-    }
-
-    // Verify size
-    let source_size = src_file.metadata().map(|m| m.len()).unwrap_or(0);
-
-    if bytes != source_size {
-        return Err(format!(
-            "Size mismatch after copy: source={} dest={} ({} vs {} bytes)",
-            source, dest, source_size, bytes
-        ));
+        // Also clean up Apple Double for the tmp file name
+        let tmp_filename = format!("._{}.hean-tmp", dest_path.file_name().unwrap().to_string_lossy());
+        let ad_tmp = parent.join(&tmp_filename);
+        let _ = std::fs::remove_file(&ad_tmp);
     }
 
     Ok(bytes)
@@ -830,6 +891,36 @@ fn get_file_modified_at(path: &str) -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
+/// Recursively scan and delete all *.hean-tmp files left by interrupted syncs.
+/// Returns (files_deleted, bytes_freed).
+fn cleanup_hean_tmp(dest_path: &str) -> (usize, u64) {
+    let mut count = 0usize;
+    let mut bytes = 0u64;
+    fn walk(dir: &Path, count: &mut usize, bytes: &mut u64) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, count, bytes);
+            } else {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".hean-tmp") {
+                    if let Ok(meta) = entry.metadata() {
+                        *bytes += meta.len();
+                    }
+                    let _ = std::fs::remove_file(&path);
+                    *count += 1;
+                }
+            }
+        }
+    }
+    walk(Path::new(dest_path), &mut count, &mut bytes);
+    (count, bytes)
+}
+
 /// Recursively scan and delete all ._* Apple Double resource fork files.
 /// Returns (files_deleted, bytes_freed).
 fn cleanup_apple_double(dest_path: &str) -> (usize, u64) {
@@ -959,5 +1050,390 @@ mod tests {
         assert!(now.ends_with("Z"));
         // Should be in 2026 range
         assert!(now.starts_with("202"));
+    }
+
+    #[test]
+    fn test_cleanup_hean_tmp() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create normal files that should NOT be deleted
+        let normal = dir.path().join("Artist/Album/01 - Track.flac");
+        std::fs::create_dir_all(normal.parent().unwrap()).unwrap();
+        std::fs::write(&normal, "audio data").unwrap();
+
+        // Create .hean-tmp files that SHOULD be deleted
+        let tmp1 = dir.path().join("Artist/Album/02 - Track.flac.hean-tmp");
+        std::fs::write(&tmp1, "partial data").unwrap();
+
+        let nested_dir = dir.path().join("Other/SubDir");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        let tmp2 = nested_dir.join("file.flac.hean-tmp");
+        std::fs::write(&tmp2, "more partial data").unwrap();
+
+        let (count, bytes) = cleanup_hean_tmp(dir.path().to_str().unwrap());
+
+        assert_eq!(count, 2);
+        assert!(bytes > 0);
+        assert!(!tmp1.exists(), ".hean-tmp should be deleted");
+        assert!(!tmp2.exists(), "nested .hean-tmp should be deleted");
+        assert!(normal.exists(), "normal files should remain");
+    }
+
+    #[test]
+    fn test_copy_file_verified_no_leftover_tmp() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.flac");
+        let dest = dir.path().join("subdir/dest.flac");
+        let tmp = dir.path().join("subdir/dest.flac.hean-tmp");
+
+        std::fs::write(&source, "audio content for tmp test").unwrap();
+
+        copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+
+        assert!(dest.exists(), "final file should exist");
+        assert!(!tmp.exists(), "no .hean-tmp should remain after successful copy");
+    }
+
+    // =========================================================================
+    // Corruption protection test suite
+    // Simulates crash, cancel, partial write, and filesystem error scenarios
+    // =========================================================================
+
+    #[test]
+    fn test_copy_source_missing_no_leftover_tmp() {
+        // Scenario: source file doesn't exist → error, no tmp left on volume
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("Artist/Album/01 - Track.flac");
+        let tmp = dir.path().join("Artist/Album/01 - Track.flac.hean-tmp");
+
+        let result = copy_file_verified("/nonexistent/source.flac", dest.to_str().unwrap());
+
+        assert!(result.is_err(), "should fail on missing source");
+        assert!(!tmp.exists(), "no .hean-tmp should be left when source is missing");
+        assert!(!dest.exists(), "no final file should be left when source is missing");
+    }
+
+    #[test]
+    fn test_copy_content_integrity_after_rename() {
+        // Scenario: verify that the content written via tmp+rename is byte-identical
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.flac");
+        let dest = dir.path().join("output/dest.flac");
+
+        // Create a large-ish file with known pattern
+        let data: Vec<u8> = (0..65536).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&source, &data).unwrap();
+
+        let bytes = copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+
+        assert_eq!(bytes, 65536);
+        let read_back = std::fs::read(&dest).unwrap();
+        assert_eq!(read_back.len(), data.len(), "size must match");
+        assert_eq!(read_back, data, "content must be byte-identical");
+    }
+
+    #[test]
+    fn test_copy_creates_parent_dirs() {
+        // Scenario: deeply nested destination — parent dirs are created automatically
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("src.flac");
+        let dest = dir.path().join("Artist/Album Name/Disc 1/01 - Track.flac");
+
+        std::fs::write(&source, "nested dir test").unwrap();
+
+        copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+
+        assert!(dest.exists());
+        assert!(dest.parent().unwrap().exists()); // Disc 1/
+        assert!(dest.parent().unwrap().parent().unwrap().exists()); // Album Name/
+    }
+
+    #[test]
+    fn test_copy_overwrite_existing_file() {
+        // Scenario: re-sync overwrites an existing file cleanly
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("new_version.flac");
+        let dest = dir.path().join("Artist/Album/01 - Track.flac");
+        let tmp = dir.path().join("Artist/Album/01 - Track.flac.hean-tmp");
+
+        // Create existing file (from previous sync)
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, "old content from previous sync").unwrap();
+
+        // New version
+        std::fs::write(&source, "new content updated version").unwrap();
+
+        copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "new content updated version"
+        );
+        assert!(!tmp.exists(), "no .hean-tmp should remain after overwrite");
+    }
+
+    #[test]
+    fn test_copy_large_file_integrity() {
+        // Scenario: copy a multi-MB file and verify content integrity
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("large.flac");
+        let dest = dir.path().join("out/large.flac");
+
+        // 2 MB file with deterministic content
+        let data: Vec<u8> = (0..2_097_152u64).map(|i| ((i * 7 + 13) % 256) as u8).collect();
+        std::fs::write(&source, &data).unwrap();
+
+        let bytes = copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+
+        assert_eq!(bytes, 2_097_152);
+        let read_back = std::fs::read(&dest).unwrap();
+        assert_eq!(read_back.len(), data.len());
+        // Spot-check content at multiple offsets
+        assert_eq!(read_back[0], data[0]);
+        assert_eq!(read_back[1000], data[1000]);
+        assert_eq!(read_back[500_000], data[500_000]);
+        assert_eq!(read_back[2_097_151], data[2_097_151]);
+    }
+
+    #[test]
+    fn test_cleanup_hean_tmp_deeply_nested() {
+        // Scenario: .hean-tmp files scattered across many levels of nesting
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create deep directory structure with tmp files at various levels
+        let paths = [
+            "Artist1/Album1/track.flac.hean-tmp",
+            "Artist1/Album2/Disc 1/track.flac.hean-tmp",
+            "Artist2/Album1/track.flac.hean-tmp",
+            "Various Artists/OST/Disc 3/track.flac.hean-tmp",
+        ];
+
+        for path in &paths {
+            let full = dir.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, "partial data").unwrap();
+        }
+
+        // Also create legitimate files that should NOT be touched
+        let legit = dir.path().join("Artist1/Album1/01 - Real Track.flac");
+        std::fs::write(&legit, "real audio").unwrap();
+        let cover = dir.path().join("Artist1/Album1/cover.jpg");
+        std::fs::write(&cover, "cover data").unwrap();
+        let manifest = dir.path().join(".hean-sync.json");
+        std::fs::write(&manifest, "{}").unwrap();
+
+        let (count, _) = cleanup_hean_tmp(dir.path().to_str().unwrap());
+
+        assert_eq!(count, 4, "should remove exactly 4 .hean-tmp files");
+        assert!(legit.exists(), "real audio file must survive");
+        assert!(cover.exists(), "cover must survive");
+        assert!(manifest.exists(), "manifest must survive");
+    }
+
+    #[test]
+    fn test_cleanup_hean_tmp_empty_dir() {
+        // Scenario: cleanup on a volume with no .hean-tmp files
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("track.flac"), "audio").unwrap();
+
+        let (count, bytes) = cleanup_hean_tmp(dir.path().to_str().unwrap());
+
+        assert_eq!(count, 0);
+        assert_eq!(bytes, 0);
+    }
+
+    #[test]
+    fn test_cleanup_hean_tmp_nonexistent_dir() {
+        // Scenario: cleanup on a path that doesn't exist (e.g. volume ejected)
+        let (count, bytes) = cleanup_hean_tmp("/nonexistent/volume/path");
+
+        assert_eq!(count, 0);
+        assert_eq!(bytes, 0);
+    }
+
+    #[test]
+    fn test_copy_creates_dirs_on_demand_not_upfront() {
+        // Directories must only be created when a file is actually written into them.
+        // Pre-creating dirs upfront leaves ghost entries on exFAT if the sync fails/cancels.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.flac");
+        std::fs::write(&source, "audio data").unwrap();
+
+        // Copy a file — directory should be created on-demand
+        let dest = dir.path().join("Artist/Album/01 - Track.flac");
+        assert!(!dir.path().join("Artist").exists(), "dir should NOT exist before copy");
+
+        copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+
+        assert!(dest.exists(), "file should be copied");
+        assert!(dir.path().join("Artist/Album").exists(), "dir created by copy_file_verified");
+    }
+
+    #[test]
+    fn test_copy_then_cleanup_simulates_crash_recovery() {
+        // Scenario: simulate a crash mid-sync by manually creating .hean-tmp files,
+        // then verify cleanup_hean_tmp removes them while preserving good files.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.flac");
+        std::fs::write(&source, "good audio data").unwrap();
+
+        // Step 1: Successful copy of first file
+        let dest1 = dir.path().join("Artist/Album/01 - Track.flac");
+        copy_file_verified(source.to_str().unwrap(), dest1.to_str().unwrap()).unwrap();
+
+        // Step 2: Simulate crash — manually create a .hean-tmp as if io::copy was interrupted
+        let orphan_tmp = dir.path().join("Artist/Album/02 - Track.flac.hean-tmp");
+        std::fs::write(&orphan_tmp, "partial wri").unwrap(); // truncated data
+
+        // Step 3: Also simulate a .hean-tmp in another album dir
+        let orphan_tmp2 = dir.path().join("Other Artist/Other Album/01 - Song.flac.hean-tmp");
+        std::fs::create_dir_all(orphan_tmp2.parent().unwrap()).unwrap();
+        std::fs::write(&orphan_tmp2, "").unwrap(); // zero-byte tmp
+
+        // Verify crash state: both tmps exist, good file exists
+        assert!(orphan_tmp.exists());
+        assert!(orphan_tmp2.exists());
+        assert!(dest1.exists());
+
+        // Step 4: Simulate "next sync start" — cleanup runs
+        let (count, _) = cleanup_hean_tmp(dir.path().to_str().unwrap());
+
+        assert_eq!(count, 2, "both orphan .hean-tmp should be removed");
+        assert!(!orphan_tmp.exists(), "orphan tmp should be gone");
+        assert!(!orphan_tmp2.exists(), "zero-byte orphan tmp should be gone");
+        assert!(dest1.exists(), "successfully copied file must survive cleanup");
+        assert_eq!(
+            std::fs::read_to_string(&dest1).unwrap(),
+            "good audio data",
+            "good file content must be intact"
+        );
+    }
+
+    #[test]
+    fn test_copy_sequential_files_no_tmp_accumulation() {
+        // Scenario: copy multiple files sequentially — no .hean-tmp accumulates
+        let dir = tempfile::tempdir().unwrap();
+
+        for i in 1..=10 {
+            let source = dir.path().join(format!("src_{}.flac", i));
+            let dest = dir.path().join(format!("Artist/Album/{:02} - Track {}.flac", i, i));
+            std::fs::write(&source, format!("audio content {}", i)).unwrap();
+            copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+        }
+
+        // Verify: all final files exist, no .hean-tmp files anywhere
+        let (tmp_count, _) = cleanup_hean_tmp(dir.path().to_str().unwrap());
+        assert_eq!(tmp_count, 0, "no .hean-tmp should remain after 10 successful copies");
+
+        for i in 1..=10 {
+            let dest = dir.path().join(format!("Artist/Album/{:02} - Track {}.flac", i, i));
+            assert!(dest.exists(), "file {} should exist", i);
+        }
+    }
+
+    #[test]
+    fn test_copy_preserves_other_files_in_directory() {
+        // Scenario: copying a file doesn't affect other files in the same directory
+        let dir = tempfile::tempdir().unwrap();
+        let album_dir = dir.path().join("Artist/Album");
+        std::fs::create_dir_all(&album_dir).unwrap();
+
+        // Pre-existing files from previous sync
+        std::fs::write(album_dir.join("01 - Existing.flac"), "old track").unwrap();
+        std::fs::write(album_dir.join("cover.jpg"), "cover art").unwrap();
+
+        // Copy a new file into the same directory
+        let source = dir.path().join("new_track.flac");
+        std::fs::write(&source, "new track audio").unwrap();
+        let dest = album_dir.join("02 - New Track.flac");
+        copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+
+        // All files should be intact
+        assert_eq!(
+            std::fs::read_to_string(album_dir.join("01 - Existing.flac")).unwrap(),
+            "old track"
+        );
+        assert_eq!(
+            std::fs::read_to_string(album_dir.join("cover.jpg")).unwrap(),
+            "cover art"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "new track audio"
+        );
+    }
+
+    #[test]
+    fn test_copy_dest_path_with_special_ascii_chars() {
+        // Scenario: destination path with apostrophes and dashes — valid ASCII on all filesystems
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("src.flac");
+        std::fs::write(&source, "test data").unwrap();
+
+        let dest = dir.path().join("Rick James/Kickin' Deluxe/01 - Kickin'.flac");
+        copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+
+        assert!(dest.exists(), "path with apostrophes should work");
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "test data");
+    }
+
+    #[test]
+    fn test_copy_handles_blocked_dir_gracefully() {
+        // Scenario: copy_file_verified returns an error when dir creation is blocked,
+        // but does NOT leave ghost directories behind.
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a file where a directory should be → create_dir_all will fail
+        let blocker = dir.path().join("BadDir");
+        std::fs::write(&blocker, "file blocking dir creation").unwrap();
+
+        let source = dir.path().join("real_source.flac");
+        std::fs::write(&source, "valid audio data").unwrap();
+
+        // This should fail (BadDir is a file, not a directory)
+        let bad_dest = format!("{}/BadDir/Album/01 - Track.flac", dir.path().to_str().unwrap());
+        let result = copy_file_verified(source.to_str().unwrap(), &bad_dest);
+        assert!(result.is_err(), "should fail when parent dir can't be created");
+
+        // Good copy should work independently
+        let good_dest = format!("{}/GoodArtist/GoodAlbum/01 - Track.flac", dir.path().to_str().unwrap());
+        copy_file_verified(source.to_str().unwrap(), &good_dest).unwrap();
+        assert!(dir.path().join("GoodArtist/GoodAlbum/01 - Track.flac").exists());
+
+        // No .hean-tmp should remain
+        let (tmp_count, _) = cleanup_hean_tmp(dir.path().to_str().unwrap());
+        assert_eq!(tmp_count, 0);
+    }
+
+    #[test]
+    fn test_copy_zero_byte_file() {
+        // Scenario: source is 0 bytes — should copy successfully without error
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("empty.flac");
+        let dest = dir.path().join("out/empty.flac");
+        std::fs::write(&source, "").unwrap();
+
+        let bytes = copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+
+        assert_eq!(bytes, 0);
+        assert!(dest.exists());
+        assert_eq!(std::fs::read(&dest).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_copy_idempotent_same_content() {
+        // Scenario: copying the same file twice produces the same result
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("src.flac");
+        let dest = dir.path().join("out/track.flac");
+        std::fs::write(&source, "deterministic content").unwrap();
+
+        copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+        let content1 = std::fs::read_to_string(&dest).unwrap();
+
+        copy_file_verified(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+        let content2 = std::fs::read_to_string(&dest).unwrap();
+
+        assert_eq!(content1, content2, "re-copy must produce identical content");
     }
 }

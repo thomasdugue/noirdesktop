@@ -724,6 +724,21 @@ function renderAlbumsView(grid) {
     <div class="dap-select-all-row" id="dap-select-all-row">
       <div class="dap-chk ${selectedAlbums.size === Object.keys(library.albums).length ? 'on' : ''}" id="dap-toggle-all"></div>
       <div class="dap-select-all-label">All (${Object.keys(library.albums).length} albums)</div>
+      <div class="dap-select-dropdown">
+        <button id="dap-select-btn" class="btn-sort-icon" title="Select by status">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <div id="dap-select-menu" class="sort-menu hidden">
+          <button class="sort-option" data-select="all">Select All</button>
+          <button class="sort-option" data-select="none">Deselect All</button>
+          <div class="sort-menu-separator"></div>
+          <button class="sort-option" data-select="on-dap">On DAP</button>
+          <button class="sort-option" data-select="to-add">To Add</button>
+          <button class="sort-option" data-select="to-remove">To Remove</button>
+        </div>
+      </div>
     </div>
 
     <div class="dap-albums-list" id="dap-albums-list"></div>
@@ -774,6 +789,31 @@ function renderAlbumsView(grid) {
       selectAll()
     }
   })
+
+  // Select-by-status dropdown
+  const dapSelectBtn = wrapper.querySelector('#dap-select-btn')
+  const dapSelectMenu = wrapper.querySelector('#dap-select-menu')
+  if (dapSelectBtn && dapSelectMenu) {
+    dapSelectBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      dapSelectMenu.classList.toggle('hidden')
+    })
+    dapSelectMenu.querySelectorAll('.sort-option').forEach(option => {
+      option.addEventListener('click', (e) => {
+        e.stopPropagation()
+        dapSelectMenu.classList.add('hidden')
+        selectByStatus(option.dataset.select)
+      })
+    })
+    const closeDapSelectMenu = (e) => {
+      if (!e.target.closest('.dap-select-dropdown')) {
+        dapSelectMenu.classList.add('hidden')
+      }
+    }
+    document.removeEventListener('click', window._dapSelectMenuClose)
+    window._dapSelectMenuClose = closeDapSelectMenu
+    document.addEventListener('click', closeDapSelectMenu)
+  }
 
   wrapper.querySelector('#dap-album-search').addEventListener('input', (e) => {
     albumSearchFilter = e.target.value
@@ -1217,6 +1257,56 @@ function deselectAll() {
   debouncedComputeAndRenderSummary()
 }
 
+function selectByStatus(mode) {
+  switch (mode) {
+    case 'all':
+      selectAll()
+      return
+    case 'none':
+      deselectAll()
+      return
+    case 'on-dap':
+      // Select only albums already on the DAP
+      selectedAlbums.clear()
+      for (const albumId of _onDapAlbumIds) {
+        selectedAlbums.add(albumId)
+      }
+      break
+    case 'to-add':
+      // Select only albums that need to be copied (not yet on DAP)
+      selectedAlbums.clear()
+      for (const albumKey of Object.keys(library.albums)) {
+        const albumId = albumKeyToId(albumKey)
+        if (!_onDapAlbumIds.has(albumId)) {
+          selectedAlbums.add(albumId)
+        }
+      }
+      break
+    case 'to-remove':
+      // Select only albums that are on DAP but would be removed (currently on DAP + in delete plan)
+      selectedAlbums.clear()
+      // Albums on DAP that have files marked for deletion
+      for (const albumKey of Object.keys(library.albums)) {
+        const albumId = albumKeyToId(albumKey)
+        const album = library.albums[albumKey]
+        if (_onDapAlbumIds.has(albumId) || (_deleteSourcePaths.size > 0 && album.tracks.some(t => _deleteSourcePaths.has(t.path)))) {
+          // Check if this album has tracks marked for deletion
+          if (_deleteSourcePaths.size > 0 && album.tracks.some(t => _deleteSourcePaths.has(t.path))) {
+            selectedAlbums.add(albumId)
+          }
+        }
+      }
+      break
+    default:
+      return
+  }
+  renderTabContent()
+  updateSelectAllCheckbox()
+  saveSelections()
+  updateSyncNowButton()
+  debouncedComputeAndRenderSummary()
+}
+
 // === SUMMARY ===
 
 function debouncedComputeAndRenderSummary() {
@@ -1454,7 +1544,17 @@ function renderSyncingView(grid) {
   `
 
   grid.appendChild(div)
-  div.querySelector('#dap-cancel-sync-btn').addEventListener('click', cancelSync)
+  div.querySelector('#dap-cancel-sync-btn').addEventListener('click', () => {
+    cancelSync()
+    // Immediate UI feedback — the Rust cancel may take time (blocked on large file copy).
+    // Show "Cancelling..." and disable the button so the user knows it's working.
+    const btn = div.querySelector('#dap-cancel-sync-btn')
+    if (btn) {
+      btn.textContent = 'Cancelling...'
+      btn.disabled = true
+      btn.style.opacity = '0.5'
+    }
+  })
 }
 
 // === SCREEN 4: COMPLETE ===
