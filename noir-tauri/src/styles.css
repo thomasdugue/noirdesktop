@@ -5907,7 +5907,7 @@ body:not(.player-visible) .track-info-panel {
   position: fixed;
   top: 38px;
   right: 0;
-  bottom: 96px;
+  bottom: 0;
   width: 360px;
   background: #111;
   border-left: 1px solid #222;
