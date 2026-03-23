@@ -4645,7 +4645,7 @@ fn dap_execute_sync(
     use tauri::Emitter;
 
     // Reset cancel flag
-    DAP_SYNC_CANCEL.store(false, std::sync::atomic::Ordering::Relaxed);
+    DAP_SYNC_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
     let cancel_flag = DAP_SYNC_CANCEL.clone();
 
     std::thread::spawn(move || {
@@ -4742,7 +4742,8 @@ fn dap_execute_sync(
 
 #[tauri::command]
 fn dap_cancel_sync() {
-    DAP_SYNC_CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+    eprintln!("[DAP-SYNC] *** CANCEL REQUESTED BY USER ***");
+    DAP_SYNC_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[tauri::command]

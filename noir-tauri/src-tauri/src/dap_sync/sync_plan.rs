@@ -499,6 +499,15 @@ pub fn compute_sync_plan(
     if mirror_mode {
         if let Some(m) = manifest {
             for file in &m.files {
+                // Skip cover files — covers are managed separately (inline with audio),
+                // never deleted by mirror mode. Without this, covers are purged on every
+                // re-sync because selected_dest_paths only contains audio file paths.
+                if file.dest_relative_path.ends_with("/cover.jpg")
+                    || file.dest_relative_path.ends_with("/cover.jpeg")
+                    || file.dest_relative_path.ends_with("/cover.png")
+                {
+                    continue;
+                }
                 if !selected_dest_paths.contains(&file.dest_relative_path) {
                     total_delete_bytes += file.size_bytes;
                     files_to_delete.push(SyncAction {
@@ -549,15 +558,25 @@ pub fn compute_sync_plan(
         let mut covers_resolved = 0usize;
         let mut covers_not_found = 0usize;
 
-        // ALWAYS re-copy ALL covers on every sync.
-        // The macOS exFAT driver corrupts existing file clusters when new files
-        // are written to the same volume. Covers written in a previous sync will
-        // have their data silently overwritten. Re-copying is cheap (~50-150KB
-        // per cover) and guarantees covers are always intact.
+        // Only copy covers that are missing or different size on the DAP.
+        // Previous approach: "always re-copy all covers" caused corruption because
+        // overwriting valid files on exFAT can corrupt them. Skipping intact covers
+        // is both faster AND more reliable.
         for (folder, (track_path, artist, album)) in &album_folders {
             let cover_dest = format!("{}/cover.jpg", folder);
 
             if let Some((source, size)) = resolve_cover_for_album(track_path, artist, album, cover_cache, covers_dir) {
+                // Check if cover already exists on DAP with correct size
+                let full_cover_path = dest_root.join(&cover_dest);
+                let already_ok = full_cover_path.exists()
+                    && full_cover_path.metadata().map(|m| m.len() == size).unwrap_or(false);
+
+                if already_ok {
+                    // Cover is already on DAP with matching size — skip
+                    covers_resolved += 1;
+                    continue;
+                }
+
                 total_cover_bytes += size;
                 covers_to_copy.push(CoverSyncAction {
                     source_cover_path: source,
@@ -1277,14 +1296,18 @@ mod tests {
         });
 
         let dest_dir = tempfile::tempdir().unwrap();
+        // Create the cover on the "DAP" with the same size — simulates already synced
+        let dap_cover = dest_dir.path().join("Artist A/Album A/cover.jpg");
+        std::fs::create_dir_all(dap_cover.parent().unwrap()).unwrap();
+        std::fs::write(&dap_cover, vec![0u8; 5000]).unwrap();
+
         let plan = compute_sync_plan(
             &tracks, &manifest, "artist_album_track", true,
             1_000_000_000, 2_000_000_000, &cache, dir.path(),
             &dest_dir.path().to_string_lossy(),
         );
-        // Covers are ALWAYS re-copied on every sync to protect against exFAT
-        // cluster corruption that silently destroys cover data between syncs.
-        assert_eq!(plan.covers_to_copy.len(), 1, "Cover should always be re-copied");
+        // Cover already exists on DAP with matching size → skip (not re-copied)
+        assert_eq!(plan.covers_to_copy.len(), 0, "Intact cover should be skipped");
     }
 
     #[test]

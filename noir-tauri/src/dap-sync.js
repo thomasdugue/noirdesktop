@@ -1546,14 +1546,6 @@ function renderSyncingView(grid) {
   grid.appendChild(div)
   div.querySelector('#dap-cancel-sync-btn').addEventListener('click', () => {
     cancelSync()
-    // Immediate UI feedback — the Rust cancel may take time (blocked on large file copy).
-    // Show "Cancelling..." and disable the button so the user knows it's working.
-    const btn = div.querySelector('#dap-cancel-sync-btn')
-    if (btn) {
-      btn.textContent = 'Cancelling...'
-      btn.disabled = true
-      btn.style.opacity = '0.5'
-    }
   })
 }
 
@@ -2063,7 +2055,19 @@ async function startSync() {
 }
 
 function cancelSync() {
+  // Send cancel to Rust (sets the atomic flag — sync thread will stop at next check point)
   invoke('dap_cancel_sync').catch(() => {})
+
+  // Return to albums view IMMEDIATELY — don't wait for Rust to confirm.
+  // The Rust sync thread may be blocked on SMB read or exFAT write for up to 60s.
+  // It will eventually see the cancel flag, clean up, and emit dap_sync_complete.
+  // We handle the UI transition here so the user is never stuck.
+  isSyncing = false
+  dapSubView = 'albums'
+  showToast('Sync cancelled — cleanup in progress', 'warning')
+  if (ui.currentView === 'dap-sync') {
+    app.displayCurrentView()
+  }
 }
 
 // === EVENT LISTENERS ===
@@ -2101,7 +2105,7 @@ function setupEventListeners() {
     renderSidebarDestinations()
 
     if (c.errors?.length > 0 && c.errors[0].includes('cancelled')) {
-      showToast('Sync cancelled', 'warning')
+      // Cancel already handled by cancelSync() — just update state silently
       dapSubView = 'albums'
     } else if (c.success) {
       // Perfect sync — no errors at all

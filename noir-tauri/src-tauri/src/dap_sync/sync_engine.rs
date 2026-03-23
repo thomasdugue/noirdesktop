@@ -1,5 +1,6 @@
 use serde::Serialize;
 use sha2::{Sha256, Digest};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -160,7 +161,7 @@ pub fn execute_sync(
     // --- Phase 1: Delete files ---
     eprintln!("[DAP-SYNC] Phase 1: Deleting {} files", total_delete);
     for (i, action) in plan.files_to_delete.iter().enumerate() {
-        if cancel_flag.load(Ordering::Relaxed) {
+        if cancel_flag.load(Ordering::SeqCst) {
             return Ok(SyncComplete {
                 success: false,
                 files_copied,
@@ -189,6 +190,17 @@ pub fn execute_sync(
         }
     }
 
+    // After deleting audio files, clean up orphaned covers and empty directories.
+    // Mirror mode deletes audio but not covers — covers become orphaned when the
+    // entire album is removed. Clean them up so the DAP doesn't have stale folders.
+    if files_deleted > 0 {
+        let dest_root = Path::new(dest_path);
+        let empty_cleaned = cleanup_empty_dirs(dest_path);
+        if empty_cleaned > 0 {
+            eprintln!("[DAP-SYNC] Post-delete cleanup: removed {} empty directories", empty_cleaned);
+        }
+    }
+
     // --- Pre-Phase 2: Aggressive Apple Double cleanup ---
     // macOS Finder/Spotlight creates ._* files asynchronously for every dir/file operation.
     // On exFAT, these fill up directory entry tables and cause EINVAL on subsequent mkdir.
@@ -207,8 +219,9 @@ pub fn execute_sync(
     let valid_files = plan.files_to_copy.clone();
     let actual_copy_count = valid_files.len();
 
-    // --- Phase 2: Copy audio files ---
-    eprintln!("[DAP-SYNC] Phase 2: Copying {} audio files ({:.1} GB)", actual_copy_count, plan.total_copy_bytes as f64 / 1_073_741_824.0);
+    // --- Phase 2: Copy audio files + covers (inline per album) ---
+    eprintln!("[DAP-SYNC] Phase 2: Copying {} audio files ({:.1} GB) + {} covers",
+        actual_copy_count, plan.total_copy_bytes as f64 / 1_073_741_824.0, plan.covers_to_copy.len());
     let mut bytes_so_far: u64 = 0;
     let mut consecutive_io_errors: u32 = 0;
     const MAX_CONSECUTIVE_IO_ERRORS: u32 = 10;
@@ -218,9 +231,24 @@ pub fn execute_sync(
     // was returned (filename/dirname rejected by destination filesystem, not actual corruption).
     let mut rejected_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    // Build cover lookup: album folder → CoverSyncAction
+    // Covers are written inline (right after the last audio file of each album)
+    // instead of in a separate phase. This prevents exFAT cluster corruption that
+    // occurs when covers are written long after the audio files in the same directory.
+    let cover_lookup: HashMap<String, &super::sync_plan::CoverSyncAction> = plan.covers_to_copy.iter()
+        .filter_map(|c| {
+            // Extract album folder from "Artist/Album/cover.jpg" → "Artist/Album"
+            c.dest_relative_path.rfind('/').map(|pos| (c.dest_relative_path[..pos].to_string(), c))
+        })
+        .collect();
+    let mut covers_copied: usize = 0;
+    let mut covers_done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut current_album_folder: Option<String> = None;
+
     for (i, action) in valid_files.iter().enumerate() {
-        if cancel_flag.load(Ordering::Relaxed) {
+        if cancel_flag.load(Ordering::SeqCst) {
             let _ = cleanup_hean_tmp(dest_path);
+            cleanup_empty_dirs(dest_path);
             let _ = write_partial_manifest(dest_path, old_manifest, &synced_files, &plan.files_to_delete, folder_structure);
             return Ok(SyncComplete {
                 success: false,
@@ -233,6 +261,43 @@ pub fn execute_sync(
         }
 
         let full_dest = format!("{}/{}", dest_path, action.dest_relative_path);
+
+        // Detect album folder change — copy the PREVIOUS album's cover before moving on.
+        // This ensures covers are written right after their album's audio files,
+        // when the directory is "hot" in the exFAT driver's allocation table.
+        let this_folder = action.dest_relative_path.rfind('/')
+            .map(|pos| action.dest_relative_path[..pos].to_string());
+        if let Some(ref folder) = this_folder {
+            if current_album_folder.as_ref() != Some(folder) {
+                // Album changed — copy cover for the previous album (if any)
+                if let Some(ref prev_folder) = current_album_folder {
+                    if !covers_done.contains(prev_folder) {
+                        if let Some(cover) = cover_lookup.get(prev_folder) {
+                            let cover_dest = format!("{}/{}", dest_path, cover.dest_relative_path);
+                            match copy_file_verified(&cover.source_cover_path, &cover_dest) {
+                                Ok(bytes) => {
+                                    covers_copied += 1;
+                                    total_bytes_copied += bytes;
+                                    let hash = compute_quick_hash(&cover_dest).unwrap_or_else(|_| "error".into());
+                                    synced_files.push(SyncedFile {
+                                        source_path: cover.source_cover_path.clone(),
+                                        dest_relative_path: cover.dest_relative_path.clone(),
+                                        size_bytes: bytes,
+                                        modified_at: get_file_modified_at(&cover.source_cover_path),
+                                        quick_hash: hash,
+                                    });
+                                }
+                                Err(e) => {
+                                    eprintln!("[DAP-SYNC] Cover copy failed (non-fatal): {} — {}", cover.dest_relative_path, e);
+                                }
+                            }
+                        }
+                        covers_done.insert(prev_folder.clone());
+                    }
+                }
+                current_album_folder = Some(folder.clone());
+            }
+        }
 
         // Skip files in rejected directories — the directory name was rejected
         // by the destination filesystem (EINVAL), no point trying more files in it.
@@ -254,6 +319,22 @@ pub fn execute_sync(
             action: action.action.clone(),
         });
 
+        // Check cancel before potentially-blocking SMB operations
+        if cancel_flag.load(Ordering::SeqCst) {
+            let _ = cleanup_hean_tmp(dest_path);
+            cleanup_empty_dirs(dest_path);
+            let _ = write_partial_manifest(dest_path, old_manifest, &synced_files, &plan.files_to_delete, folder_structure);
+            eprintln!("[DAP-SYNC] Cancel detected before file {}", action.dest_relative_path);
+            return Ok(SyncComplete {
+                success: false,
+                files_copied,
+                files_deleted,
+                total_bytes_copied,
+                duration_ms: start.elapsed().as_millis() as u64,
+                errors: vec!["Sync cancelled by user".into()],
+            });
+        }
+
         // Resolve SMB URLs to local filesystem paths
         let resolved_source = resolve_smb_path(&action.source_path, &smb_map);
 
@@ -271,7 +352,7 @@ pub fn execute_sync(
             continue;
         }
 
-        match copy_file_verified(&resolved_source, &full_dest) {
+        match copy_file_verified_cancellable(&resolved_source, &full_dest, Some(&cancel_flag)) {
             Ok(bytes) => {
                 files_copied += 1;
                 total_bytes_copied += bytes;
@@ -306,6 +387,11 @@ pub fn execute_sync(
                     quick_hash: hash,
                 });
             }
+            Err(e) if e == "cancelled" => {
+                // Cancel was triggered mid-copy — exit the loop immediately
+                eprintln!("[DAP-SYNC] Copy cancelled mid-file: {}", action.dest_relative_path);
+                break;
+            }
             Err(e) => {
                 eprintln!("[DAP-SYNC] Copy failed (attempt 1): {} — {}", action.dest_relative_path, e);
                 eprintln!("[DAP-SYNC]   source: {} → {}", action.source_path, resolved_source);
@@ -324,7 +410,7 @@ pub fn execute_sync(
                     if ad > 0 {
                         eprintln!("[DAP-SYNC] Post-error cleanup: removed {} ._* files, retrying", ad);
                         // Retry after cleanup
-                        match copy_file_verified(&resolved_source, &full_dest) {
+                        match copy_file_verified_cancellable(&resolved_source, &full_dest, Some(&cancel_flag)) {
                             Ok(bytes) => {
                                 files_copied += 1;
                                 total_bytes_copied += bytes;
@@ -359,7 +445,7 @@ pub fn execute_sync(
                 } else {
                     // Transient error — retry once after short delay
                     std::thread::sleep(std::time::Duration::from_millis(500));
-                    match copy_file_verified(&resolved_source, &full_dest) {
+                    match copy_file_verified_cancellable(&resolved_source, &full_dest, Some(&cancel_flag)) {
                         Ok(bytes) => {
                             files_copied += 1;
                             total_bytes_copied += bytes;
@@ -401,121 +487,52 @@ pub fn execute_sync(
         }
     }
 
-    eprintln!("[DAP-SYNC] Phase 2 complete: {}/{} audio files copied ({:.1} GB) in {:.1}s, {} errors",
-        files_copied, total_copy, total_bytes_copied as f64 / 1_073_741_824.0,
-        phase2_start.elapsed().as_secs_f64(), errors.len());
-
-    // --- Phase 2b: Copy cover art ---
-    // CRITICAL: Covers are copied LAST in each directory because the macOS
-    // exFAT driver corrupts cluster allocations of earlier files when many
-    // files are written to the same directory. By writing covers last, they
-    // are the most recent allocation and least likely to be corrupted.
-    // We also verify content with MD5 hash and retry if corrupted.
-    let total_covers = plan.covers_to_copy.len();
-    eprintln!("[DAP-SYNC] Phase 2b: Copying {} cover files (with hash verification)", total_covers);
-    let mut covers_copied: usize = 0;
-    let mut covers_corrupted: usize = 0;
-
-    // Clean Apple Double files before cover phase — reduce directory entry pressure
-    let (pre_cover_ad, _) = cleanup_apple_double(dest_path);
-    if pre_cover_ad > 0 {
-        eprintln!("[DAP-SYNC] Pre-cover cleanup: removed {} ._* files", pre_cover_ad);
-    }
-
-    for (i, cover) in plan.covers_to_copy.iter().enumerate() {
-        if cancel_flag.load(Ordering::Relaxed) {
-            let _ = cleanup_hean_tmp(dest_path);
-            let _ = write_partial_manifest(dest_path, old_manifest, &synced_files, &plan.files_to_delete, folder_structure);
-            return Ok(SyncComplete {
-                success: false,
-                files_copied,
-                files_deleted,
-                total_bytes_copied,
-                duration_ms: start.elapsed().as_millis() as u64,
-                errors: vec!["Sync cancelled by user".into()],
-            });
-        }
-
-        let full_dest = format!("{}/{}", dest_path, cover.dest_relative_path);
-
-        let _ = app_handle.emit("dap_sync_progress", SyncProgress {
-            phase: "covers".into(),
-            current: i + 1,
-            total: total_covers,
-            current_file: cover.dest_relative_path.clone(),
-            bytes_copied: total_bytes_copied,
-            total_bytes: plan.total_copy_bytes + plan.total_cover_bytes,
-            action: "copy".into(),
-        });
-
-        // Compute source hash BEFORE copy for verification
-        let source_md5 = compute_md5_hash(&cover.source_cover_path);
-
-        match copy_file_verified(&cover.source_cover_path, &full_dest) {
-            Ok(bytes) => {
-                // Verify content integrity with MD5 hash (not just size)
-                // The macOS exFAT driver can corrupt file data while reporting
-                // correct sizes — only a content hash catches this.
-                let dest_md5 = compute_md5_hash(&full_dest);
-
-                if source_md5 == dest_md5 && source_md5 != "error" {
-                    covers_copied += 1;
-                    total_bytes_copied += bytes;
-                    let hash = compute_quick_hash(&full_dest).unwrap_or_else(|_| "error".into());
-                    synced_files.push(SyncedFile {
-                        source_path: cover.source_cover_path.clone(),
-                        dest_relative_path: cover.dest_relative_path.clone(),
-                        size_bytes: bytes,
-                        modified_at: get_file_modified_at(&cover.source_cover_path),
-                        quick_hash: hash,
-                    });
-                } else {
-                    // Content corrupted — retry once
-                    eprintln!("[DAP-SYNC] Cover hash mismatch, retrying: {} (src={} dst={})",
-                        cover.dest_relative_path, source_md5, dest_md5);
-                    // Delete corrupted file and Apple Double, then retry
-                    let _ = std::fs::remove_file(&full_dest);
-                    let (ad, _) = cleanup_apple_double(dest_path);
-                    if ad > 0 {
-                        eprintln!("[DAP-SYNC] Cover retry cleanup: removed {} ._* files", ad);
+    // Copy cover for the LAST album in the loop (not caught by the album-change detection)
+    if let Some(ref last_folder) = current_album_folder {
+        if !covers_done.contains(last_folder) {
+            if let Some(cover) = cover_lookup.get(last_folder) {
+                let cover_dest = format!("{}/{}", dest_path, cover.dest_relative_path);
+                match copy_file_verified(&cover.source_cover_path, &cover_dest) {
+                    Ok(bytes) => {
+                        covers_copied += 1;
+                        total_bytes_copied += bytes;
+                        let hash = compute_quick_hash(&cover_dest).unwrap_or_else(|_| "error".into());
+                        synced_files.push(SyncedFile {
+                            source_path: cover.source_cover_path.clone(),
+                            dest_relative_path: cover.dest_relative_path.clone(),
+                            size_bytes: bytes,
+                            modified_at: get_file_modified_at(&cover.source_cover_path),
+                            quick_hash: hash,
+                        });
                     }
-                    match copy_file_verified(&cover.source_cover_path, &full_dest) {
-                        Ok(bytes2) => {
-                            let retry_md5 = compute_md5_hash(&full_dest);
-                            if source_md5 == retry_md5 {
-                                covers_copied += 1;
-                                total_bytes_copied += bytes2;
-                                let hash = compute_quick_hash(&full_dest).unwrap_or_else(|_| "error".into());
-                                synced_files.push(SyncedFile {
-                                    source_path: cover.source_cover_path.clone(),
-                                    dest_relative_path: cover.dest_relative_path.clone(),
-                                    size_bytes: bytes2,
-                                    modified_at: get_file_modified_at(&cover.source_cover_path),
-                                    quick_hash: hash,
-                                });
-                                eprintln!("[DAP-SYNC] Cover retry succeeded: {}", cover.dest_relative_path);
-                            } else {
-                                covers_corrupted += 1;
-                                eprintln!("[DAP-SYNC] Cover STILL corrupted after retry: {} — exFAT driver issue",
-                                    cover.dest_relative_path);
-                            }
-                        }
-                        Err(e2) => {
-                            covers_corrupted += 1;
-                            eprintln!("[DAP-SYNC] Cover retry failed: {} — {}", cover.dest_relative_path, e2);
-                        }
+                    Err(e) => {
+                        eprintln!("[DAP-SYNC] Cover copy failed (non-fatal): {} — {}", cover.dest_relative_path, e);
                     }
                 }
             }
-            Err(e) => {
-                // Non-fatal: cover copy failure shouldn't abort sync
-                eprintln!("[DAP-SYNC] Cover copy failed (non-fatal): {} — {}", cover.dest_relative_path, e);
-            }
+            covers_done.insert(last_folder.clone());
         }
     }
 
-    if covers_copied > 0 || covers_corrupted > 0 {
-        eprintln!("[DAP-SYNC] Covers: {} copied OK, {} corrupted (exFAT driver issue)", covers_copied, covers_corrupted);
+    let total_covers = plan.covers_to_copy.len();
+    eprintln!("[DAP-SYNC] Phase 2 complete: {}/{} audio files copied, {}/{} covers, ({:.1} GB) in {:.1}s, {} errors",
+        files_copied, total_copy, covers_copied, total_covers,
+        total_bytes_copied as f64 / 1_073_741_824.0,
+        phase2_start.elapsed().as_secs_f64(), errors.len());
+
+    // Check cancel after Phase 2
+    if cancel_flag.load(Ordering::SeqCst) {
+        let _ = cleanup_hean_tmp(dest_path);
+        cleanup_empty_dirs(dest_path);
+        let _ = write_partial_manifest(dest_path, old_manifest, &synced_files, &plan.files_to_delete, folder_structure);
+        return Ok(SyncComplete {
+            success: false,
+            files_copied,
+            files_deleted,
+            total_bytes_copied,
+            duration_ms: start.elapsed().as_millis() as u64,
+            errors: vec!["Sync cancelled by user".into()],
+        });
     }
 
     // --- Phase 3: Write manifest ---
@@ -540,6 +557,13 @@ pub fn execute_sync(
             "[DAP-SYNC] Final cleanup: removed {} Apple Double (._*) files",
             ad_final
         );
+    }
+
+    // Clean up empty directories left by failed copies (e.g., EINVAL on first file of an album).
+    // This runs after EVERY sync, not just cancel — prevents empty ghost dirs on the card.
+    let empty_cleaned = cleanup_empty_dirs(dest_path);
+    if empty_cleaned > 0 {
+        eprintln!("[DAP-SYNC] Cleaned up {} empty directories", empty_cleaned);
     }
 
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -586,39 +610,86 @@ pub fn execute_sync(
 ///    exFAT filesystem corruption.
 /// 3. Size verification — catches partial writes from USB controller issues.
 pub fn copy_file_verified(source: &str, dest: &str) -> Result<u64, String> {
+    copy_file_verified_cancellable(source, dest, None)
+}
+
+/// Copy with optional cancel flag. When provided, the copy checks the flag every 256KB chunk.
+/// If cancelled mid-copy, the .hean-tmp is cleaned up and Err("cancelled") is returned.
+pub fn copy_file_verified_cancellable(
+    source: &str,
+    dest: &str,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<u64, String> {
     let source_path = Path::new(source);
     let dest_path = Path::new(dest);
 
-    // Create parent directories
+    // CRITICAL: Open source FIRST, BEFORE creating any directory on the destination.
+    // If the source is unreachable (SMB disconnected, file moved), we fail immediately
+    // without ever creating a directory on the DAP. Empty dirs on exFAT become
+    // corrupted ghost entries that are non-removable and block all future syncs.
+    let mut src_file = std::fs::File::open(source_path)
+        .map_err(|e| format!("Failed to open source {}: {}", source, e))?;
+
+    // Source exists and is readable — NOW create the destination directory.
     if let Some(parent) = dest_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create dirs for {}: {}", dest, e))?;
+
+        // Clean Apple Double files in the target directory BEFORE creating the file.
+        // macOS creates ._* for every file on exFAT. At ~30 files, the directory
+        // entry table overflows → EINVAL on File::create or rename.
+        cleanup_apple_double_in_dir(parent);
     }
 
     // Write to a temporary file first, then rename to final path.
-    // If the app crashes during io::copy, only the .hean-tmp exists —
-    // the final file is either absent (not started) or complete (rename done).
-    // This prevents partially-written files from corrupting the volume.
     let tmp_dest = format!("{}.hean-tmp", dest);
     let tmp_path = Path::new(&tmp_dest);
 
-    // Data-only copy: open source, create tmp dest, stream bytes (no xattrs/metadata).
-    let mut src_file = std::fs::File::open(source_path)
-        .map_err(|e| format!("Failed to open source {}: {}", source, e))?;
     let mut dst_file = std::fs::File::create(tmp_path)
-        .map_err(|e| format!("Failed to create dest {}: {}", dest, e))?;
+        .map_err(|e| {
+            cleanup_empty_parent_dirs(dest);
+            format!("Failed to create dest {}: {}", dest, e)
+        })?;
 
-    let bytes = match std::io::copy(&mut src_file, &mut dst_file) {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = std::fs::remove_file(tmp_path); // cleanup partial tmp
-            return Err(format!("Failed to copy {} -> {}: {}", source, dest, e));
+    // Chunked copy with cancel check — 256KB chunks let us respond to cancel
+    // within ~30ms even on slow USB/SMB transfers (256KB / ~8MB/s ≈ 30ms).
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut bytes: u64 = 0;
+    let copy_result: Result<(), std::io::Error> = loop {
+        // Check cancel flag every chunk
+        if let Some(flag) = cancel_flag {
+            if flag.load(Ordering::SeqCst) {
+                eprintln!("[DAP-SYNC] Cancel detected mid-copy at {} bytes, cleaning up tmp", bytes);
+                let _ = std::fs::remove_file(tmp_path);
+                return Err("cancelled".into());
+            }
+        }
+        match src_file.read(&mut buf) {
+            Ok(0) => break Ok(()), // EOF
+            Ok(n) => {
+                use std::io::Write;
+                if let Err(e) = dst_file.write_all(&buf[..n]) {
+                    break Err(e);
+                }
+                bytes += n as u64;
+            }
+            Err(e) => break Err(e),
         }
     };
+
+    if let Err(e) = copy_result {
+        let _ = std::fs::remove_file(tmp_path); // cleanup partial tmp
+        // Clean up empty parent directory to prevent exFAT ghost entries.
+        // An empty dir left on exFAT can become corrupted and non-removable,
+        // blocking all future syncs to that artist/album.
+        cleanup_empty_parent_dirs(dest);
+        return Err(format!("Failed to copy {} -> {}: {}", source, dest, e));
+    }
 
     // fsync: flush data to physical device before renaming
     if let Err(e) = dst_file.sync_all() {
         let _ = std::fs::remove_file(tmp_path); // cleanup partial tmp
+        cleanup_empty_parent_dirs(dest);
         return Err(format!("Failed to fsync {}: {}", dest, e));
     }
 
@@ -629,10 +700,17 @@ pub fn copy_file_verified(source: &str, dest: &str) -> Result<u64, String> {
     let source_size = src_file.metadata().map(|m| m.len()).unwrap_or(0);
     if bytes != source_size {
         let _ = std::fs::remove_file(tmp_path); // cleanup bad tmp
+        cleanup_empty_parent_dirs(dest);
         return Err(format!(
             "Size mismatch after copy: source={} dest={} ({} vs {} bytes)",
             source, dest, source_size, bytes
         ));
+    }
+
+    // Clean ._* again before rename — macOS may have created new Apple Double
+    // files during the write, and the rename needs a free directory entry slot.
+    if let Some(parent) = dest_path.parent() {
+        cleanup_apple_double_in_dir(parent);
     }
 
     // Atomic rename: tmp → final. This is the commit point.
@@ -640,6 +718,7 @@ pub fn copy_file_verified(source: &str, dest: &str) -> Result<u64, String> {
     std::fs::rename(tmp_path, dest_path)
         .map_err(|e| {
             let _ = std::fs::remove_file(tmp_path); // cleanup on rename failure
+            cleanup_empty_parent_dirs(dest);
             format!("Failed to rename tmp to final {}: {}", dest, e)
         })?;
 
@@ -683,6 +762,119 @@ fn classify_copy_error(err: &str) -> String {
         "Partial write — file was not fully copied (possible USB disconnect)".into()
     } else {
         format!("Unexpected error: {}", err)
+    }
+}
+
+/// Walk the entire destination tree bottom-up, removing directories that contain
+/// only hidden files (._*, .DS_Store) or are truly empty. Returns the count removed.
+/// This prevents exFAT ghost entries which become corrupted and non-removable.
+fn cleanup_empty_dirs(dest_path: &str) -> usize {
+    let root = Path::new(dest_path);
+    let mut removed = 0;
+
+    fn walk_and_clean(dir: &Path, root: &Path, removed: &mut usize) {
+        let entries: Vec<_> = match std::fs::read_dir(dir) {
+            Ok(rd) => rd.flatten().collect(),
+            Err(_) => return,
+        };
+
+        // Recurse into subdirectories first (bottom-up)
+        for entry in &entries {
+            if entry.path().is_dir() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.starts_with('.') {
+                    walk_and_clean(&entry.path(), root, removed);
+                }
+            }
+        }
+
+        // Don't remove the root
+        if dir == root { return; }
+
+        // Re-read after child cleanup.
+        // A directory is "orphaned" if it has no audio files (and no subdirs with audio).
+        // Orphaned covers (cover.jpg alone) should be cleaned up too.
+        let has_audio_or_subdirs = match std::fs::read_dir(dir) {
+            Ok(rd) => rd.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if e.path().is_dir() && !name.starts_with('.') {
+                    return true; // has real subdirectory
+                }
+                let lower = name.to_lowercase();
+                lower.ends_with(".flac") || lower.ends_with(".mp3") || lower.ends_with(".wav")
+                    || lower.ends_with(".aiff") || lower.ends_with(".aif") || lower.ends_with(".m4a")
+                    || lower.ends_with(".ogg") || lower.ends_with(".alac")
+            }),
+            Err(_) => true, // can't read → don't touch
+        };
+
+        if !has_audio_or_subdirs {
+            // Remove ALL files (covers, hidden files, etc.)
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for entry in rd.flatten() {
+                    if entry.path().is_file() {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+            if std::fs::remove_dir(dir).is_ok() {
+                eprintln!("[DAP-SYNC] Removed orphaned dir: {}", dir.display());
+                *removed += 1;
+            }
+        }
+    }
+
+    walk_and_clean(root, root, &mut removed);
+    removed
+}
+
+/// Clean up empty parent directories after a failed copy.
+/// Walks up from the file's parent toward the volume root, removing empty directories.
+/// Stops at /Volumes/XXX level (3 path components) to never delete the volume itself.
+/// This prevents exFAT ghost entries — empty dirs on exFAT can become corrupted
+/// and non-removable, blocking all future syncs to that path.
+fn cleanup_empty_parent_dirs(file_dest: &str) {
+    let file_path = Path::new(file_dest);
+    let mut current = file_path.parent();
+
+    while let Some(dir) = current {
+        // Stop at volume root level (/Volumes/XXX = 3 components)
+        if dir.components().count() <= 3 {
+            break;
+        }
+
+        // Clean ._* files first — they don't count as "real" content
+        cleanup_apple_double_in_dir(dir);
+
+        // Check if directory has any real (non-hidden) files or subdirectories
+        let has_real_content = match std::fs::read_dir(dir) {
+            Ok(entries) => entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                !name.starts_with('.')
+            }),
+            Err(_) => true, // can't read → don't touch
+        };
+
+        if !has_real_content {
+            // Remove remaining hidden files (._*, .DS_Store)
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with('.') {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+            match std::fs::remove_dir(dir) {
+                Ok(()) => {
+                    eprintln!("[DAP-SYNC] Cleaned up empty dir after error: {}", dir.display());
+                    current = dir.parent();
+                    continue;
+                }
+                Err(_) => break,
+            }
+        } else {
+            break;
+        }
     }
 }
 
@@ -923,6 +1115,29 @@ fn cleanup_hean_tmp(dest_path: &str) -> (usize, u64) {
 
 /// Recursively scan and delete all ._* Apple Double resource fork files.
 /// Returns (files_deleted, bytes_freed).
+/// Clean Apple Double (._*) files in a SINGLE directory.
+/// Called before each file write to prevent exFAT directory entry overflow.
+/// macOS creates ._* files for every file written to exFAT — at ~30 files per dir,
+/// the 60+ entries (files + Apple Doubles) can exceed the driver's per-cluster limit,
+/// causing EINVAL on File::create or rename.
+fn cleanup_apple_double_in_dir(dir: &Path) -> usize {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("._") {
+                let _ = std::fs::remove_file(entry.path());
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 fn cleanup_apple_double(dest_path: &str) -> (usize, u64) {
     let mut count = 0usize;
     let mut bytes = 0u64;
