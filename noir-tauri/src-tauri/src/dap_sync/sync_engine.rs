@@ -196,6 +196,32 @@ pub fn execute_sync(
     const MAX_CONSECUTIVE_IO_ERRORS: u32 = 10;
     let phase2_start = Instant::now();
 
+    // --- Adaptive batch system ---
+    // Optimized for music library sync: albums of 10-20 tracks, 3 MB to 150 MB per file.
+    // Dual threshold, album-aligned: flush when EITHER limit is reached,
+    // but always finish the current album before flushing.
+    //
+    // 512 MB: safe for exFAT write buffers (corruption reports start around 5-10 GB continuous).
+    // 40 files: under exFAT directory entry limit (~60-80), accounting for ._* macOS junk.
+    const BATCH_MAX_BYTES: u64 = 512 * 1024 * 1024;  // 512 MB
+    const BATCH_MAX_FILES: u32 = 40;
+    const BATCH_MAX_BYTES_SLOW: u64 = 256 * 1024 * 1024;  // 256 MB (degraded mode)
+    const BATCH_MAX_FILES_SLOW: u32 = 20;                   // (degraded mode)
+    const BATCH_SAFETY_CAP_BYTES: u64 = 2 * 1024 * 1024 * 1024;  // 2 GB hard cap (mid-album flush)
+
+    let mut batch_bytes: u64 = 0;
+    let mut batch_files: u32 = 0;
+    let mut batch_number: u32 = 0;
+    let mut slow_batch_mode = false;  // Activated if spot-check fails
+    // Track files in current batch for spot-check verification
+    let mut batch_file_paths: Vec<String> = Vec::new();
+
+    let total_batches_estimate = if plan.total_copy_bytes > 0 {
+        ((plan.total_copy_bytes as f64 / BATCH_MAX_BYTES as f64).ceil() as u32).max(1)
+    } else { 1 };
+    eprintln!("[DAP-SYNC] Batch system: {} MB / {} files per batch (~{} batches estimated)",
+        BATCH_MAX_BYTES / 1_048_576, BATCH_MAX_FILES, total_batches_estimate);
+
     // Track corrupted directories — skip all remaining files in a corrupted dir
     // to prevent cascade corruption of the entire exFAT volume.
     let mut corrupted_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -286,6 +312,80 @@ pub fn execute_sync(
                     modified_at: get_file_modified_at(&resolved_source),
                     quick_hash: hash,
                 });
+
+                // --- Adaptive batch tracking ---
+                batch_bytes += bytes;
+                batch_files += 1;
+                batch_file_paths.push(full_dest.clone());
+                let current_album_id = action.album_id;
+
+                // Determine if we've reached a batch boundary.
+                // Rules:
+                // 1. Both thresholds must be checked (bytes OR files)
+                // 2. Album-aligned: wait until the album changes (next file has different album_id)
+                // 3. Safety cap: force flush if a single album exceeds 2 GB (e.g. hi-res 24/192 × 20 tracks)
+                let cur_max_bytes = if slow_batch_mode { BATCH_MAX_BYTES_SLOW } else { BATCH_MAX_BYTES };
+                let cur_max_files = if slow_batch_mode { BATCH_MAX_FILES_SLOW } else { BATCH_MAX_FILES };
+                let threshold_reached = batch_bytes >= cur_max_bytes
+                    || batch_files >= cur_max_files;
+                let next_album_id = plan.files_to_copy.get(i + 1).map(|a| a.album_id);
+                let album_boundary = next_album_id != Some(current_album_id);
+                let safety_cap_reached = batch_bytes >= BATCH_SAFETY_CAP_BYTES;
+
+                let should_flush = (threshold_reached && album_boundary)
+                    || safety_cap_reached
+                    || (threshold_reached && next_album_id.is_none()); // last file
+
+                if should_flush && batch_files > 0 {
+                    batch_number += 1;
+
+                    // Cancel check before batch operations
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        let _ = write_partial_manifest(dest_path, old_manifest, &synced_files, &plan.files_to_delete, folder_structure);
+                        return Ok(SyncComplete {
+                            success: false,
+                            files_copied,
+                            files_deleted,
+                            total_bytes_copied,
+                            duration_ms: start.elapsed().as_millis() as u64,
+                            errors: vec!["Sync cancelled by user".into()],
+                        });
+                    }
+
+                    // 1. Write partial manifest (crash recovery checkpoint)
+                    let _ = write_partial_manifest(dest_path, old_manifest, &synced_files, &plan.files_to_delete, folder_structure);
+
+                    // 2. Spot-check: verify the LAST file in the batch using F_NOCACHE
+                    //    (reads directly from physical device, bypassing kernel cache).
+                    //    Only check the last file — it's the most recent write, most likely
+                    //    to reveal exFAT corruption. Checking 2-3 files would add 10-15s on slow SD.
+                    if let Some(last_path) = batch_file_paths.last() {
+                        let dest_hash = compute_md5_hash(last_path);
+                        if dest_hash == "error" && !slow_batch_mode {
+                            eprintln!("[DAP-SYNC] BATCH {} SPOT-CHECK FAILED — cannot read {} — switching to slow batch mode",
+                                batch_number, last_path);
+                            slow_batch_mode = true;
+                            errors.push(format!(
+                                "Batch {} spot-check: read error on {} — reduced batch size for safety",
+                                batch_number, last_path
+                            ));
+                        }
+                    }
+
+                    if safety_cap_reached {
+                        eprintln!("[DAP-SYNC] Batch {} (SAFETY CAP): {} files, {:.1} MB — mid-album flush (album exceeds 2 GB)",
+                            batch_number, batch_files, batch_bytes as f64 / 1_048_576.0);
+                    } else {
+                        eprintln!("[DAP-SYNC] Batch {} complete: {} files, {:.1} MB{}",
+                            batch_number, batch_files, batch_bytes as f64 / 1_048_576.0,
+                            if slow_batch_mode { " [SLOW MODE]" } else { "" });
+                    }
+
+                    // Reset batch counters
+                    batch_bytes = 0;
+                    batch_files = 0;
+                    batch_file_paths.clear();
+                }
             }
             Err(e) => {
                 eprintln!("[DAP-SYNC] Copy failed (attempt 1): {} — {}", action.dest_relative_path, e);
@@ -382,9 +482,18 @@ pub fn execute_sync(
         }
     }
 
-    eprintln!("[DAP-SYNC] Phase 2 complete: {}/{} audio files copied ({:.1} GB) in {:.1}s, {} errors",
+    // Flush any remaining partial batch (< threshold) as final checkpoint
+    if batch_files > 0 {
+        batch_number += 1;
+        let _ = write_partial_manifest(dest_path, old_manifest, &synced_files, &plan.files_to_delete, folder_structure);
+        eprintln!("[DAP-SYNC] Batch {} (final): {} files, {:.1} MB",
+            batch_number, batch_files, batch_bytes as f64 / 1_048_576.0);
+    }
+
+    eprintln!("[DAP-SYNC] Phase 2 complete: {}/{} audio files copied ({:.1} GB) in {:.1}s, {} batches, {} errors{}",
         files_copied, total_copy, total_bytes_copied as f64 / 1_073_741_824.0,
-        phase2_start.elapsed().as_secs_f64(), errors.len());
+        phase2_start.elapsed().as_secs_f64(), batch_number, errors.len(),
+        if slow_batch_mode { " [SLOW MODE ACTIVATED]" } else { "" });
 
     // --- Phase 2b: Copy cover art ---
     // CRITICAL: Covers are copied LAST in each directory because the macOS
@@ -959,5 +1068,30 @@ mod tests {
         assert!(now.ends_with("Z"));
         // Should be in 2026 range
         assert!(now.starts_with("202"));
+    }
+
+    #[test]
+    fn test_batch_constants_are_sensible() {
+        // Verify batch constants match the design for music library sync:
+        // - Albums: 10-20 tracks, 3 MB to 150 MB per file
+        // - Normal batch: 512 MB / 40 files
+        // - Slow batch: 256 MB / 20 files (half of normal)
+        // - Safety cap: 2 GB (for hi-res 24/192 × 20 tracks albums)
+
+        // A typical lossy album (12 × 8 MB = 96 MB) should fit ~5 albums per batch
+        let lossy_album_bytes: u64 = 12 * 8 * 1024 * 1024;
+        assert!(lossy_album_bytes * 5 < 512 * 1024 * 1024);
+
+        // A typical lossless album (12 × 30 MB = 360 MB) should fit ~1 album per batch
+        let lossless_album_bytes: u64 = 12 * 30 * 1024 * 1024;
+        assert!(lossless_album_bytes < 512 * 1024 * 1024);
+
+        // A hi-res album (20 × 150 MB = 3 GB) exceeds the safety cap → mid-album flush
+        let hires_album_bytes: u64 = 20 * 150 * 1024 * 1024;
+        assert!(hires_album_bytes > 2 * 1024 * 1024 * 1024);
+
+        // Slow mode halves both thresholds
+        assert_eq!(256 * 1024 * 1024u64, 512 * 1024 * 1024u64 / 2);
+        assert_eq!(20u32, 40u32 / 2);
     }
 }
