@@ -1581,14 +1581,77 @@ function renderCompleteView(grid) {
     ? `${r.filesCopied || 0} files synced to ${escapeHtml(deviceName)} — ${r.errors.length} failed`
     : `All changes applied to ${escapeHtml(deviceName)}`
 
-  // Error report section (only if errors exist)
-  // Build error report: show ALL errors (not just 20), make text selectable/copiable
-  const errorReportHtml = hasErrors ? `
-    <div class="dap-complete-error-report">
-      <div class="dap-complete-error-header">${r.errors.length} file${r.errors.length > 1 ? 's' : ''} could not be synced</div>
-      <textarea class="dap-error-textarea" readonly rows="8" spellcheck="false">${r.errors.map(e => e).join('\n')}</textarea>
-    </div>
-  ` : ''
+  // Error report section — grouped by album with human-readable reasons
+  let errorReportHtml = ''
+  if (hasErrors) {
+    // Group errors by album folder (Artist/Album)
+    const albumErrors = new Map() // folder → { tracks: [], reason: string }
+    for (const err of r.errors) {
+      // Parse "Artist/Album/track.flac — Reason"
+      const dashIdx = err.indexOf(' — ')
+      const path = dashIdx > 0 ? err.substring(0, dashIdx) : err
+      const rawReason = dashIdx > 0 ? err.substring(dashIdx + 3) : 'Unknown error'
+
+      // Extract album folder (everything before last /)
+      const lastSlash = path.lastIndexOf('/')
+      const folder = lastSlash > 0 ? path.substring(0, lastSlash) : 'Unknown'
+      const filename = lastSlash > 0 ? path.substring(lastSlash + 1) : path
+
+      // Human-readable reason (no dev jargon)
+      let reason = 'Unknown error'
+      if (rawReason.includes('exFAT') || rawReason.includes('Invalid argument') || rawReason.includes('directory rejected')) {
+        reason = 'SD card filesystem rejected the folder name'
+      } else if (rawReason.includes('Source file not found') || rawReason.includes('not found')) {
+        reason = 'Source file not found on NAS'
+      } else if (rawReason.includes('Permission denied')) {
+        reason = 'Permission denied'
+      } else if (rawReason.includes('No space left')) {
+        reason = 'No space left on SD card'
+      } else if (rawReason.includes('ghost') || rawReason.includes('Ghost')) {
+        reason = 'Corrupted folder from previous sync'
+      } else if (rawReason.includes('Size mismatch') || rawReason.includes('Partial')) {
+        reason = 'File was not fully copied (USB issue)'
+      } else if (rawReason.includes('cancelled')) {
+        reason = 'Sync was cancelled'
+      } else {
+        reason = rawReason.length > 60 ? rawReason.substring(0, 57) + '...' : rawReason
+      }
+
+      if (!albumErrors.has(folder)) {
+        albumErrors.set(folder, { tracks: [], reason })
+      }
+      albumErrors.get(folder).tracks.push(filename)
+    }
+
+    const albumCount = albumErrors.size
+    const trackCount = r.errors.length
+    let albumListHtml = ''
+    for (const [folder, info] of albumErrors) {
+      const trackList = info.tracks.length <= 3
+        ? info.tracks.map(t => `<div class="dap-err-track">${escapeHtml(t)}</div>`).join('')
+        : info.tracks.slice(0, 2).map(t => `<div class="dap-err-track">${escapeHtml(t)}</div>`).join('')
+          + `<div class="dap-err-track dap-err-more">+ ${info.tracks.length - 2} more tracks</div>`
+
+      albumListHtml += `
+        <div class="dap-err-album">
+          <div class="dap-err-album-header">
+            <span class="dap-err-album-name">${escapeHtml(folder)}</span>
+            <span class="dap-err-album-count">${info.tracks.length} track${info.tracks.length > 1 ? 's' : ''}</span>
+          </div>
+          <div class="dap-err-reason">${escapeHtml(info.reason)}</div>
+          <div class="dap-err-tracks">${trackList}</div>
+        </div>`
+    }
+
+    errorReportHtml = `
+      <div class="dap-complete-error-report">
+        <div class="dap-complete-retry-msg">Some files couldn't be synced. Retry to complete the transfer.</div>
+        <details class="dap-err-details">
+          <summary class="dap-err-summary">${trackCount} track${trackCount > 1 ? 's' : ''} in ${albumCount} album${albumCount > 1 ? 's' : ''} failed</summary>
+          <div class="dap-err-list">${albumListHtml}</div>
+        </details>
+      </div>`
+  }
 
   div.innerHTML = `
     <div class="dap-complete-dap-icon">
@@ -1620,15 +1683,25 @@ function renderCompleteView(grid) {
     </div>
     ${errorReportHtml}
     <div class="dap-complete-actions">
-      <div class="dap-eject-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 10H5l7-10z"/><line x1="5" y1="21" x2="19" y2="21"/></svg> You can safely eject your SD card</div>
-      <button class="dap-btn-primary" id="dap-done-btn" style="margin-top: 16px;">Done</button>
+      ${hasErrors
+        ? `<button class="dap-btn-primary" id="dap-retry-btn">Retry sync</button>
+           <button class="dap-btn-secondary" id="dap-done-btn" style="margin-top: 8px;">Back to albums</button>`
+        : `<div class="dap-eject-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 10H5l7-10z"/><line x1="5" y1="21" x2="19" y2="21"/></svg> You can safely eject your SD card</div>
+           <button class="dap-btn-primary" id="dap-done-btn" style="margin-top: 16px;">Done</button>`
+      }
     </div>
   `
 
   grid.appendChild(div)
-  div.querySelector('#dap-done-btn').addEventListener('click', () => {
+  div.querySelector('#dap-done-btn')?.addEventListener('click', () => {
     dapSubView = 'albums'
     app.displayCurrentView()
+  })
+  div.querySelector('#dap-retry-btn')?.addEventListener('click', () => {
+    dapSubView = 'albums'
+    app.displayCurrentView()
+    // Small delay to let the view render, then start sync
+    setTimeout(() => startSync(), 300)
   })
 }
 
