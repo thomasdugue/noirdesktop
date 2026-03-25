@@ -11,3 +11,4 @@ pub mod manifest;
 pub mod smb_utils;
 pub mod sync_plan;
 pub mod sync_engine;
+pub mod mtp;
