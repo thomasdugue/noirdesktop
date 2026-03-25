@@ -301,6 +301,8 @@ function renderSidebarDestinations() {
   }
 
   for (const dest of destinations) {
+    // MTP destinations are rendered by renderMtpSidebar(), not here
+    if (dest.path.startsWith('mtp://')) continue
     const isMounted = mountedVolumes.has(dest.path)
     // Hide offline volumes — only show mounted devices
     if (!isMounted) continue
@@ -352,6 +354,8 @@ function renderSidebarDestinations() {
     container.appendChild(item)
   }
 
+  // Also re-render MTP devices (to sync active state)
+  renderMtpSidebar()
 }
 
 function checkMounted(path) {
@@ -663,7 +667,7 @@ function renderAlbumsView(grid) {
       <div class="dap-dest-bar ${detailsExpanded ? 'details-open' : ''}">
         <span class="dap-dest-icon">${DAP_ICON_SVG}</span>
         <div class="dap-dest-info">
-          <div class="dap-dest-path">${escapeHtml(dest.path)}</div>
+          <div class="dap-dest-path">${escapeHtml(getMtpDisplayName(dest) || dest.name || dest.path)}</div>
           <div class="dap-dest-space">${formatBytes(freeBytes)} free / ${formatBytes(totalBytes)}</div>
           <div class="dap-storage-bar"><div class="dap-storage-fill" style="width:${usedPct}%"></div></div>
         </div>
@@ -724,6 +728,21 @@ function renderAlbumsView(grid) {
     <div class="dap-select-all-row" id="dap-select-all-row">
       <div class="dap-chk ${selectedAlbums.size === Object.keys(library.albums).length ? 'on' : ''}" id="dap-toggle-all"></div>
       <div class="dap-select-all-label">All (${Object.keys(library.albums).length} albums)</div>
+      <div class="dap-select-dropdown">
+        <button id="dap-select-btn" class="btn-sort-icon" title="Select by status">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <div id="dap-select-menu" class="sort-menu hidden">
+          <button class="sort-option" data-select="all">Select All</button>
+          <button class="sort-option" data-select="none">Deselect All</button>
+          <div class="sort-menu-separator"></div>
+          <button class="sort-option" data-select="on-dap">On DAP</button>
+          <button class="sort-option" data-select="to-add">To Add</button>
+          <button class="sort-option" data-select="to-remove">To Remove</button>
+        </div>
+      </div>
     </div>
 
     <div class="dap-albums-list" id="dap-albums-list"></div>
@@ -774,6 +793,31 @@ function renderAlbumsView(grid) {
       selectAll()
     }
   })
+
+  // Select-by-status dropdown
+  const dapSelectBtn = wrapper.querySelector('#dap-select-btn')
+  const dapSelectMenu = wrapper.querySelector('#dap-select-menu')
+  if (dapSelectBtn && dapSelectMenu) {
+    dapSelectBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      dapSelectMenu.classList.toggle('hidden')
+    })
+    dapSelectMenu.querySelectorAll('.sort-option').forEach(option => {
+      option.addEventListener('click', (e) => {
+        e.stopPropagation()
+        dapSelectMenu.classList.add('hidden')
+        selectByStatus(option.dataset.select)
+      })
+    })
+    const closeDapSelectMenu = (e) => {
+      if (!e.target.closest('.dap-select-dropdown')) {
+        dapSelectMenu.classList.add('hidden')
+      }
+    }
+    document.removeEventListener('click', window._dapSelectMenuClose)
+    window._dapSelectMenuClose = closeDapSelectMenu
+    document.addEventListener('click', closeDapSelectMenu)
+  }
 
   wrapper.querySelector('#dap-album-search').addEventListener('input', (e) => {
     albumSearchFilter = e.target.value
@@ -1217,6 +1261,56 @@ function deselectAll() {
   debouncedComputeAndRenderSummary()
 }
 
+function selectByStatus(mode) {
+  switch (mode) {
+    case 'all':
+      selectAll()
+      return
+    case 'none':
+      deselectAll()
+      return
+    case 'on-dap':
+      // Select only albums already on the DAP
+      selectedAlbums.clear()
+      for (const albumId of _onDapAlbumIds) {
+        selectedAlbums.add(albumId)
+      }
+      break
+    case 'to-add':
+      // Select only albums that need to be copied (not yet on DAP)
+      selectedAlbums.clear()
+      for (const albumKey of Object.keys(library.albums)) {
+        const albumId = albumKeyToId(albumKey)
+        if (!_onDapAlbumIds.has(albumId)) {
+          selectedAlbums.add(albumId)
+        }
+      }
+      break
+    case 'to-remove':
+      // Select only albums that are on DAP but would be removed (currently on DAP + in delete plan)
+      selectedAlbums.clear()
+      // Albums on DAP that have files marked for deletion
+      for (const albumKey of Object.keys(library.albums)) {
+        const albumId = albumKeyToId(albumKey)
+        const album = library.albums[albumKey]
+        if (_onDapAlbumIds.has(albumId) || (_deleteSourcePaths.size > 0 && album.tracks.some(t => _deleteSourcePaths.has(t.path)))) {
+          // Check if this album has tracks marked for deletion
+          if (_deleteSourcePaths.size > 0 && album.tracks.some(t => _deleteSourcePaths.has(t.path))) {
+            selectedAlbums.add(albumId)
+          }
+        }
+      }
+      break
+    default:
+      return
+  }
+  renderTabContent()
+  updateSelectAllCheckbox()
+  saveSelections()
+  updateSyncNowButton()
+  debouncedComputeAndRenderSummary()
+}
+
 // === SUMMARY ===
 
 function debouncedComputeAndRenderSummary() {
@@ -1454,7 +1548,9 @@ function renderSyncingView(grid) {
   `
 
   grid.appendChild(div)
-  div.querySelector('#dap-cancel-sync-btn').addEventListener('click', cancelSync)
+  div.querySelector('#dap-cancel-sync-btn').addEventListener('click', () => {
+    cancelSync()
+  })
 }
 
 // === SCREEN 4: COMPLETE ===
@@ -1489,14 +1585,77 @@ function renderCompleteView(grid) {
     ? `${r.filesCopied || 0} files synced to ${escapeHtml(deviceName)} — ${r.errors.length} failed`
     : `All changes applied to ${escapeHtml(deviceName)}`
 
-  // Error report section (only if errors exist)
-  // Build error report: show ALL errors (not just 20), make text selectable/copiable
-  const errorReportHtml = hasErrors ? `
-    <div class="dap-complete-error-report">
-      <div class="dap-complete-error-header">${r.errors.length} file${r.errors.length > 1 ? 's' : ''} could not be synced</div>
-      <textarea class="dap-error-textarea" readonly rows="8" spellcheck="false">${r.errors.map(e => e).join('\n')}</textarea>
-    </div>
-  ` : ''
+  // Error report section — grouped by album with human-readable reasons
+  let errorReportHtml = ''
+  if (hasErrors) {
+    // Group errors by album folder (Artist/Album)
+    const albumErrors = new Map() // folder → { tracks: [], reason: string }
+    for (const err of r.errors) {
+      // Parse "Artist/Album/track.flac — Reason"
+      const dashIdx = err.indexOf(' — ')
+      const path = dashIdx > 0 ? err.substring(0, dashIdx) : err
+      const rawReason = dashIdx > 0 ? err.substring(dashIdx + 3) : 'Unknown error'
+
+      // Extract album folder (everything before last /)
+      const lastSlash = path.lastIndexOf('/')
+      const folder = lastSlash > 0 ? path.substring(0, lastSlash) : 'Unknown'
+      const filename = lastSlash > 0 ? path.substring(lastSlash + 1) : path
+
+      // Human-readable reason (no dev jargon)
+      let reason = 'Unknown error'
+      if (rawReason.includes('exFAT') || rawReason.includes('Invalid argument') || rawReason.includes('directory rejected')) {
+        reason = 'SD card filesystem rejected the folder name'
+      } else if (rawReason.includes('Source file not found') || rawReason.includes('not found')) {
+        reason = 'Source file not found on NAS'
+      } else if (rawReason.includes('Permission denied')) {
+        reason = 'Permission denied'
+      } else if (rawReason.includes('No space left')) {
+        reason = 'No space left on SD card'
+      } else if (rawReason.includes('ghost') || rawReason.includes('Ghost')) {
+        reason = 'Corrupted folder from previous sync'
+      } else if (rawReason.includes('Size mismatch') || rawReason.includes('Partial')) {
+        reason = 'File was not fully copied (USB issue)'
+      } else if (rawReason.includes('cancelled')) {
+        reason = 'Sync was cancelled'
+      } else {
+        reason = rawReason.length > 60 ? rawReason.substring(0, 57) + '...' : rawReason
+      }
+
+      if (!albumErrors.has(folder)) {
+        albumErrors.set(folder, { tracks: [], reason })
+      }
+      albumErrors.get(folder).tracks.push(filename)
+    }
+
+    const albumCount = albumErrors.size
+    const trackCount = r.errors.length
+    let albumListHtml = ''
+    for (const [folder, info] of albumErrors) {
+      const trackList = info.tracks.length <= 3
+        ? info.tracks.map(t => `<div class="dap-err-track">${escapeHtml(t)}</div>`).join('')
+        : info.tracks.slice(0, 2).map(t => `<div class="dap-err-track">${escapeHtml(t)}</div>`).join('')
+          + `<div class="dap-err-track dap-err-more">+ ${info.tracks.length - 2} more tracks</div>`
+
+      albumListHtml += `
+        <div class="dap-err-album">
+          <div class="dap-err-album-header">
+            <span class="dap-err-album-name">${escapeHtml(folder)}</span>
+            <span class="dap-err-album-count">${info.tracks.length} track${info.tracks.length > 1 ? 's' : ''}</span>
+          </div>
+          <div class="dap-err-reason">${escapeHtml(info.reason)}</div>
+          <div class="dap-err-tracks">${trackList}</div>
+        </div>`
+    }
+
+    errorReportHtml = `
+      <div class="dap-complete-error-report">
+        <div class="dap-complete-retry-msg">Some files couldn't be synced. Retry to complete the transfer.</div>
+        <details class="dap-err-details">
+          <summary class="dap-err-summary">${trackCount} track${trackCount > 1 ? 's' : ''} in ${albumCount} album${albumCount > 1 ? 's' : ''} failed</summary>
+          <div class="dap-err-list">${albumListHtml}</div>
+        </details>
+      </div>`
+  }
 
   div.innerHTML = `
     <div class="dap-complete-dap-icon">
@@ -1528,15 +1687,25 @@ function renderCompleteView(grid) {
     </div>
     ${errorReportHtml}
     <div class="dap-complete-actions">
-      <div class="dap-eject-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 10H5l7-10z"/><line x1="5" y1="21" x2="19" y2="21"/></svg> You can safely eject your SD card</div>
-      <button class="dap-btn-primary" id="dap-done-btn" style="margin-top: 16px;">Done</button>
+      ${hasErrors
+        ? `<button class="dap-btn-primary" id="dap-retry-btn">Retry sync</button>
+           <button class="dap-btn-secondary" id="dap-done-btn" style="margin-top: 8px;">Back to albums</button>`
+        : `<div class="dap-eject-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 10H5l7-10z"/><line x1="5" y1="21" x2="19" y2="21"/></svg> You can safely eject your SD card</div>
+           <button class="dap-btn-primary" id="dap-done-btn" style="margin-top: 16px;">Done</button>`
+      }
     </div>
   `
 
   grid.appendChild(div)
-  div.querySelector('#dap-done-btn').addEventListener('click', () => {
+  div.querySelector('#dap-done-btn')?.addEventListener('click', () => {
     dapSubView = 'albums'
     app.displayCurrentView()
+  })
+  div.querySelector('#dap-retry-btn')?.addEventListener('click', () => {
+    dapSubView = 'albums'
+    app.displayCurrentView()
+    // Small delay to let the view render, then start sync
+    setTimeout(() => startSync(), 300)
   })
 }
 
@@ -1947,12 +2116,36 @@ async function startSync() {
   app.displayCurrentView()
 
   try {
-    await invoke('dap_execute_sync', {
-      tracks: tracksForSync,
-      destPath: dest.path,
-      folderStructure,
-      mirrorMode,
-    })
+    if (dest.path.startsWith('mtp://')) {
+      // MTP sync: build file list from sync plan and use MTP-specific command
+      const plan = syncPlan
+      if (!plan || !plan.filesToCopy || plan.filesToCopy.length === 0) {
+        showToast('Nothing to sync')
+        isSyncing = false
+        dapSubView = 'albums'
+        app.displayCurrentView()
+        return
+      }
+      // Parse storage index from mtp://serial/index
+      const parts = dest.path.replace('mtp://', '').split('/')
+      const storageIndex = parseInt(parts[1]) || 1
+
+      // Build file pairs: (resolved_source_path, dest_relative_path)
+      const files = plan.filesToCopy.map(f => [f.sourcePath, f.destRelativePath])
+
+      await invoke('dap_execute_mtp_sync', {
+        files,
+        storageIndex,
+      })
+    } else {
+      // Mass storage sync (filesystem-based)
+      await invoke('dap_execute_sync', {
+        tracks: tracksForSync,
+        destPath: dest.path,
+        folderStructure,
+        mirrorMode,
+      })
+    }
   } catch (e) {
     showToast(`Sync error: ${e}`, 'error')
     isSyncing = false
@@ -1963,7 +2156,19 @@ async function startSync() {
 }
 
 function cancelSync() {
+  // Send cancel to Rust (sets the atomic flag — sync thread will stop at next check point)
   invoke('dap_cancel_sync').catch(() => {})
+
+  // Return to albums view IMMEDIATELY — don't wait for Rust to confirm.
+  // The Rust sync thread may be blocked on SMB read or exFAT write for up to 60s.
+  // It will eventually see the cancel flag, clean up, and emit dap_sync_complete.
+  // We handle the UI transition here so the user is never stuck.
+  isSyncing = false
+  dapSubView = 'albums'
+  showToast('Sync cancelled — cleanup in progress', 'warning')
+  if (ui.currentView === 'dap-sync') {
+    app.displayCurrentView()
+  }
 }
 
 // === EVENT LISTENERS ===
@@ -2001,7 +2206,7 @@ function setupEventListeners() {
     renderSidebarDestinations()
 
     if (c.errors?.length > 0 && c.errors[0].includes('cancelled')) {
-      showToast('Sync cancelled', 'warning')
+      // Cancel already handled by cancelSync() — just update state silently
       dapSubView = 'albums'
     } else if (c.success) {
       // Perfect sync — no errors at all
@@ -2049,9 +2254,12 @@ function initSidebarToggle() {
 
   header.addEventListener('click', () => {
     header.classList.toggle('open')
+    const isOpen = header.classList.contains('open')
     const list = document.getElementById('dap-sync-destinations')
-    if (list) list.style.display = header.classList.contains('open') ? '' : 'none'
-    sidebarCollapsed = !header.classList.contains('open')
+    if (list) list.style.display = isOpen ? '' : 'none'
+    const mtpList = document.getElementById('dap-mtp-devices')
+    if (mtpList) mtpList.style.display = isOpen ? '' : 'none'
+    sidebarCollapsed = !isOpen
   })
 }
 
@@ -2063,6 +2271,204 @@ export async function initDapSync() {
   await refreshMountedVolumes()
   setupEventListeners()
   initSidebarToggle()
+  // Detect MTP devices (DAPs connected via USB)
+  detectMtpDevices()
+}
+
+// === MTP DEVICE DETECTION ===
+let mtpDevices = []
+let mtpExpanded = new Set() // serials of expanded MTP devices in sidebar
+
+/** Get a human-readable name for an MTP destination.
+ *  mtp://serial/0 → "FiiO JM21 / Internal Storage"
+ *  mtp://serial/1 → "FiiO JM21 / Micro SD"
+ */
+function getMtpDisplayName(dest) {
+  if (!dest || !dest.path || !dest.path.startsWith('mtp://')) return null
+  // Find the MTP device that matches this destination
+  const parts = dest.path.replace('mtp://', '').split('/')
+  const serial = parts[0]
+  const storageIdx = parseInt(parts[1] || '0', 10)
+  const device = mtpDevices.find(d => d.serial === serial)
+  if (!device) return dest.name || dest.path
+  const storage = device.storages[storageIdx]
+  const storageName = storage
+    ? (storage.description || (storageIdx === 0 ? 'Internal Storage' : 'Micro SD'))
+    : (storageIdx === 0 ? 'Internal Storage' : 'Micro SD')
+  return `${device.model} — ${storageName}`
+}
+
+async function detectMtpDevices() {
+  try {
+    mtpDevices = await invoke('dap_detect_mtp_devices')
+    renderMtpSidebar()
+  } catch (e) {
+    console.warn('[MTP] Detection failed:', e)
+    mtpDevices = []
+  }
+}
+
+function getStorageIcon(description) {
+  const lower = (description || '').toLowerCase()
+  if (lower.includes('sd') || lower.includes('micro') || lower.includes('card') || lower.includes('externe')) {
+    // SD card icon
+    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="2" width="16" height="20" rx="2"/>
+      <path d="M8 2v6"/><path d="M12 2v6"/><path d="M16 2v6"/>
+    </svg>`
+  }
+  // Internal storage icon (DAP device)
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+    <line x1="12" y1="18" x2="12.01" y2="18"/>
+  </svg>`
+}
+
+function getStorageDisplayName(storage, deviceModel) {
+  const lower = (storage.description || '').toLowerCase()
+  if (lower.includes('sd') || lower.includes('micro') || lower.includes('card') || lower.includes('externe')) {
+    return 'Micro SD'
+  }
+  if (lower.includes('intern') || lower.includes('partag')) {
+    return 'Internal Storage'
+  }
+  return storage.description || 'Storage'
+}
+
+function renderMtpSidebar() {
+  const container = document.getElementById('dap-mtp-devices')
+  if (!container) return
+  container.innerHTML = ''
+
+  if (mtpDevices.length === 0) return
+
+  for (const device of mtpDevices) {
+    const isExpanded = mtpExpanded.has(device.serial)
+
+    // --- PARENT ITEM (device name + MTP badge + chevron) ---
+    const parent = document.createElement('div')
+    parent.className = 'sb-dap-device sb-mtp-device sb-mtp-parent'
+    parent.innerHTML = `
+      <div class="dev-icon" style="color: #4ade80">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+          <line x1="12" y1="18" x2="12.01" y2="18"/>
+          <path d="M9 6h6"/>
+        </svg>
+      </div>
+      <div class="dev-info">
+        <div class="dev-name">${escapeHtml(device.model)}</div>
+        <div class="dev-space"><span class="mtp-badge">MTP</span></div>
+      </div>
+      <span class="sb-mtp-chevron${isExpanded ? ' open' : ''}">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6l6 6-6 6"/>
+        </svg>
+      </span>
+    `
+    parent.addEventListener('click', () => {
+      if (mtpExpanded.has(device.serial)) {
+        mtpExpanded.delete(device.serial)
+      } else {
+        mtpExpanded.add(device.serial)
+      }
+      renderMtpSidebar()
+    })
+    container.appendChild(parent)
+
+    // --- SUB-ITEMS (one per storage, only if expanded) ---
+    if (isExpanded) {
+      const storageList = document.createElement('div')
+      storageList.className = 'sb-mtp-storages'
+
+      device.storages.forEach((storage, idx) => {
+        const mtpPath = `mtp://${device.serial}/${idx}`
+        const isActive = destinations.some(d => d.path === mtpPath && d.id === currentDestinationId)
+          && ui.currentView === 'dap-sync'
+        const freeLabel = storage.freeBytes > 0 ? formatBytes(storage.freeBytes) + ' free' : ''
+
+        const sub = document.createElement('div')
+        sub.className = 'sb-dap-device sb-mtp-storage' + (isActive ? ' active' : '')
+        sub.innerHTML = `
+          <div class="dev-icon sb-mtp-storage-icon" style="color: #4ade80">
+            ${getStorageIcon(storage.description)}
+          </div>
+          <div class="dev-info">
+            <div class="dev-name">${escapeHtml(getStorageDisplayName(storage, device.model))}</div>
+            <div class="dev-space">${freeLabel}</div>
+          </div>
+        `
+        sub.addEventListener('click', (e) => {
+          e.stopPropagation()
+          openMtpSyncPanel(device, idx)
+        })
+        storageList.appendChild(sub)
+      })
+
+      container.appendChild(storageList)
+    }
+  }
+}
+
+// === MTP SYNC PANEL ===
+
+let currentMtpDevice = null
+
+async function openMtpSyncPanel(device, storageIndex) {
+  currentMtpDevice = device
+
+  // Use explicit index if provided, otherwise fallback to SD auto-detection
+  let idx = storageIndex
+  if (idx === undefined) {
+    const sdStorage = device.storages.find(s => s.description.toLowerCase().includes('sd'))
+      || device.storages[device.storages.length - 1]
+    idx = device.storages.indexOf(sdStorage)
+  }
+
+  // Create or find a destination for this MTP device + storage
+  const mtpPath = `mtp://${device.serial}/${idx}`
+  let dest = destinations.find(d => d.path === mtpPath)
+
+  if (!dest) {
+    // Create new destination in DB with storage-specific name
+    const storageName = getStorageDisplayName(device.storages[idx], device.model)
+    try {
+      await invoke('dap_save_destination', {
+        dest: {
+          id: null,
+          name: `${device.model} — ${storageName}`,
+          path: mtpPath,
+          volumeName: device.model,
+          folderStructure: 'artist_album_track',
+          mirrorMode: true,
+          showInSidebar: true,
+          lastSyncAt: null,
+          lastSyncAlbumsCount: null,
+          lastSyncSizeBytes: null
+        }
+      })
+      await loadDestinations()
+      dest = destinations.find(d => d.path === mtpPath)
+    } catch (e) {
+      console.error('[MTP] Failed to create destination:', e)
+      showToast('Failed to setup MTP device')
+      return
+    }
+  }
+
+  if (!dest) {
+    showToast('Failed to find MTP destination')
+    return
+  }
+
+  // Mark MTP path as "mounted" so openSyncPanel doesn't show disconnected screen
+  mountedVolumes.add(mtpPath)
+
+  // Open the standard sync panel
+  openSyncPanel(dest)
+
+  // Re-render sidebar to reflect active sub-item
+  renderMtpSidebar()
 }
 
 // === DAP SYNC MODAL (Sync Now / Sync Later confirmation) ===

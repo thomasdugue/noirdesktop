@@ -3,6 +3,137 @@ use std::collections::HashMap;
 use std::path::Path;
 use super::manifest::{SyncManifest, SyncedFile};
 
+/// Migrate the DAP filesystem and manifest to match current sanitize_filename rules.
+///
+/// When sanitize_filename rules change (e.g., stripping parentheses or $), files on the
+/// DAP have outdated names. This function renames them in-place and updates the manifest.
+/// Without this, FAT32 short-name collisions cause EINVAL when creating new files with
+/// similar names (e.g., "Album (Deluxe)" exists, creating "Album Deluxe" fails).
+///
+/// Idempotent — fast no-op when nothing needs migration (just reads manifest + compares).
+pub fn migrate_dap_filesystem(dest_path: &str) -> usize {
+    let manifest = match super::manifest::read_manifest(dest_path) {
+        Ok(Some(m)) => m,
+        _ => return 0, // no manifest → nothing to migrate
+    };
+
+    // Collect migrations: (old_relative_path, new_relative_path)
+    let mut migrations: Vec<(String, String)> = Vec::new();
+    let mut updated_files = manifest.files.clone();
+
+    for file in &mut updated_files {
+        let old_rel = file.dest_relative_path.clone();
+        let new_rel: String = old_rel
+            .split('/')
+            .map(|part| sanitize_filename(part))
+            .collect::<Vec<_>>()
+            .join("/");
+
+        if new_rel != old_rel {
+            migrations.push((old_rel, new_rel.clone()));
+            file.dest_relative_path = new_rel;
+        }
+    }
+
+    if migrations.is_empty() {
+        return 0;
+    }
+
+    let count = migrations.len();
+    eprintln!("[DAP-SYNC] Manifest migration: {} entries need path updates", count);
+
+    // Collect old parent directories for cleanup afterward
+    let mut old_dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // Rename files: create new parent dirs first, then move the file
+    for (old_rel, new_rel) in &migrations {
+        let old_abs = format!("{}/{}", dest_path, old_rel);
+        let new_abs = format!("{}/{}", dest_path, new_rel);
+
+        // Create the new parent directory
+        if let Some(parent) = Path::new(&new_abs).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // Move file if it exists on the DAP
+        if Path::new(&old_abs).exists() {
+            match std::fs::rename(&old_abs, &new_abs) {
+                Ok(()) => eprintln!("[DAP-SYNC]   Migrated: {} → {}", old_rel, new_rel),
+                Err(e) => eprintln!("[DAP-SYNC]   Failed to migrate {}: {}", old_rel, e),
+            }
+            // Also migrate Apple Double file (._filename)
+            if let (Some(old_parent), Some(old_fname)) = (
+                Path::new(&old_abs).parent(),
+                Path::new(&old_abs).file_name(),
+            ) {
+                let ad_old = old_parent.join(format!("._{}", old_fname.to_string_lossy()));
+                let _ = std::fs::remove_file(&ad_old); // just delete, not worth renaming
+            }
+        }
+
+        // Track old parent directory for cleanup
+        if let Some(parent) = Path::new(old_rel).parent() {
+            let parent_str = parent.to_string_lossy().to_string();
+            if !parent_str.is_empty() {
+                old_dirs.insert(parent_str);
+            }
+        }
+    }
+
+    // Migrate cover files that live in renamed directories
+    let new_dir_lookup: std::collections::HashMap<String, String> = old_dirs.iter()
+        .filter_map(|old_dir| {
+            let new_dir: String = old_dir
+                .split('/')
+                .map(|part| sanitize_filename(part))
+                .collect::<Vec<_>>()
+                .join("/");
+            if *old_dir != new_dir { Some((old_dir.clone(), new_dir)) } else { None }
+        })
+        .collect();
+
+    for (old_dir, new_dir) in &new_dir_lookup {
+        for ext in &["jpg", "jpeg", "png"] {
+            let old_cover = format!("{}/{}/cover.{}", dest_path, old_dir, ext);
+            if Path::new(&old_cover).exists() {
+                let new_cover = format!("{}/{}/cover.{}", dest_path, new_dir, ext);
+                if let Some(parent) = Path::new(&new_cover).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::rename(&old_cover, &new_cover) {
+                    Ok(()) => eprintln!("[DAP-SYNC]   Migrated cover: {}/cover.{}", old_dir, ext),
+                    Err(e) => eprintln!("[DAP-SYNC]   Cover migration failed: {}: {}", old_cover, e),
+                }
+            }
+        }
+    }
+
+    // Clean up empty old directories (deepest first)
+    let mut sorted_dirs: Vec<_> = old_dirs.into_iter().collect();
+    sorted_dirs.sort_by(|a, b| b.matches('/').count().cmp(&a.matches('/').count()));
+    for dir_rel in &sorted_dirs {
+        let dir_abs = format!("{}/{}", dest_path, dir_rel);
+        // remove_dir only succeeds if empty — safe
+        let _ = std::fs::remove_dir(&dir_abs);
+        // Also try parent (artist dir) if empty
+        if let Some(parent) = Path::new(&dir_abs).parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+
+    // Re-write manifest with updated paths
+    let updated_manifest = SyncManifest {
+        files: updated_files,
+        ..manifest
+    };
+    match super::manifest::write_manifest(dest_path, &updated_manifest) {
+        Ok(()) => eprintln!("[DAP-SYNC]   Manifest updated with migrated paths"),
+        Err(e) => eprintln!("[DAP-SYNC]   Failed to write migrated manifest: {}", e),
+    }
+
+    count
+}
+
 /// Helper: compute the same hash as lib.rs md5_hash() for cover cache lookups.
 /// Uses DefaultHasher (SipHash) — NOT cryptographic, just for filename generation.
 pub fn md5_hash(input: &str) -> u64 {
@@ -234,6 +365,22 @@ pub fn compute_sync_plan(
         }
     }
 
+    // Validate manifest against physical filesystem: remove entries for files that
+    // no longer exist on the DAP. This handles the case where ghost directories were
+    // cleaned up (files moved to .Trashes) but the manifest still references them.
+    // Without this, the plan says "on DAP" for files that are physically absent.
+    let manifest_lookup: HashMap<String, &SyncedFile> = {
+        let before = manifest_lookup.len();
+        let validated: HashMap<String, &SyncedFile> = manifest_lookup.into_iter()
+            .filter(|(dest_rel, _)| dap_existing_files.contains(dest_rel))
+            .collect();
+        let removed = before - validated.len();
+        if removed > 0 {
+            eprintln!("[DAP-SYNC] Manifest validation: {} files in manifest but missing on disk → will be re-queued for copy", removed);
+        }
+        validated
+    };
+
     let mut files_to_copy = Vec::new();
     let mut files_unchanged: usize = 0;
     let mut files_found_on_disk: usize = 0;
@@ -245,6 +392,8 @@ pub fn compute_sync_plan(
 
     // Log first few mismatches for debugging
     let mut mismatch_log_count: usize = 0;
+    // Count manifest entries whose physical files are missing (ghost recovery, exFAT corruption)
+    let mut manifest_stale_count: usize = 0;
 
     let t2 = std::time::Instant::now();
 
@@ -319,9 +468,36 @@ pub fn compute_sync_plan(
         selected_dest_paths.insert(dest_rel.clone());
 
         if manifest_lookup.contains_key(&dest_rel) {
-            // File already on DAP — found in manifest
-            files_unchanged += 1;
-            unchanged_album_id_set.insert(track.album_id);
+            // File in manifest — but verify it PHYSICALLY exists on the DAP.
+            // After ghost directory cleanup or exFAT corruption, the manifest can
+            // reference files that no longer exist on disk. Without this check,
+            // these files show "on DAP" but are actually missing → user must
+            // manually delete manifest to recover. With this check, they're
+            // automatically re-queued for copy on the next sync.
+            let physical_path = dest_root.join(&dest_rel);
+            if physical_path.exists() {
+                files_unchanged += 1;
+                unchanged_album_id_set.insert(track.album_id);
+            } else {
+                // Manifest says it's synced, but file is physically absent.
+                // Re-queue for copy. This handles ghost recovery seamlessly.
+                #[cfg(debug_assertions)]
+                if mismatch_log_count < 5 {
+                    eprintln!("[DEBUG-RS] Manifest entry MISSING on disk: {:?}", dest_rel);
+                    mismatch_log_count += 1;
+                }
+                manifest_stale_count += 1;
+                total_copy_bytes += track.size_bytes;
+                files_to_copy.push(SyncAction {
+                    source_path: track.path.clone(),
+                    dest_relative_path: dest_rel,
+                    size_bytes: track.size_bytes,
+                    action: "copy".into(),
+                    album_name: track.album.clone().unwrap_or_else(|| "Unknown Album".into()),
+                    artist_name: track.artist.clone().unwrap_or_else(|| "Unknown Artist".into()),
+                    album_id: track.album_id,
+                });
+            }
         } else if dap_existing_files.contains(&dest_rel) {
             // Not in manifest, but found in DAP filesystem scan (exact match).
             files_unchanged += 1;
@@ -358,8 +534,11 @@ pub fn compute_sync_plan(
             }
         }
     }
-    eprintln!("[PERF-RS] track loop: {:?} ({} tracks, {} unchanged ({} via disk), {} to copy)",
-        t2.elapsed(), tracks.len(), files_unchanged, files_found_on_disk, files_to_copy.len());
+    if manifest_stale_count > 0 {
+        eprintln!("[DAP-SYNC] Manifest validation: {} files in manifest but missing on disk → re-queued for copy", manifest_stale_count);
+    }
+    eprintln!("[PERF-RS] track loop: {:?} ({} tracks, {} unchanged ({} via disk), {} to copy, {} manifest-stale)",
+        t2.elapsed(), tracks.len(), files_unchanged, files_found_on_disk, files_to_copy.len(), manifest_stale_count);
 
     // Mirror mode: find files in manifest that are no longer selected → delete
     let mut files_to_delete = Vec::new();
@@ -368,6 +547,15 @@ pub fn compute_sync_plan(
     if mirror_mode {
         if let Some(m) = manifest {
             for file in &m.files {
+                // Skip cover files — covers are managed separately (inline with audio),
+                // never deleted by mirror mode. Without this, covers are purged on every
+                // re-sync because selected_dest_paths only contains audio file paths.
+                if file.dest_relative_path.ends_with("/cover.jpg")
+                    || file.dest_relative_path.ends_with("/cover.jpeg")
+                    || file.dest_relative_path.ends_with("/cover.png")
+                {
+                    continue;
+                }
                 if !selected_dest_paths.contains(&file.dest_relative_path) {
                     total_delete_bytes += file.size_bytes;
                     files_to_delete.push(SyncAction {
@@ -418,15 +606,25 @@ pub fn compute_sync_plan(
         let mut covers_resolved = 0usize;
         let mut covers_not_found = 0usize;
 
-        // ALWAYS re-copy ALL covers on every sync.
-        // The macOS exFAT driver corrupts existing file clusters when new files
-        // are written to the same volume. Covers written in a previous sync will
-        // have their data silently overwritten. Re-copying is cheap (~50-150KB
-        // per cover) and guarantees covers are always intact.
+        // Only copy covers that are missing or different size on the DAP.
+        // Previous approach: "always re-copy all covers" caused corruption because
+        // overwriting valid files on exFAT can corrupt them. Skipping intact covers
+        // is both faster AND more reliable.
         for (folder, (track_path, artist, album)) in &album_folders {
             let cover_dest = format!("{}/cover.jpg", folder);
 
             if let Some((source, size)) = resolve_cover_for_album(track_path, artist, album, cover_cache, covers_dir) {
+                // Check if cover already exists on DAP with correct size
+                let full_cover_path = dest_root.join(&cover_dest);
+                let already_ok = full_cover_path.exists()
+                    && full_cover_path.metadata().map(|m| m.len() == size).unwrap_or(false);
+
+                if already_ok {
+                    // Cover is already on DAP with matching size — skip
+                    covers_resolved += 1;
+                    continue;
+                }
+
                 total_cover_bytes += size;
                 covers_to_copy.push(CoverSyncAction {
                     source_cover_path: source,
@@ -472,9 +670,12 @@ pub fn compute_sync_plan(
 
 /// Maximum files per directory to avoid macOS exFAT driver corruption.
 /// The macOS kernel exFAT driver has a bug that corrupts directory cluster
-/// allocation tables when too many files (~55-60) are written to a single
-/// directory. This limit keeps us safely below that threshold.
-const MAX_FILES_PER_DIR: usize = 45;
+/// allocation tables when too many files are written to a single directory.
+/// macOS creates ._* (Apple Double) for every file on exFAT, doubling the
+/// entry count. At 45 files: 45 audio + 45 ._* + cover = 91 entries → EINVAL.
+/// Observed failures: Zelda Disc 2 at track 29, Soulwax at track 27.
+/// 25 files + 25 ._* + cover + ._cover = 52 entries → safe margin.
+const MAX_FILES_PER_DIR: usize = 25;
 
 /// Build the destination relative path for a track based on folder structure.
 ///
@@ -525,17 +726,25 @@ pub fn build_dest_path(track: &TrackForSync, structure: &str, album_track_count:
     // 2. Album is multi-disc (disc_num > 1 exists) → split for organization
     let needs_disc_split = album_track_count > MAX_FILES_PER_DIR || disc_num > 1;
 
-    let album_path = if needs_disc_split && disc_num > 0 {
-        format!("{}/Disc {}", album, disc_num)
+    let album_path = if needs_disc_split {
+        // disc_num = 0 means no disc_number metadata → default to Disc 1
+        // Without this, albums with 65+ tracks and no disc tags go into a flat
+        // directory → Apple Double overflow at ~27 files → EINVAL
+        let effective_disc = if disc_num > 0 { disc_num } else { 1 };
+        format!("{}/Disc {}", album, effective_disc)
     } else {
         album.clone()
     };
 
     match structure {
         "artist_album_track" | "albumartist_album_track" | _ if structure != "flat" && structure != "genre_artist_album_track" => {
-            format!("{}/{}/{}", album_artist, album_path, filename)
+            // Flat album structure: "Artist - Album/track.flac" (1 level only).
+            // This reduces create_dir_all calls by 3× vs "Artist/Album/track.flac",
+            // dramatically reducing exFAT ghost directory creation under heavy I/O.
+            // Ghost dirs at root level are always recoverable via rename().
+            format!("{} - {}/{}", album_artist, album_path, filename)
         }
-        "genre_artist_album_track" => format!("{}/{}/{}/{}", genre, album_artist, album_path, filename),
+        "genre_artist_album_track" => format!("{}/{} - {}/{}", genre, album_artist, album_path, filename),
         "flat" => filename,
         _ => format!("{}/{}/{}", album_artist, album_path, filename),
     }
@@ -562,20 +771,44 @@ pub fn sanitize_filename(name: &str) -> String {
     // ô → o, ã → a, é → e, … → ..., — → -, etc.
     let ascii = deunicode(&nfc);
 
-    // Step 3: Strip zero-width and invisible characters that deunicode may leave
+    // Step 3: Keep only ASCII printable characters + space.
+    // After deunicode (Step 2), the string should be mostly ASCII, but some
+    // characters may survive transliteration (unknown Unicode, homoglyphs,
+    // invisible chars). These cause EINVAL on exFAT/FAT32.
+    // is_ascii_graphic() = '!' (0x21) through '~' (0x7E), plus ' ' (0x20).
     let cleaned: String = ascii
         .chars()
-        .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' | '\u{00AD}'))
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
         .collect();
 
-    // Step 4: Replace filesystem-illegal characters
+    // Step 4: WHITELIST — only keep characters guaranteed safe on ALL FAT32 implementations.
+    // Previous approach was a blacklist (strip known-bad chars one by one), but every new
+    // DAP/SD card model rejects different characters. Fiio rejects (), [], $, etc.
+    // Whitelist approach: if it's not explicitly safe, strip it. No more character-chasing.
+    //
+    // Safe characters (universally accepted on FAT32/exFAT, tested on Fiio, Sony, Astell&Kern):
+    //   a-z A-Z 0-9   — alphanumeric
+    //   space           — allowed (collapsed in Step 5)
+    //   - _ . '         — hyphen, underscore, dot, apostrophe
+    //   , ; # + = @     — commonly used in music metadata, safe on standard FAT32
+    //
+    // Everything else is stripped (not replaced) to avoid creating ugly ___ sequences.
+    // The Step 5 space-collapse handles any double spaces left by stripping.
     let sanitized: String = cleaned
         .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            c if c.is_control() => '_',
-            _ => c,
-        })
+        .filter(|c| c.is_ascii_alphanumeric()
+            || *c == ' '
+            || *c == '-'
+            || *c == '_'
+            || *c == '.'
+            || *c == '\''
+            || *c == ','
+            || *c == ';'
+            || *c == '#'
+            || *c == '+'
+            || *c == '='
+            || *c == '@'
+        )
         .collect();
 
     // Step 5: Collapse consecutive dots (... → ., .. → .) — macOS exFAT driver
@@ -668,9 +901,32 @@ mod tests {
         free: u64,
         total: u64,
     ) -> SyncPlan {
+        plan_no_covers_at("/nonexistent", tracks, manifest, structure, mirror, free, total)
+    }
+
+    /// Like plan_no_covers but with a real dest_path — needed when manifest has
+    /// entries and we need physical files on disk for the manifest validation check.
+    fn plan_no_covers_at(
+        dest_path: &str,
+        tracks: &[TrackForSync],
+        manifest: &Option<SyncManifest>,
+        structure: &str,
+        mirror: bool,
+        free: u64,
+        total: u64,
+    ) -> SyncPlan {
         let empty_cache = HashMap::new();
         let dummy_dir = PathBuf::from("/nonexistent");
-        compute_sync_plan(tracks, manifest, structure, mirror, free, total, &empty_cache, &dummy_dir, "/nonexistent")
+        compute_sync_plan(tracks, manifest, structure, mirror, free, total, &empty_cache, &dummy_dir, dest_path)
+    }
+
+    /// Helper: create a physical file at dest_path/relative_path for manifest validation tests.
+    fn create_dest_file(dest_path: &str, relative_path: &str) {
+        let full = PathBuf::from(dest_path).join(relative_path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&full, "test").unwrap();
     }
 
     fn make_track(path: &str, album: &str, artist: &str, size: u64, track_num: u32) -> TrackForSync {
@@ -693,7 +949,7 @@ mod tests {
     fn test_build_dest_path_artist_album_track() {
         let track = make_track("/music/test.flac", "Kind of Blue", "Miles Davis", 50_000_000, 1);
         let path = build_dest_path(&track, "artist_album_track", 10, None);
-        assert_eq!(path, "Miles Davis/Kind of Blue/01 - Track 1.flac");
+        assert_eq!(path, "Miles Davis - Kind of Blue/01 - Track 1.flac");
     }
 
     #[test]
@@ -707,7 +963,7 @@ mod tests {
     fn test_build_dest_path_genre() {
         let track = make_track("/music/test.flac", "Kind of Blue", "Miles Davis", 50_000_000, 1);
         let path = build_dest_path(&track, "genre_artist_album_track", 10, None);
-        assert_eq!(path, "Jazz/Miles Davis/Kind of Blue/01 - Track 1.flac");
+        assert_eq!(path, "Jazz/Miles Davis - Kind of Blue/01 - Track 1.flac");
     }
 
     #[test]
@@ -734,7 +990,36 @@ mod tests {
 
     #[test]
     fn test_sanitize_filename_special_chars() {
-        assert_eq!(sanitize_filename("AC/DC: Back?In*Black"), "AC_DC_ Back_In_Black");
+        // Whitelist approach: only safe chars kept, others stripped
+        assert_eq!(sanitize_filename("AC/DC: Back?In*Black"), "ACDC BackInBlack");
+    }
+
+    #[test]
+    fn test_sanitize_filename_whitelist_strips_unsafe_chars() {
+        // Parentheses, brackets, $, !, &, etc. — all stripped by whitelist
+        assert_eq!(sanitize_filename("You May Die (intro)"), "You May Die intro");
+        assert_eq!(sanitize_filename("1999 Super Deluxe Edition (Remastered 2019)"), "1999 Super Deluxe Edition Remastered 2019");
+        assert_eq!(sanitize_filename("Seconds (electric lady sessions)"), "Seconds electric lady sessions");
+        assert_eq!(sanitize_filename("Track [Bonus]"), "Track Bonus");
+        assert_eq!(sanitize_filename("Song {Alt Mix}"), "Song Alt Mix");
+        assert_eq!(sanitize_filename("A$AP Rocky"), "AAP Rocky");
+        assert_eq!(sanitize_filename("LONG LIVE A$AP Deluxe Version"), "LONG LIVE AAP Deluxe Version");
+        assert_eq!(sanitize_filename("Get Innocuous!"), "Get Innocuous");
+        assert_eq!(sanitize_filename("Tom & Jerry"), "Tom Jerry");
+        assert_eq!(sanitize_filename("50% Off"), "50 Off");
+        assert_eq!(sanitize_filename("Rock~Roll"), "RockRoll");
+        // Consecutive spaces from stripping are collapsed
+        assert_eq!(sanitize_filename("A (B) C"), "A B C");
+    }
+
+    #[test]
+    fn test_sanitize_filename_whitelist_keeps_safe_chars() {
+        // These characters are safe and should be preserved
+        assert_eq!(sanitize_filename("L'Ecole du Micro d'Argent"), "L'Ecole du Micro d'Argent");
+        assert_eq!(sanitize_filename("Track #5"), "Track #5");
+        assert_eq!(sanitize_filename("Song - Remix"), "Song - Remix");
+        assert_eq!(sanitize_filename("feat. Someone"), "feat. Someone");
+        assert_eq!(sanitize_filename("Hall, Detroit, MI"), "Hall, Detroit, MI");
     }
 
     #[test]
@@ -759,6 +1044,7 @@ mod tests {
         // Ellipsis, em-dash, en-dash must be transliterated to ASCII equivalents
         let result = sanitize_filename("One Nite Alone\u{2026} Live!");
         assert!(!result.contains('\u{2026}'), "Ellipsis should be transliterated");
+        assert!(!result.contains('!'), "! should be stripped by whitelist");
         // Consecutive dots are collapsed: ... → .
         assert!(!result.contains(".."), "Consecutive dots should be collapsed: {}", result);
 
@@ -769,7 +1055,7 @@ mod tests {
     #[test]
     fn test_sanitize_filename_consecutive_dots() {
         // macOS exFAT returns EINVAL on directories with consecutive dots
-        assert_eq!(sanitize_filename("One Nite Alone... Live!"), "One Nite Alone. Live!");
+        assert_eq!(sanitize_filename("One Nite Alone... Live!"), "One Nite Alone. Live");
         assert_eq!(sanitize_filename("The Vault... Old Friends 4 Sale"), "The Vault. Old Friends 4 Sale");
         assert_eq!(sanitize_filename("N.E.W.S"), "N.E.W.S"); // single dots OK
         assert_eq!(sanitize_filename("SEPT. 5TH"), "SEPT. 5TH"); // single dot OK
@@ -794,6 +1080,22 @@ mod tests {
         // Pure ASCII should pass through unchanged
         assert_eq!(sanitize_filename("Daft Punk"), "Daft Punk");
         assert_eq!(sanitize_filename("Random Access Memories"), "Random Access Memories");
+    }
+
+    #[test]
+    fn test_sanitize_filename_strips_non_ascii_survivors() {
+        // Characters that deunicode can't transliterate should be stripped
+        // rather than left as non-ASCII bytes that cause EINVAL on exFAT.
+        let result = sanitize_filename("Track \u{200B}Name"); // zero-width space
+        assert_eq!(result, "Track Name");
+
+        // Tab and other control chars should be stripped
+        let result2 = sanitize_filename("Track\tName");
+        assert_eq!(result2, "TrackName");
+
+        // Apostrophes (ASCII 0x27) should survive — they're valid on exFAT
+        assert_eq!(sanitize_filename("Kickin'"), "Kickin'");
+        assert_eq!(sanitize_filename("I'm Ready"), "I'm Ready");
     }
 
     #[test]
@@ -827,9 +1129,11 @@ mod tests {
 
     #[test]
     fn test_sync_plan_with_deletions() {
-        // Track produces dest_relative_path "Artist A/Album A/01 - Track 1.flac"
+        // Track produces dest_relative_path "Artist A - Album A/01 - Track 1.flac"
         // which matches the first manifest entry → unchanged.
         // Second manifest entry has no matching selected track → deleted.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
         let tracks = vec![
             make_track("/music/a.flac", "Album A", "Artist A", 10_000_000, 1),
         ];
@@ -841,21 +1145,22 @@ mod tests {
             files: vec![
                 SyncedFile {
                     source_path: "/music/a.flac".into(),
-                    dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                    dest_relative_path: "Artist A - Album A/01 - Track 1.flac".into(),
                     size_bytes: 10_000_000,
                     modified_at: "2026-01-01T00:00:00Z".into(),
                     quick_hash: "abc".into(),
                 },
                 SyncedFile {
                     source_path: "/music/old.flac".into(),
-                    dest_relative_path: "Artist B/Album B/01 - Old.flac".into(),
+                    dest_relative_path: "Artist B - Album B/01 - Old.flac".into(),
                     size_bytes: 15_000_000,
                     modified_at: "2025-01-01T00:00:00Z".into(),
                     quick_hash: "def".into(),
                 },
             ],
         });
-        let plan = plan_no_covers(&tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
+        create_dest_file(&dest, "Artist A - Album A/01 - Track 1.flac");
+        let plan = plan_no_covers_at(&dest, &tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
         assert_eq!(plan.files_to_copy.len(), 0);
         assert_eq!(plan.files_to_delete.len(), 1);
         assert_eq!(plan.files_unchanged, 1);
@@ -866,6 +1171,8 @@ mod tests {
     fn test_sync_plan_modified_files() {
         // dest_relative_path comparison: track produces the same dest path as manifest entry
         // → unchanged, even if source path or size differs.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
         let tracks = vec![
             make_track("/music/a.flac", "Album A", "Artist A", 12_000_000, 1), // size changed
         ];
@@ -876,19 +1183,22 @@ mod tests {
             folder_structure: "artist_album_track".into(),
             files: vec![SyncedFile {
                 source_path: "/music/a.flac".into(),
-                dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                dest_relative_path: "Artist A - Album A/01 - Track 1.flac".into(),
                 size_bytes: 10_000_000, // different from track, but ignored
                 modified_at: "2026-01-01T00:00:00Z".into(),
                 quick_hash: "abc".into(),
             }],
         });
-        let plan = plan_no_covers(&tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
+        create_dest_file(&dest, "Artist A - Album A/01 - Track 1.flac");
+        let plan = plan_no_covers_at(&dest, &tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
         assert_eq!(plan.files_to_copy.len(), 0, "Same dest path → unchanged, no overwrite");
         assert_eq!(plan.files_unchanged, 1, "Same dest path → counted as unchanged");
     }
 
     #[test]
     fn test_sync_plan_no_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
         let tracks = vec![
             make_track("/music/a.flac", "Album A", "Artist A", 10_000_000, 1),
         ];
@@ -899,13 +1209,14 @@ mod tests {
             folder_structure: "artist_album_track".into(),
             files: vec![SyncedFile {
                 source_path: "/music/a.flac".into(),
-                dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                dest_relative_path: "Artist A - Album A/01 - Track 1.flac".into(),
                 size_bytes: 10_000_000,
                 modified_at: "2026-01-01T00:00:00Z".into(),
                 quick_hash: "abc".into(),
             }],
         });
-        let plan = plan_no_covers(&tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
+        create_dest_file(&dest, "Artist A - Album A/01 - Track 1.flac");
+        let plan = plan_no_covers_at(&dest, &tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
         assert_eq!(plan.files_to_copy.len(), 0);
         assert_eq!(plan.files_to_delete.len(), 0);
         assert_eq!(plan.files_unchanged, 1);
@@ -914,6 +1225,8 @@ mod tests {
     #[test]
     fn test_sync_plan_different_modified_at_same_size() {
         // modified_at differs but dest path matches → should be unchanged
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
         let tracks = vec![
             make_track("/music/a.flac", "Album A", "Artist A", 10_000_000, 1),
         ];
@@ -924,13 +1237,14 @@ mod tests {
             folder_structure: "artist_album_track".into(),
             files: vec![SyncedFile {
                 source_path: "/music/a.flac".into(),
-                dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                dest_relative_path: "Artist A - Album A/01 - Track 1.flac".into(),
                 size_bytes: 10_000_000,
                 modified_at: "2025-06-15T08:00:00Z".into(), // different modified_at
                 quick_hash: "abc".into(),
             }],
         });
-        let plan = plan_no_covers(&tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
+        create_dest_file(&dest, "Artist A - Album A/01 - Track 1.flac");
+        let plan = plan_no_covers_at(&dest, &tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
         assert_eq!(plan.files_to_copy.len(), 0, "Same dest path → unchanged");
         assert_eq!(plan.files_unchanged, 1, "Should count as unchanged");
     }
@@ -940,6 +1254,8 @@ mod tests {
         // Source path changed (e.g. SMB remounted with different UUID) but same artist/album/track
         // → dest_relative_path matches → file is unchanged (not re-copied).
         // This is the key scenario: NAS reconnects with different mount path.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
         let tracks = vec![
             make_track("smb://NEW-UUID/music/Album A/01.flac", "Album A", "Artist A", 10_000_000, 1),
         ];
@@ -950,13 +1266,14 @@ mod tests {
             folder_structure: "artist_album_track".into(),
             files: vec![SyncedFile {
                 source_path: "smb://OLD-UUID/music/Album A/01.flac".into(), // different source!
-                dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                dest_relative_path: "Artist A - Album A/01 - Track 1.flac".into(),
                 size_bytes: 10_000_000,
                 modified_at: "2026-01-01T00:00:00Z".into(),
                 quick_hash: "abc".into(),
             }],
         });
-        let plan = plan_no_covers(&tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
+        create_dest_file(&dest, "Artist A - Album A/01 - Track 1.flac");
+        let plan = plan_no_covers_at(&dest, &tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
         assert_eq!(plan.files_to_copy.len(), 0, "Different source but same dest → unchanged");
         assert_eq!(plan.files_to_delete.len(), 0, "Should not delete");
         assert_eq!(plan.files_unchanged, 1, "Should count as unchanged");
@@ -1011,7 +1328,7 @@ mod tests {
             &dest_dir.path().to_string_lossy(),
         );
         assert_eq!(plan.covers_to_copy.len(), 1);
-        assert_eq!(plan.covers_to_copy[0].dest_relative_path, "Artist A/Album A/cover.jpg");
+        assert_eq!(plan.covers_to_copy[0].dest_relative_path, "Artist A - Album A/cover.jpg");
         assert_eq!(plan.covers_to_copy[0].size_bytes, 5000);
         assert_eq!(plan.total_cover_bytes, 5000);
     }
@@ -1060,14 +1377,14 @@ mod tests {
             files: vec![
                 SyncedFile {
                     source_path: "/music/a.flac".into(),
-                    dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                    dest_relative_path: "Artist A - Album A/01 - Track 1.flac".into(),
                     size_bytes: 10_000_000,
                     modified_at: "2026-01-01T00:00:00Z".into(),
                     quick_hash: "abc".into(),
                 },
                 SyncedFile {
                     source_path: "cover".into(),
-                    dest_relative_path: "Artist A/Album A/cover.jpg".into(),
+                    dest_relative_path: "Artist A - Album A/cover.jpg".into(),
                     size_bytes: 5000, // same size as local cover
                     modified_at: "2026-01-01T00:00:00Z".into(),
                     quick_hash: "coverabc".into(),
@@ -1076,14 +1393,18 @@ mod tests {
         });
 
         let dest_dir = tempfile::tempdir().unwrap();
+        // Create the cover on the "DAP" with the same size — simulates already synced
+        let dap_cover = dest_dir.path().join("Artist A - Album A/cover.jpg");
+        std::fs::create_dir_all(dap_cover.parent().unwrap()).unwrap();
+        std::fs::write(&dap_cover, vec![0u8; 5000]).unwrap();
+
         let plan = compute_sync_plan(
             &tracks, &manifest, "artist_album_track", true,
             1_000_000_000, 2_000_000_000, &cache, dir.path(),
             &dest_dir.path().to_string_lossy(),
         );
-        // Covers are ALWAYS re-copied on every sync to protect against exFAT
-        // cluster corruption that silently destroys cover data between syncs.
-        assert_eq!(plan.covers_to_copy.len(), 1, "Cover should always be re-copied");
+        // Cover already exists on DAP with matching size → skip (not re-copied)
+        assert_eq!(plan.covers_to_copy.len(), 0, "Intact cover should be skipped");
     }
 
     #[test]
@@ -1129,6 +1450,8 @@ mod tests {
         // Manifest has 2 files: album 1 track + album 2 track
         // Selected: album 1 track (unchanged) + album 3 track (new)
         // Mirror on → album 2 track should be deleted
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
         let track_a1 = make_track("/music/a1.flac", "Album A", "Artist A", 10_000_000, 1);
         let track_b3 = make_track_with_album_id("/music/b3.flac", "Album C", "Artist C", 15_000_000, 1, 3);
 
@@ -1140,14 +1463,14 @@ mod tests {
             files: vec![
                 SyncedFile {
                     source_path: "/music/a1.flac".into(),
-                    dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                    dest_relative_path: "Artist A - Album A/01 - Track 1.flac".into(),
                     size_bytes: 10_000_000,
                     modified_at: "2026-01-01T00:00:00Z".into(),
                     quick_hash: "abc123".into(),
                 },
                 SyncedFile {
                     source_path: "/music/b2.flac".into(),
-                    dest_relative_path: "Artist B/Album B/01 - Track 1.flac".into(),
+                    dest_relative_path: "Artist B - Album B/01 - Track 1.flac".into(),
                     size_bytes: 12_000_000,
                     modified_at: "2026-01-01T00:00:00Z".into(),
                     quick_hash: "def456".into(),
@@ -1155,7 +1478,9 @@ mod tests {
             ],
         });
 
-        let plan = plan_no_covers(
+        create_dest_file(&dest, "Artist A - Album A/01 - Track 1.flac");
+        let plan = plan_no_covers_at(
+            &dest,
             &[track_a1, track_b3],
             &manifest,
             "artist_album_track",
@@ -1217,14 +1542,14 @@ mod tests {
             files: vec![
                 SyncedFile {
                     source_path: "/music/a.flac".into(),
-                    dest_relative_path: "Artist A/Album A/01 - Track 1.flac".into(),
+                    dest_relative_path: "Artist A - Album A/01 - Track 1.flac".into(),
                     size_bytes: 10_000_000,
                     modified_at: "2026-01-01T00:00:00Z".into(),
                     quick_hash: "hash1".into(),
                 },
                 SyncedFile {
                     source_path: "/music/b.flac".into(),
-                    dest_relative_path: "Artist B/Album B/01 - Track 1.flac".into(),
+                    dest_relative_path: "Artist B - Album B/01 - Track 1.flac".into(),
                     size_bytes: 15_000_000,
                     modified_at: "2026-01-01T00:00:00Z".into(),
                     quick_hash: "hash2".into(),
@@ -1237,5 +1562,76 @@ mod tests {
         assert_eq!(plan.files_to_copy.len(), 0, "no tracks selected = nothing to copy");
         assert_eq!(plan.files_to_delete.len(), 2, "mirror mode = all manifest files deleted");
         assert_eq!(plan.files_unchanged, 0);
+    }
+
+    #[test]
+    fn test_migrate_dap_filesystem_renames_files_and_dirs() {
+        // Simulate a DAP with old sanitization (parentheses and $ kept)
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
+
+        // Create old directory structure with parentheses and $
+        let old_dir = dir.path().join("A$AP Rocky/LONG LIVE A$AP (Deluxe)");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(old_dir.join("01 - Long Live (intro).flac"), "audio data").unwrap();
+        std::fs::write(old_dir.join("cover.jpg"), "cover data").unwrap();
+
+        // Write a manifest with old-style paths
+        let manifest = SyncManifest {
+            hean_version: "1.0.0".into(),
+            last_sync: "2026-03-21T00:00:00Z".into(),
+            destination_path: dest.clone(),
+            folder_structure: "artist_album_track".into(),
+            files: vec![SyncedFile {
+                source_path: "/music/intro.flac".into(),
+                dest_relative_path: "A$AP Rocky/LONG LIVE A$AP (Deluxe)/01 - Long Live (intro).flac".into(),
+                size_bytes: 10,
+                modified_at: "2026-01-01T00:00:00Z".into(),
+                quick_hash: "hash1".into(),
+            }],
+        };
+        crate::dap_sync::manifest::write_manifest(&dest, &manifest).unwrap();
+
+        // Run migration
+        let count = migrate_dap_filesystem(&dest);
+        assert_eq!(count, 1, "1 manifest entry should be migrated");
+
+        // Verify: new paths exist, old paths don't
+        let new_dir = dir.path().join("AAP Rocky/LONG LIVE AAP Deluxe");
+        assert!(new_dir.join("01 - Long Live intro.flac").exists(), "file should be at new path");
+        assert!(new_dir.join("cover.jpg").exists(), "cover should be migrated too");
+        assert!(!old_dir.exists(), "old directory should be cleaned up");
+
+        // Verify manifest was updated
+        let loaded = crate::dap_sync::manifest::read_manifest(&dest).unwrap().unwrap();
+        assert_eq!(
+            loaded.files[0].dest_relative_path,
+            "AAP Rocky/LONG LIVE AAP Deluxe/01 - Long Live intro.flac"
+        );
+    }
+
+    #[test]
+    fn test_migrate_dap_filesystem_noop_when_current() {
+        // When all paths already match current sanitization, migration is a no-op
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
+
+        let manifest = SyncManifest {
+            hean_version: "1.0.0".into(),
+            last_sync: "2026-03-21T00:00:00Z".into(),
+            destination_path: dest.clone(),
+            folder_structure: "artist_album_track".into(),
+            files: vec![SyncedFile {
+                source_path: "/music/track.flac".into(),
+                dest_relative_path: "Artist/Album/01 - Track.flac".into(),
+                size_bytes: 100,
+                modified_at: "2026-01-01T00:00:00Z".into(),
+                quick_hash: "hash1".into(),
+            }],
+        };
+        crate::dap_sync::manifest::write_manifest(&dest, &manifest).unwrap();
+
+        let count = migrate_dap_filesystem(&dest);
+        assert_eq!(count, 0, "nothing to migrate when paths are current");
     }
 }
