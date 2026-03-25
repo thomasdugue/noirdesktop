@@ -9113,6 +9113,23 @@ body:not(.player-visible) .track-info-panel {
   font-family: 'Geist Mono', monospace;
 }
 
+.mtp-badge {
+  display: inline-block;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+  vertical-align: middle;
+  margin-left: 2px;
+}
+
+.sb-mtp-device .dev-icon {
+  background: rgba(74, 222, 128, 0.1);
+}
+
 .sb-dap-device .dev-eject {
   background: none;
   border: none;

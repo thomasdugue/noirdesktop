@@ -4593,22 +4593,50 @@ fn dap_compute_sync_plan(
     #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] dap_compute_sync_plan called with {} tracks, dest={}", tracks.len(), dest_path);
 
-    // Migrate DAP filesystem if sanitize_filename rules changed since last sync.
-    // Renames files/dirs with outdated names (e.g., parentheses, $) and updates manifest.
-    // Must run BEFORE reading the manifest so we get the migrated version.
-    let migrated = dap_sync::sync_plan::migrate_dap_filesystem(&dest_path);
-    if migrated > 0 {
-        eprintln!("[DAP-SYNC] Migrated {} manifest entries to match current sanitization rules", migrated);
+    let is_mtp = dest_path.starts_with("mtp://");
+
+    // Skip filesystem migration for MTP — no local filesystem to migrate
+    if !is_mtp {
+        let migrated = dap_sync::sync_plan::migrate_dap_filesystem(&dest_path);
+        if migrated > 0 {
+            eprintln!("[DAP-SYNC] Migrated {} manifest entries to match current sanitization rules", migrated);
+        }
     }
 
     let t0 = std::time::Instant::now();
-    let manifest = dap_sync::manifest::read_manifest(&dest_path)?;
+    // For MTP, manifest is stored locally (not on device)
+    let manifest = if is_mtp {
+        // MTP manifest stored in app data dir, keyed by device serial
+        let mtp_manifest_path = format!("{}/mtp_manifest_{}.json",
+            dirs::data_dir().unwrap_or_default().join("noir").to_string_lossy(),
+            dest_path.replace("mtp://", "").replace("/", "_"));
+        dap_sync::manifest::read_manifest(&std::path::Path::new(&mtp_manifest_path).parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default())?
+    } else {
+        dap_sync::manifest::read_manifest(&dest_path)?
+    };
     #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] read_manifest: {:?} ({} files)", t0.elapsed(),
         manifest.as_ref().map(|m| m.files.len()).unwrap_or(0));
 
     let t1 = std::time::Instant::now();
-    let vol_info = dap_sync::volumes::get_volume_info(&dest_path)?;
+    // For MTP, get volume info from the cached MTP detection (not filesystem df)
+    let vol_info = if is_mtp {
+        // Parse storage index from mtp://serial/index
+        let parts: Vec<&str> = dest_path.trim_start_matches("mtp://").split('/').collect();
+        let _storage_idx: usize = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
+        // Use a large default — actual free space was shown in sidebar from detect_mtp_devices
+        dap_sync::volumes::VolumeInfo {
+            name: "MTP Device".into(),
+            path: dest_path.clone(),
+            free_bytes: 2_000_000_000_000, // 2TB default for MTP
+            total_bytes: 2_147_000_000_000,
+            is_mounted: true,
+        }
+    } else {
+        dap_sync::volumes::get_volume_info(&dest_path)?
+    };
     #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] get_volume_info: {:?}", t1.elapsed());
 
@@ -4650,7 +4678,12 @@ fn dap_execute_sync(
 
     std::thread::spawn(move || {
         // Compute plan fresh
-        let manifest = match dap_sync::manifest::read_manifest(&dest_path) {
+        let manifest = match if dest_path.starts_with("mtp://") {
+            // MTP: no manifest on device — start fresh (manifest will be stored locally later)
+            Ok(None)
+        } else {
+            dap_sync::manifest::read_manifest(&dest_path)
+        } {
             Ok(m) => m,
             Err(e) => {
                 let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
@@ -4665,7 +4698,20 @@ fn dap_execute_sync(
             }
         };
 
-        let vol_info = match dap_sync::volumes::get_volume_info(&dest_path) {
+        let is_mtp = dest_path.starts_with("mtp://");
+        let vol_info = if is_mtp {
+            // MTP: use large defaults (actual space checked by device firmware)
+            Ok(dap_sync::volumes::VolumeInfo {
+                name: "MTP Device".into(),
+                path: dest_path.clone(),
+                free_bytes: 2_000_000_000_000,
+                total_bytes: 2_147_000_000_000,
+                is_mounted: true,
+            })
+        } else {
+            dap_sync::volumes::get_volume_info(&dest_path)
+        };
+        let vol_info = match vol_info {
             Ok(v) => v,
             Err(e) => {
                 let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
@@ -4741,6 +4787,69 @@ fn dap_execute_sync(
 }
 
 #[tauri::command]
+async fn dap_execute_mtp_sync(
+    app_handle: tauri::AppHandle,
+    files: Vec<(String, String)>, // (source_path, dest_relative_path)
+    storage_index: usize,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let total = files.len();
+    eprintln!("[MTP-SYNC] Starting MTP sync: {} files to storage {}", total, storage_index);
+
+    // Resolve SMB paths before passing to MTP
+    let smb_map = dap_sync::smb_utils::build_smb_mount_map();
+
+    let resolved_files: Vec<(String, String)> = files.into_iter().map(|(src, dest)| {
+        let resolved = dap_sync::smb_utils::resolve_smb_path(&src, &smb_map);
+        (resolved, dest)
+    }).collect();
+
+    let app_handle_clone = app_handle.clone();
+    let result = dap_sync::mtp::mtp_sync_batch(
+        resolved_files,
+        storage_index,
+        move |current, total, file| {
+            let _ = app_handle_clone.emit("dap_sync_progress", serde_json::json!({
+                "phase": "copy",
+                "current": current,
+                "total": total,
+                "currentFile": file,
+                "bytesCopied": 0,
+                "totalBytes": 0,
+                "action": "copy"
+            }));
+        },
+    ).await;
+
+    match result {
+        Ok((copied, bytes, errors)) => {
+            let success = errors.is_empty();
+            let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
+                success,
+                files_copied: copied,
+                files_deleted: 0,
+                total_bytes_copied: bytes,
+                duration_ms: 0,
+                errors,
+            });
+        }
+        Err(e) => {
+            let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
+                success: false,
+                files_copied: 0,
+                files_deleted: 0,
+                total_bytes_copied: 0,
+                duration_ms: 0,
+                errors: vec![e],
+            });
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn dap_cancel_sync() {
     eprintln!("[DAP-SYNC] *** CANCEL REQUESTED BY USER ***");
     DAP_SYNC_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -4749,6 +4858,26 @@ fn dap_cancel_sync() {
 #[tauri::command]
 fn dap_start_volume_watcher(app_handle: tauri::AppHandle) {
     dap_sync::watcher::start_volume_watcher(app_handle);
+}
+
+#[tauri::command]
+async fn dap_detect_mtp_devices() -> Result<Vec<dap_sync::mtp::MtpDeviceInfo>, String> {
+    dap_sync::mtp::detect_mtp_devices().await
+}
+
+#[tauri::command]
+async fn dap_mtp_send_file(source_path: String, dest_folder: String, dest_filename: String, storage_index: usize) -> Result<u64, String> {
+    dap_sync::mtp::mtp_send_file(&source_path, &dest_folder, &dest_filename, storage_index).await
+}
+
+#[tauri::command]
+async fn dap_mtp_list_files(storage_index: usize) -> Result<Vec<dap_sync::mtp::MtpFileEntry>, String> {
+    dap_sync::mtp::mtp_list_files(storage_index).await
+}
+
+#[tauri::command]
+async fn dap_mtp_test(source_path: String) -> Result<String, String> {
+    dap_sync::mtp::mtp_test_all(&source_path).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -4971,6 +5100,11 @@ pub fn run() {
             dap_execute_sync,
             dap_cancel_sync,
             dap_start_volume_watcher,
+            dap_detect_mtp_devices,
+            dap_execute_mtp_sync,
+            dap_mtp_send_file,
+            dap_mtp_list_files,
+            dap_mtp_test,
             // Application
             quit_app
         ])

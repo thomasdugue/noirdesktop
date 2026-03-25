@@ -2112,12 +2112,36 @@ async function startSync() {
   app.displayCurrentView()
 
   try {
-    await invoke('dap_execute_sync', {
-      tracks: tracksForSync,
-      destPath: dest.path,
-      folderStructure,
-      mirrorMode,
-    })
+    if (dest.path.startsWith('mtp://')) {
+      // MTP sync: build file list from sync plan and use MTP-specific command
+      const plan = syncPlan
+      if (!plan || !plan.filesToCopy || plan.filesToCopy.length === 0) {
+        showToast('Nothing to sync')
+        isSyncing = false
+        dapSubView = 'albums'
+        app.displayCurrentView()
+        return
+      }
+      // Parse storage index from mtp://serial/index
+      const parts = dest.path.replace('mtp://', '').split('/')
+      const storageIndex = parseInt(parts[1]) || 1
+
+      // Build file pairs: (resolved_source_path, dest_relative_path)
+      const files = plan.filesToCopy.map(f => [f.sourcePath, f.destRelativePath])
+
+      await invoke('dap_execute_mtp_sync', {
+        files,
+        storageIndex,
+      })
+    } else {
+      // Mass storage sync (filesystem-based)
+      await invoke('dap_execute_sync', {
+        tracks: tracksForSync,
+        destPath: dest.path,
+        folderStructure,
+        mirrorMode,
+      })
+    }
   } catch (e) {
     showToast(`Sync error: ${e}`, 'error')
     isSyncing = false
@@ -2240,6 +2264,112 @@ export async function initDapSync() {
   await refreshMountedVolumes()
   setupEventListeners()
   initSidebarToggle()
+  // Detect MTP devices (DAPs connected via USB)
+  detectMtpDevices()
+}
+
+// === MTP DEVICE DETECTION ===
+let mtpDevices = []
+
+async function detectMtpDevices() {
+  try {
+    mtpDevices = await invoke('dap_detect_mtp_devices')
+    renderMtpSidebar()
+  } catch (e) {
+    console.warn('[MTP] Detection failed:', e)
+    mtpDevices = []
+  }
+}
+
+function renderMtpSidebar() {
+  const container = document.getElementById('dap-mtp-devices')
+  if (!container) return
+  container.innerHTML = ''
+
+  if (mtpDevices.length === 0) return
+
+  for (const device of mtpDevices) {
+    const totalBytes = device.storages.reduce((sum, s) => sum + s.capacityBytes, 0)
+    const freeBytes = device.storages.reduce((sum, s) => sum + s.freeBytes, 0)
+    const storageCount = device.storages.length
+    const freeLabel = freeBytes > 0 ? formatBytes(freeBytes) + ' free' : ''
+    const storageLabel = storageCount > 1 ? storageCount + ' storages' : ''
+
+    const item = document.createElement('div')
+    item.className = 'sb-dap-device sb-mtp-device'
+    item.innerHTML = `
+      <div class="dev-icon" style="color: #4ade80">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+          <line x1="12" y1="18" x2="12.01" y2="18"/>
+          <path d="M9 6h6"/>
+        </svg>
+      </div>
+      <div class="dev-info">
+        <div class="dev-name">${escapeHtml(device.model)}</div>
+        <div class="dev-space">${freeLabel}${storageLabel ? ' · ' + storageLabel : ''} <span class="mtp-badge">MTP</span></div>
+      </div>
+    `
+
+    item.addEventListener('click', async () => {
+      await openMtpSyncPanel(device)
+    })
+
+    container.appendChild(item)
+  }
+}
+
+// === MTP SYNC PANEL ===
+
+let currentMtpDevice = null
+
+async function openMtpSyncPanel(device) {
+  currentMtpDevice = device
+  // Use the SD card storage (index 1) if available, otherwise internal (index 0)
+  const sdStorage = device.storages.find(s => s.description.toLowerCase().includes('sd'))
+    || device.storages[device.storages.length - 1]
+  const storageIndex = device.storages.indexOf(sdStorage)
+
+  // Create or find a destination for this MTP device
+  const mtpPath = `mtp://${device.serial}/${storageIndex}`
+  let dest = destinations.find(d => d.path === mtpPath)
+
+  if (!dest) {
+    // Create new destination in DB
+    try {
+      await invoke('dap_save_destination', {
+        dest: {
+          id: null,
+          name: device.model,
+          path: mtpPath,
+          volumeName: device.model,
+          folderStructure: 'artist_album_track',
+          mirrorMode: true,
+          showInSidebar: true,
+          lastSyncAt: null,
+          lastSyncAlbumsCount: null,
+          lastSyncSizeBytes: null
+        }
+      })
+      await loadDestinations()
+      dest = destinations.find(d => d.path === mtpPath)
+    } catch (e) {
+      console.error('[MTP] Failed to create destination:', e)
+      showToast('Failed to setup MTP device')
+      return
+    }
+  }
+
+  if (!dest) {
+    showToast('Failed to find MTP destination')
+    return
+  }
+
+  // Mark MTP path as "mounted" so openSyncPanel doesn't show disconnected screen
+  mountedVolumes.add(mtpPath)
+
+  // Open the standard sync panel
+  openSyncPanel(dest)
 }
 
 // === DAP SYNC MODAL (Sync Now / Sync Later confirmation) ===
