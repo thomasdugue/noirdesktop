@@ -9130,6 +9130,64 @@ body:not(.player-visible) .track-info-panel {
   background: rgba(74, 222, 128, 0.1);
 }
 
+/* MTP Parent — expandable with chevron */
+.sb-mtp-parent {
+  position: relative;
+}
+
+.sb-mtp-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--color-text-faint);
+  margin-left: auto;
+}
+
+.sb-mtp-chevron svg {
+  transition: transform 0.2s ease;
+}
+
+.sb-mtp-chevron.open svg {
+  transform: rotate(90deg);
+}
+
+/* MTP storage sub-items container */
+.sb-mtp-storages {
+  padding-left: 12px;
+}
+
+/* MTP storage sub-item */
+.sb-mtp-storage {
+  padding: 4px 8px 4px 16px;
+}
+
+.sb-mtp-storage .dev-name {
+  font-size: 11.5px;
+}
+
+.sb-mtp-storage .dev-space {
+  font-size: 9px;
+}
+
+/* Smaller icon for storage sub-items */
+.sb-mtp-storage-icon {
+  width: 16px;
+  height: 16px;
+  background: rgba(74, 222, 128, 0.08);
+}
+
+/* Active storage sub-item */
+.sb-mtp-storage.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: 500;
+}
+
+.sb-mtp-storage.active .dev-icon {
+  background: rgba(255, 255, 255, 0.18);
+}
+
 .sb-dap-device .dev-eject {
   background: none;
   border: none;
@@ -9317,37 +9375,56 @@ body:not(.player-visible) .track-info-panel {
 
 /* Destination card (bar + details as one unified block) */
 .dap-dest-card {
-  margin-bottom: 28px;
+  margin-bottom: 24px;
 }
 
-/* Destination bar */
+/* === Device Header — Hi-Fi premium card === */
 .dap-dest-bar {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px 20px;
-  background: var(--color-bg-lighter);
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
+  gap: 20px;
+  padding: 28px 28px 24px;
+  background: #111113;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 16px;
   margin-bottom: 0;
   cursor: pointer;
-  transition: border-color 0.15s ease, border-radius 0.2s ease;
+  transition: border-color var(--transition-normal), border-radius 0.2s ease, box-shadow var(--transition-slow);
+  position: relative;
+  overflow: hidden;
 }
 
-/* When details are expanded, bar becomes top part of the unified card */
+/* No accent line — clean minimal look */
+
 .dap-dest-bar.details-open {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
-  border-bottom-color: rgba(255, 255, 255, 0.06);
+  border-bottom-color: rgba(255, 255, 255, 0.03);
 }
 
 .dap-dest-bar:hover {
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
 
+/* Device icon — DAP silhouette */
 .dap-dest-icon {
-  font-size: 18px;
   flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1a1a1e, #141416);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.dap-dest-icon svg {
+  width: 24px;
+  height: 24px;
+  opacity: 0.7;
 }
 
 .dap-dest-info {
@@ -9355,53 +9432,47 @@ body:not(.player-visible) .track-info-panel {
   min-width: 0;
 }
 
+/* Device name — large editorial headline */
 .dap-dest-path {
-  font-size: 16px;
+  font-size: 20px;
   font-family: var(--font-sans);
-  font-weight: 600;
-  color: var(--color-text);
+  font-weight: 700;
+  color: #fff;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  letter-spacing: -0.2px;
+  letter-spacing: -0.5px;
+  line-height: 1.1;
 }
 
+/* Storage info — monospace tech feel */
 .dap-dest-space {
-  font-size: 11.5px;
-  font-family: var(--font-sans);
-  color: var(--color-text-faint);
-  margin-top: 5px;
-}
-
-.dap-dest-change {
-  background: none;
-  border: none;
   font-size: 11px;
-  color: var(--color-text-faint);
-  cursor: pointer;
-  font-family: 'Geist Mono', monospace;
-  padding: 4px 8px;
+  font-family: var(--font-body);
+  color: rgba(255, 255, 255, 0.35);
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  letter-spacing: 0.3px;
 }
 
-.dap-dest-change:hover {
-  color: #fff;
-}
-
-/* Storage bar (shared) */
+/* Storage bar — wider, with colored gradient */
 .dap-storage-bar {
   height: 4px;
-  background: #1c1c22;
+  background: rgba(255, 255, 255, 0.04);
   border-radius: 2px;
   overflow: hidden;
-  margin-top: 6px;
-  max-width: 70%;
+  margin-top: 12px;
+  width: 100%;
+  max-width: none;
 }
 
 .dap-storage-fill {
   height: 100%;
-  background: #fff;
-  border-radius: 3px;
-  transition: width 0.3s;
+  background: linear-gradient(90deg, #4ade80, rgba(74, 222, 128, 0.3));
+  border-radius: 2px;
+  transition: width 0.4s ease;
 }
 
 /* Tabs — segmented control style */
@@ -9759,11 +9830,11 @@ body:not(.player-visible) .track-info-panel {
 
 /* Destination details panel (collapsible, under dest-bar) */
 .dap-dest-details {
-  background: var(--color-bg-lighter);
-  border: 1px solid var(--color-border);
+  background: linear-gradient(180deg, rgba(22, 22, 26, 0.98) 0%, rgba(18, 18, 22, 0.95) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-top: none;
-  border-radius: 0 0 10px 10px;
-  padding: 14px 20px;
+  border-radius: 0 0 14px 14px;
+  padding: 16px 24px;
   margin-top: 0;
   margin-bottom: 0;
   display: flex;
@@ -10923,19 +10994,21 @@ body:not(.player-visible) .track-info-panel {
 .dap-dest-sync-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 18px;
-  border-radius: 6px;
-  font-family: 'Geist Mono', monospace;
-  font-size: 11px;
+  gap: 6px;
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.3px;
   cursor: pointer;
-  border: 1px solid #333;
-  background: transparent;
-  color: #888;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.6);
   transition: all 0.2s ease;
   flex-shrink: 0;
   white-space: nowrap;
+  backdrop-filter: blur(8px);
   letter-spacing: 0.5px;
   text-transform: uppercase;
 }
@@ -10991,18 +11064,36 @@ body:not(.player-visible) .track-info-panel {
   .dap-dest-sync-btn.has-changes { animation: none; }
 }
 
+/* Toggle chevron in dest-bar */
+.dap-dest-toggle {
+  background: none;
+  border: none;
+  color: var(--color-text-dimmed);
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: color var(--transition-fast), transform var(--transition-normal);
+  flex-shrink: 0;
+}
+
+.dap-dest-toggle:hover { color: var(--color-text); }
+.dap-dest-toggle.open { transform: rotate(180deg); }
+
 /* Gear button in dest-bar */
 .dap-dest-gear {
   background: none;
   border: none;
-  color: var(--color-text-faint);
+  color: var(--color-text-dimmed);
   cursor: pointer;
-  padding: 4px;
+  padding: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
-  transition: color 0.15s ease, background 0.15s ease;
+  border-radius: 6px;
+  transition: color var(--transition-fast), background var(--transition-fast);
   flex-shrink: 0;
   opacity: 0.5;
 }

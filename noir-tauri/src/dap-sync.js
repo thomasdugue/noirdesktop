@@ -301,6 +301,8 @@ function renderSidebarDestinations() {
   }
 
   for (const dest of destinations) {
+    // MTP destinations are rendered by renderMtpSidebar(), not here
+    if (dest.path.startsWith('mtp://')) continue
     const isMounted = mountedVolumes.has(dest.path)
     // Hide offline volumes — only show mounted devices
     if (!isMounted) continue
@@ -352,6 +354,8 @@ function renderSidebarDestinations() {
     container.appendChild(item)
   }
 
+  // Also re-render MTP devices (to sync active state)
+  renderMtpSidebar()
 }
 
 function checkMounted(path) {
@@ -663,7 +667,7 @@ function renderAlbumsView(grid) {
       <div class="dap-dest-bar ${detailsExpanded ? 'details-open' : ''}">
         <span class="dap-dest-icon">${DAP_ICON_SVG}</span>
         <div class="dap-dest-info">
-          <div class="dap-dest-path">${escapeHtml(dest.path)}</div>
+          <div class="dap-dest-path">${escapeHtml(getMtpDisplayName(dest) || dest.name || dest.path)}</div>
           <div class="dap-dest-space">${formatBytes(freeBytes)} free / ${formatBytes(totalBytes)}</div>
           <div class="dap-storage-bar"><div class="dap-storage-fill" style="width:${usedPct}%"></div></div>
         </div>
@@ -2250,9 +2254,12 @@ function initSidebarToggle() {
 
   header.addEventListener('click', () => {
     header.classList.toggle('open')
+    const isOpen = header.classList.contains('open')
     const list = document.getElementById('dap-sync-destinations')
-    if (list) list.style.display = header.classList.contains('open') ? '' : 'none'
-    sidebarCollapsed = !header.classList.contains('open')
+    if (list) list.style.display = isOpen ? '' : 'none'
+    const mtpList = document.getElementById('dap-mtp-devices')
+    if (mtpList) mtpList.style.display = isOpen ? '' : 'none'
+    sidebarCollapsed = !isOpen
   })
 }
 
@@ -2270,6 +2277,26 @@ export async function initDapSync() {
 
 // === MTP DEVICE DETECTION ===
 let mtpDevices = []
+let mtpExpanded = new Set() // serials of expanded MTP devices in sidebar
+
+/** Get a human-readable name for an MTP destination.
+ *  mtp://serial/0 → "FiiO JM21 / Internal Storage"
+ *  mtp://serial/1 → "FiiO JM21 / Micro SD"
+ */
+function getMtpDisplayName(dest) {
+  if (!dest || !dest.path || !dest.path.startsWith('mtp://')) return null
+  // Find the MTP device that matches this destination
+  const parts = dest.path.replace('mtp://', '').split('/')
+  const serial = parts[0]
+  const storageIdx = parseInt(parts[1] || '0', 10)
+  const device = mtpDevices.find(d => d.serial === serial)
+  if (!device) return dest.name || dest.path
+  const storage = device.storages[storageIdx]
+  const storageName = storage
+    ? (storage.description || (storageIdx === 0 ? 'Internal Storage' : 'Micro SD'))
+    : (storageIdx === 0 ? 'Internal Storage' : 'Micro SD')
+  return `${device.model} — ${storageName}`
+}
 
 async function detectMtpDevices() {
   try {
@@ -2281,6 +2308,33 @@ async function detectMtpDevices() {
   }
 }
 
+function getStorageIcon(description) {
+  const lower = (description || '').toLowerCase()
+  if (lower.includes('sd') || lower.includes('micro') || lower.includes('card') || lower.includes('externe')) {
+    // SD card icon
+    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="2" width="16" height="20" rx="2"/>
+      <path d="M8 2v6"/><path d="M12 2v6"/><path d="M16 2v6"/>
+    </svg>`
+  }
+  // Internal storage icon (DAP device)
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+    <line x1="12" y1="18" x2="12.01" y2="18"/>
+  </svg>`
+}
+
+function getStorageDisplayName(storage, deviceModel) {
+  const lower = (storage.description || '').toLowerCase()
+  if (lower.includes('sd') || lower.includes('micro') || lower.includes('card') || lower.includes('externe')) {
+    return 'Micro SD'
+  }
+  if (lower.includes('intern') || lower.includes('partag')) {
+    return 'Internal Storage'
+  }
+  return storage.description || 'Storage'
+}
+
 function renderMtpSidebar() {
   const container = document.getElementById('dap-mtp-devices')
   if (!container) return
@@ -2289,15 +2343,12 @@ function renderMtpSidebar() {
   if (mtpDevices.length === 0) return
 
   for (const device of mtpDevices) {
-    const totalBytes = device.storages.reduce((sum, s) => sum + s.capacityBytes, 0)
-    const freeBytes = device.storages.reduce((sum, s) => sum + s.freeBytes, 0)
-    const storageCount = device.storages.length
-    const freeLabel = freeBytes > 0 ? formatBytes(freeBytes) + ' free' : ''
-    const storageLabel = storageCount > 1 ? storageCount + ' storages' : ''
+    const isExpanded = mtpExpanded.has(device.serial)
 
-    const item = document.createElement('div')
-    item.className = 'sb-dap-device sb-mtp-device'
-    item.innerHTML = `
+    // --- PARENT ITEM (device name + MTP badge + chevron) ---
+    const parent = document.createElement('div')
+    parent.className = 'sb-dap-device sb-mtp-device sb-mtp-parent'
+    parent.innerHTML = `
       <div class="dev-icon" style="color: #4ade80">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
@@ -2307,15 +2358,55 @@ function renderMtpSidebar() {
       </div>
       <div class="dev-info">
         <div class="dev-name">${escapeHtml(device.model)}</div>
-        <div class="dev-space">${freeLabel}${storageLabel ? ' · ' + storageLabel : ''} <span class="mtp-badge">MTP</span></div>
+        <div class="dev-space"><span class="mtp-badge">MTP</span></div>
       </div>
+      <span class="sb-mtp-chevron${isExpanded ? ' open' : ''}">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6l6 6-6 6"/>
+        </svg>
+      </span>
     `
-
-    item.addEventListener('click', async () => {
-      await openMtpSyncPanel(device)
+    parent.addEventListener('click', () => {
+      if (mtpExpanded.has(device.serial)) {
+        mtpExpanded.delete(device.serial)
+      } else {
+        mtpExpanded.add(device.serial)
+      }
+      renderMtpSidebar()
     })
+    container.appendChild(parent)
 
-    container.appendChild(item)
+    // --- SUB-ITEMS (one per storage, only if expanded) ---
+    if (isExpanded) {
+      const storageList = document.createElement('div')
+      storageList.className = 'sb-mtp-storages'
+
+      device.storages.forEach((storage, idx) => {
+        const mtpPath = `mtp://${device.serial}/${idx}`
+        const isActive = destinations.some(d => d.path === mtpPath && d.id === currentDestinationId)
+          && ui.currentView === 'dap-sync'
+        const freeLabel = storage.freeBytes > 0 ? formatBytes(storage.freeBytes) + ' free' : ''
+
+        const sub = document.createElement('div')
+        sub.className = 'sb-dap-device sb-mtp-storage' + (isActive ? ' active' : '')
+        sub.innerHTML = `
+          <div class="dev-icon sb-mtp-storage-icon" style="color: #4ade80">
+            ${getStorageIcon(storage.description)}
+          </div>
+          <div class="dev-info">
+            <div class="dev-name">${escapeHtml(getStorageDisplayName(storage, device.model))}</div>
+            <div class="dev-space">${freeLabel}</div>
+          </div>
+        `
+        sub.addEventListener('click', (e) => {
+          e.stopPropagation()
+          openMtpSyncPanel(device, idx)
+        })
+        storageList.appendChild(sub)
+      })
+
+      container.appendChild(storageList)
+    }
   }
 }
 
@@ -2323,24 +2414,29 @@ function renderMtpSidebar() {
 
 let currentMtpDevice = null
 
-async function openMtpSyncPanel(device) {
+async function openMtpSyncPanel(device, storageIndex) {
   currentMtpDevice = device
-  // Use the SD card storage (index 1) if available, otherwise internal (index 0)
-  const sdStorage = device.storages.find(s => s.description.toLowerCase().includes('sd'))
-    || device.storages[device.storages.length - 1]
-  const storageIndex = device.storages.indexOf(sdStorage)
 
-  // Create or find a destination for this MTP device
-  const mtpPath = `mtp://${device.serial}/${storageIndex}`
+  // Use explicit index if provided, otherwise fallback to SD auto-detection
+  let idx = storageIndex
+  if (idx === undefined) {
+    const sdStorage = device.storages.find(s => s.description.toLowerCase().includes('sd'))
+      || device.storages[device.storages.length - 1]
+    idx = device.storages.indexOf(sdStorage)
+  }
+
+  // Create or find a destination for this MTP device + storage
+  const mtpPath = `mtp://${device.serial}/${idx}`
   let dest = destinations.find(d => d.path === mtpPath)
 
   if (!dest) {
-    // Create new destination in DB
+    // Create new destination in DB with storage-specific name
+    const storageName = getStorageDisplayName(device.storages[idx], device.model)
     try {
       await invoke('dap_save_destination', {
         dest: {
           id: null,
-          name: device.model,
+          name: `${device.model} — ${storageName}`,
           path: mtpPath,
           volumeName: device.model,
           folderStructure: 'artist_album_track',
@@ -2370,6 +2466,9 @@ async function openMtpSyncPanel(device) {
 
   // Open the standard sync panel
   openSyncPanel(dest)
+
+  // Re-render sidebar to reflect active sub-item
+  renderMtpSidebar()
 }
 
 // === DAP SYNC MODAL (Sync Now / Sync Later confirmation) ===

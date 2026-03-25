@@ -274,6 +274,7 @@ pub async fn mtp_sync_batch(
     files: Vec<(String, String)>, // (source_path, dest_relative_path)
     storage_index: usize,
     progress_callback: impl Fn(usize, usize, &str), // (current, total, current_file)
+    cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(usize, u64, Vec<String>), String> {
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -336,6 +337,14 @@ pub async fn mtp_sync_batch(
     }
 
     for (i, (source_path, dest_rel)) in files_to_copy.iter().enumerate() {
+        // Check cancel flag before each file
+        if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("[MTP] Sync cancelled by user after {} files", copied);
+            drop(storages);
+            drop(device);
+            return Ok((copied + skipped, total_bytes, vec!["Sync cancelled by user".into()]));
+        }
+
         progress_callback(already_on_device + i + 1, total, dest_rel);
 
         // Parse dest_rel: "Artist - Album/01 - Track.flac" → folder="Artist - Album", file="01 - Track.flac"

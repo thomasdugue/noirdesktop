@@ -4805,6 +4805,10 @@ async fn dap_execute_mtp_sync(
         (resolved, dest)
     }).collect();
 
+    // Reset cancel flag before starting
+    DAP_SYNC_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+    let cancel_flag = DAP_SYNC_CANCEL.clone();
+
     let app_handle_clone = app_handle.clone();
     let result = dap_sync::mtp::mtp_sync_batch(
         resolved_files,
@@ -4820,6 +4824,7 @@ async fn dap_execute_mtp_sync(
                 "action": "copy"
             }));
         },
+        cancel_flag,
     ).await;
 
     match result {
