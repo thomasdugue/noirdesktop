@@ -1341,6 +1341,13 @@ async function computeAndRenderSummary() {
   const dest = getCurrentDest()
   if (!dest) return
 
+  // Skip plan recomputation for MTP destinations during sync — would compete
+  // for exclusive USB access and cause the device to disconnect (error 0xe00002c5).
+  if (isSyncing && dest.path && dest.path.startsWith('mtp://')) {
+    console.log('[DAP] Skipping plan recompute — MTP sync in progress')
+    return
+  }
+
   if (!mountedVolumes.has(dest.path)) {
     details.innerHTML = '<div class="dap-summary-error">Volume not mounted</div>'
     return
@@ -2174,7 +2181,15 @@ function cancelSync() {
 // === EVENT LISTENERS ===
 
 function setupEventListeners() {
-  listen('volume_change', () => refreshMountedVolumes())
+  listen('volume_change', () => {
+    // During MTP sync, skip volume refresh — it can trigger detectMtpDevices()
+    // which competes for exclusive USB access and disconnects the DAP.
+    if (isSyncing) {
+      console.log('[DAP] Skipping volume_change — sync in progress')
+      return
+    }
+    refreshMountedVolumes()
+  })
 
   let _progressRafPending = false
   listen('dap_sync_progress', (event) => {
@@ -2299,6 +2314,10 @@ function getMtpDisplayName(dest) {
 }
 
 async function detectMtpDevices() {
+  if (isSyncing) {
+    console.log('[MTP] Skipping detection — sync in progress (exclusive USB access)')
+    return
+  }
   try {
     mtpDevices = await invoke('dap_detect_mtp_devices')
     renderMtpSidebar()
