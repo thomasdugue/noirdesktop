@@ -62,6 +62,58 @@ pub fn write_manifest(dest_path: &str, manifest: &SyncManifest) -> Result<(), St
     Ok(())
 }
 
+/// Read manifest from an explicit file path (used for MTP manifests stored locally).
+pub fn read_manifest_file(file_path: &str) -> Result<Option<SyncManifest>, String> {
+    let path = Path::new(file_path);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[DAP] MTP manifest corrupted ({}), treating as fresh sync", e);
+            let _ = std::fs::remove_file(path);
+            return Ok(None);
+        }
+    };
+    match serde_json::from_str::<SyncManifest>(&content) {
+        Ok(manifest) => Ok(Some(manifest)),
+        Err(e) => {
+            eprintln!("[DAP] MTP manifest JSON invalid ({}), treating as fresh sync", e);
+            let _ = std::fs::remove_file(path);
+            Ok(None)
+        }
+    }
+}
+
+/// Write manifest to an explicit file path (used for MTP manifests stored locally).
+pub fn write_manifest_file(file_path: &str, manifest: &SyncManifest) -> Result<(), String> {
+    let path = Path::new(file_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create manifest directory: {}", e))?;
+    }
+    let content = serde_json::to_string_pretty(manifest)
+        .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
+    std::fs::write(path, content)
+        .map_err(|e| format!("Failed to write MTP manifest: {}", e))?;
+    Ok(())
+}
+
+/// Build the local manifest file path for an MTP device.
+/// Format: ~/.local/share/noir/mtp_manifest_{serial}_{storage_index}.json
+pub fn mtp_manifest_path(dest_path: &str) -> String {
+    let sanitized = dest_path
+        .trim_start_matches("mtp://")
+        .replace('/', "_");
+    format!("{}/mtp_manifest_{}.json",
+        dirs::data_dir()
+            .unwrap_or_default()
+            .join("noir")
+            .to_string_lossy(),
+        sanitized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

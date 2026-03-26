@@ -4606,13 +4606,8 @@ fn dap_compute_sync_plan(
     let t0 = std::time::Instant::now();
     // For MTP, manifest is stored locally (not on device)
     let manifest = if is_mtp {
-        // MTP manifest stored in app data dir, keyed by device serial
-        let mtp_manifest_path = format!("{}/mtp_manifest_{}.json",
-            dirs::data_dir().unwrap_or_default().join("noir").to_string_lossy(),
-            dest_path.replace("mtp://", "").replace("/", "_"));
-        dap_sync::manifest::read_manifest(&std::path::Path::new(&mtp_manifest_path).parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default())?
+        let mtp_path = dap_sync::manifest::mtp_manifest_path(&dest_path);
+        dap_sync::manifest::read_manifest_file(&mtp_path)?
     } else {
         dap_sync::manifest::read_manifest(&dest_path)?
     };
@@ -4789,32 +4784,79 @@ fn dap_execute_sync(
 #[tauri::command]
 async fn dap_execute_mtp_sync(
     app_handle: tauri::AppHandle,
-    files: Vec<(String, String)>, // (source_path, dest_relative_path)
+    files: Vec<(String, String)>,          // (source_path, dest_relative_path) — files to copy
+    files_to_delete: Vec<String>,          // dest_relative_paths to delete from device
     storage_index: usize,
+    dest_path: String,                     // mtp://serial/index — for manifest storage
+    folder_structure: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
 
-    let total = files.len();
-    eprintln!("[MTP-SYNC] Starting MTP sync: {} files to storage {}", total, storage_index);
+    let start = std::time::Instant::now();
+    let total_copy = files.len();
+    let total_delete = files_to_delete.len();
+    eprintln!("[MTP-SYNC] Starting MTP sync: {} files to copy, {} to delete on storage {}",
+        total_copy, total_delete, storage_index);
 
     // Resolve SMB paths before passing to MTP
     let smb_map = dap_sync::smb_utils::build_smb_mount_map();
-
     let resolved_files: Vec<(String, String)> = files.into_iter().map(|(src, dest)| {
         let resolved = dap_sync::smb_utils::resolve_smb_path(&src, &smb_map);
         (resolved, dest)
     }).collect();
+    // Keep a copy for manifest building (mtp_sync_batch consumes the original)
+    let resolved_files_for_manifest = resolved_files.clone();
 
-    // Reset cancel flag before starting
+    // Reset cancel flag
     DAP_SYNC_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
     let cancel_flag = DAP_SYNC_CANCEL.clone();
 
-    let app_handle_clone = app_handle.clone();
+    let mut all_errors: Vec<String> = Vec::new();
+    let mut total_files_deleted: usize = 0;
+
+    // --- Phase 1: Delete files no longer in selection ---
+    if !files_to_delete.is_empty() {
+        let app_handle_del = app_handle.clone();
+        let cancel_del = cancel_flag.clone();
+
+        match dap_sync::mtp::mtp_delete_files(
+            &files_to_delete,
+            storage_index,
+            move |current, total, file| {
+                let _ = app_handle_del.emit("dap_sync_progress", serde_json::json!({
+                    "phase": "delete",
+                    "current": current,
+                    "total": total,
+                    "currentFile": file,
+                    "bytesCopied": 0,
+                    "totalBytes": 0,
+                    "action": "delete"
+                }));
+            },
+            cancel_del,
+        ).await {
+            Ok((deleted, errors)) => {
+                total_files_deleted = deleted;
+                eprintln!("[MTP-SYNC] Delete phase: {}/{} deleted, {} errors",
+                    deleted, total_delete, errors.len());
+                all_errors.extend(errors);
+            }
+            Err(e) => {
+                eprintln!("[MTP-SYNC] Delete phase failed: {}", e);
+                all_errors.push(format!("Delete phase failed: {}", e));
+            }
+        }
+    }
+
+    // --- Phase 2: Copy new files ---
+    let app_handle_copy = app_handle.clone();
+    let cancel_copy = cancel_flag.clone();
+
     let result = dap_sync::mtp::mtp_sync_batch(
         resolved_files,
         storage_index,
         move |current, total, file| {
-            let _ = app_handle_clone.emit("dap_sync_progress", serde_json::json!({
+            let _ = app_handle_copy.emit("dap_sync_progress", serde_json::json!({
                 "phase": "copy",
                 "current": current,
                 "total": total,
@@ -4824,32 +4866,97 @@ async fn dap_execute_mtp_sync(
                 "action": "copy"
             }));
         },
-        cancel_flag,
+        cancel_copy,
     ).await;
 
-    match result {
+    let (files_copied, total_bytes_copied) = match result {
         Ok((copied, bytes, errors)) => {
-            let success = errors.is_empty();
-            let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
-                success,
-                files_copied: copied,
-                files_deleted: 0,
-                total_bytes_copied: bytes,
-                duration_ms: 0,
-                errors,
-            });
+            all_errors.extend(errors);
+            (copied, bytes)
         }
         Err(e) => {
-            let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
-                success: false,
-                files_copied: 0,
-                files_deleted: 0,
-                total_bytes_copied: 0,
-                duration_ms: 0,
-                errors: vec![e],
+            all_errors.push(e);
+            (0, 0)
+        }
+    };
+
+    // --- Phase 3: Write manifest locally ---
+    // Build manifest from the files that should now be on the device:
+    // = files we just copied + files that were already on device (unchanged from plan)
+    let manifest_path = dap_sync::manifest::mtp_manifest_path(&dest_path);
+    let old_manifest = dap_sync::manifest::read_manifest_file(&manifest_path)
+        .unwrap_or(None);
+
+    // Start with unchanged files from old manifest (not deleted)
+    let deleted_set: std::collections::HashSet<String> = files_to_delete.iter().cloned().collect();
+    let mut manifest_files: Vec<dap_sync::manifest::SyncedFile> = Vec::new();
+
+    if let Some(old) = &old_manifest {
+        for f in &old.files {
+            if !deleted_set.contains(&f.dest_relative_path) {
+                manifest_files.push(f.clone());
+            }
+        }
+    }
+
+    // Add newly copied files (from sync plan, not retry/dedup — use the intended file list)
+    // We use a set to avoid duplicates
+    let existing_dest_paths: std::collections::HashSet<String> =
+        manifest_files.iter().map(|f| f.dest_relative_path.clone()).collect();
+
+    for (src, dest_rel) in &resolved_files_for_manifest {
+        if !existing_dest_paths.contains(dest_rel) {
+            manifest_files.push(dap_sync::manifest::SyncedFile {
+                source_path: src.clone(),
+                dest_relative_path: dest_rel.clone(),
+                size_bytes: std::fs::metadata(src).map(|m| m.len()).unwrap_or(0),
+                modified_at: String::new(),
+                quick_hash: String::new(),
             });
         }
     }
+
+    let now = {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        format!("{}", secs)
+    };
+
+    let new_manifest = dap_sync::manifest::SyncManifest {
+        hean_version: "1.0.0".into(),
+        last_sync: now,
+        destination_path: dest_path.clone(),
+        folder_structure,
+        files: manifest_files,
+    };
+
+    if let Err(e) = dap_sync::manifest::write_manifest_file(&manifest_path, &new_manifest) {
+        eprintln!("[MTP-SYNC] Failed to write manifest: {}", e);
+        all_errors.push(format!("Manifest write failed: {}", e));
+    } else {
+        eprintln!("[MTP-SYNC] Manifest written: {} files tracked at {}",
+            new_manifest.files.len(), manifest_path);
+    }
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let success = all_errors.is_empty();
+
+    eprintln!("[MTP-SYNC] === SYNC {} === {} copied, {} deleted, {:.1} GB in {:.1}s, {} errors",
+        if success { "COMPLETE" } else { "FINISHED WITH ERRORS" },
+        files_copied, total_files_deleted,
+        total_bytes_copied as f64 / 1_073_741_824.0,
+        duration_ms as f64 / 1000.0, all_errors.len());
+
+    let _ = app_handle.emit("dap_sync_complete", dap_sync::sync_engine::SyncComplete {
+        success,
+        files_copied,
+        files_deleted: total_files_deleted,
+        total_bytes_copied,
+        duration_ms,
+        errors: all_errors,
+    });
 
     Ok(())
 }
