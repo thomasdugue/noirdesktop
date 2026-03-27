@@ -323,6 +323,8 @@ pub async fn mtp_sync_batch(
     let mut skipped = already_on_device;
     let mut total_bytes = 0u64;
     let mut errors = Vec::new();
+    // Folders to skip after a session error (timeout/Transaction ID mismatch)
+    let mut poisoned_folders: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Cache of created folder handles (folder_name → handle)
     let mut folder_cache: std::collections::HashMap<String, mtp_rs::ptp::ObjectHandle> = std::collections::HashMap::new();
@@ -345,8 +347,6 @@ pub async fn mtp_sync_batch(
             return Ok((copied + skipped, total_bytes, vec!["Sync cancelled by user".into()]));
         }
 
-        progress_callback(already_on_device + i + 1, total, dest_rel);
-
         // Parse dest_rel: "Artist - Album/01 - Track.flac" → folder="Artist - Album", file="01 - Track.flac"
         // Or "Artist - Album/Disc 1/01 - Track.flac" → we need nested folders
         let parts: Vec<&str> = dest_rel.split('/').collect();
@@ -357,6 +357,14 @@ pub async fn mtp_sync_batch(
         } else {
             ("".to_string(), dest_rel.clone())
         };
+
+        // Skip files in folders where a previous upload caused a session error
+        if poisoned_folders.contains(&folder_path) {
+            errors.push(format!("{} — Skipped (MTP session error on previous file in this folder)", dest_rel));
+            continue;
+        }
+
+        progress_callback(already_on_device + i + 1, total, dest_rel);
 
         // Find or create the target folder hierarchy inside Music/
         let target_handle = if folder_path.is_empty() {
@@ -410,35 +418,16 @@ pub async fn mtp_sync_batch(
                         eprintln!("[MTP] ... (suppressing further 'already on device' messages)");
                     }
                 } else if err_str.contains("Transaction ID mismatch") || err_str.contains("timed out") {
-                    // Transaction ID mismatch = MTP session corrupted after a timeout.
-                    // The protocol is desynchronized — all subsequent uploads on this session
-                    // will fail. Skip remaining files in this album folder and continue.
-                    // The next sync will retry with a fresh MTP session.
-                    errors.push(format!("{} — MTP session error: {}", dest_rel, e));
-                    eprintln!("[MTP] SESSION ERROR: {} — {} — skipping remaining files in this folder", dest_rel, e);
+                    // Timeout or Transaction ID mismatch = MTP session may be corrupted.
+                    // Poison this folder so remaining files in it are skipped.
+                    // Files in OTHER folders will still be attempted (the session
+                    // often recovers after a short pause between albums).
+                    errors.push(format!("{} — MTP upload timed out", dest_rel));
+                    eprintln!("[MTP] TIMEOUT: {} — poisoning folder '{}' (remaining files will be skipped)", dest_rel, folder_path);
+                    poisoned_folders.insert(folder_path.clone());
 
-                    // Skip files in the same folder
-                    let current_folder = folder_path.clone();
-                    let remaining: Vec<_> = files_to_copy.iter().skip(i + 1)
-                        .take_while(|(_, dr)| {
-                            let parts: Vec<&str> = dr.split('/').collect();
-                            if parts.len() >= 2 {
-                                parts[..parts.len() - 1].join("/") == current_folder
-                            } else {
-                                false
-                            }
-                        })
-                        .map(|(_, dr)| dr.clone())
-                        .collect();
-                    for skipped_rel in &remaining {
-                        errors.push(format!("{} — Skipped (MTP session corrupted by previous timeout)", skipped_rel));
-                    }
-                    if !remaining.is_empty() {
-                        eprintln!("[MTP] Skipped {} more files in folder '{}'", remaining.len(), current_folder);
-                    }
-
-                    // Wait for device to recover before next album
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    // Brief pause to let the MTP device recover before next album
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 } else {
                     // Real error — retry once with fresh file read
                     eprintln!("[MTP] Upload error for {}: {} — retrying...", filename, e);
