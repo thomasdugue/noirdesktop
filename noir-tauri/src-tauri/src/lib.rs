@@ -4855,7 +4855,7 @@ async fn dap_execute_mtp_sync(
     let cancel_copy = cancel_flag.clone();
 
     let result = dap_sync::mtp::mtp_sync_batch(
-        resolved_files,
+        resolved_files.clone(),
         storage_index,
         move |current, total, file| {
             let _ = app_handle_copy.emit("dap_sync_progress", serde_json::json!({
@@ -4914,7 +4914,8 @@ async fn dap_execute_mtp_sync(
 
     for (original_src, dest_rel) in &original_files_for_manifest {
         if !existing_dest_paths.contains(dest_rel) {
-            let resolved_src = resolved_map.get(original_src.as_str()).unwrap_or(&original_src.as_str());
+            let fallback = original_src.as_str();
+            let resolved_src = resolved_map.get(original_src.as_str()).unwrap_or(&fallback);
             manifest_files.push(dap_sync::manifest::SyncedFile {
                 source_path: original_src.clone(),  // Store ORIGINAL smb:// path, not resolved /Volumes/
                 dest_relative_path: dest_rel.clone(),
