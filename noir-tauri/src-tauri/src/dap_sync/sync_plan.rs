@@ -475,14 +475,14 @@ pub fn compute_sync_plan(
         selected_dest_paths.insert(dest_rel.clone());
 
         if manifest_lookup.contains_key(&dest_rel) {
-            // File in manifest — but verify it PHYSICALLY exists on the DAP.
+            // File in manifest — verify it PHYSICALLY exists on the DAP.
             // After ghost directory cleanup or exFAT corruption, the manifest can
             // reference files that no longer exist on disk. Without this check,
-            // these files show "on DAP" but are actually missing → user must
-            // manually delete manifest to recover. With this check, they're
-            // automatically re-queued for copy on the next sync.
-            let physical_path = dest_root.join(&dest_rel);
-            if physical_path.exists() {
+            // these files show "on DAP" but are actually missing.
+            //
+            // For MTP: skip disk check — there's no local filesystem.
+            // The manifest is authoritative for MTP devices.
+            if is_mtp || Path::new(&dest_root).join(&dest_rel).exists() {
                 files_unchanged += 1;
                 unchanged_album_id_set.insert(track.album_id);
             } else {
