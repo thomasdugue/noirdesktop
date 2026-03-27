@@ -4800,12 +4800,14 @@ async fn dap_execute_mtp_sync(
 
     // Resolve SMB paths before passing to MTP
     let smb_map = dap_sync::smb_utils::build_smb_mount_map();
-    let resolved_files: Vec<(String, String)> = files.into_iter().map(|(src, dest)| {
-        let resolved = dap_sync::smb_utils::resolve_smb_path(&src, &smb_map);
-        (resolved, dest)
+    let resolved_files: Vec<(String, String)> = files.iter().map(|(src, dest)| {
+        let resolved = dap_sync::smb_utils::resolve_smb_path(src, &smb_map);
+        (resolved, dest.clone())
     }).collect();
-    // Keep a copy for manifest building (mtp_sync_batch consumes the original)
-    let resolved_files_for_manifest = resolved_files.clone();
+    // Keep ORIGINAL (non-resolved) source paths for manifest
+    // (resolved paths are session-specific /Volumes/... mounts that change between reboots;
+    //  original paths are stable smb:// URIs that match library.tracks[].path in JS)
+    let original_files_for_manifest: Vec<(String, String)> = files.into_iter().collect();
 
     // Reset cancel flag
     DAP_SYNC_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -4904,12 +4906,19 @@ async fn dap_execute_mtp_sync(
     let existing_dest_paths: std::collections::HashSet<String> =
         manifest_files.iter().map(|f| f.dest_relative_path.clone()).collect();
 
-    for (src, dest_rel) in &resolved_files_for_manifest {
+    // Build resolved source map for size lookup (original path → resolved path)
+    let resolved_map: std::collections::HashMap<&str, &str> = original_files_for_manifest.iter()
+        .zip(resolved_files.iter())
+        .map(|((orig, _), (resolved, _))| (orig.as_str(), resolved.as_str()))
+        .collect();
+
+    for (original_src, dest_rel) in &original_files_for_manifest {
         if !existing_dest_paths.contains(dest_rel) {
+            let resolved_src = resolved_map.get(original_src.as_str()).unwrap_or(&original_src.as_str());
             manifest_files.push(dap_sync::manifest::SyncedFile {
-                source_path: src.clone(),
+                source_path: original_src.clone(),  // Store ORIGINAL smb:// path, not resolved /Volumes/
                 dest_relative_path: dest_rel.clone(),
-                size_bytes: std::fs::metadata(src).map(|m| m.len()).unwrap_or(0),
+                size_bytes: std::fs::metadata(resolved_src).map(|m| m.len()).unwrap_or(0),
                 modified_at: String::new(),
                 quick_hash: String::new(),
             });

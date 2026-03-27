@@ -574,8 +574,10 @@ pub async fn mtp_delete_files(
     eprintln!("[MTP] Deleted {}/{} files, {} errors", deleted, total, errors.len());
 
     // --- Cleanup empty folders ---
-    // Re-scan to find empty folders and delete them bottom-up
+    // Re-scan to find empty folders and delete them bottom-up.
+    // Wait for MTP device to update its directory index after deletions.
     if !affected_folders.is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let empty_deleted = cleanup_empty_mtp_folders(storage, music_handle).await;
         if empty_deleted > 0 {
             eprintln!("[MTP] Cleaned up {} empty folders", empty_deleted);
@@ -590,6 +592,7 @@ pub async fn mtp_delete_files(
 }
 
 /// Recursively scan MTP folder and build path → ObjectHandle map.
+/// Also stores folder handles (prefixed with "/" sentinel) for folder cleanup.
 async fn scan_mtp_handles_recursive(
     storage: &mtp_rs::mtp::Storage,
     folder_handle: mtp_rs::ptp::ObjectHandle,
@@ -598,7 +601,21 @@ async fn scan_mtp_handles_recursive(
 ) {
     let objects = match storage.list_objects(Some(folder_handle)).await {
         Ok(objs) => objs,
-        Err(_) => return,
+        Err(e) => {
+            // Log error — don't silently skip (causes files to be "not found" during delete)
+            eprintln!("[MTP] WARNING: scan failed for folder '{}': {} — retrying once",
+                if prefix.is_empty() { "Music/" } else { prefix }, e);
+            // Retry once after short delay (MTP device may be busy)
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            match storage.list_objects(Some(folder_handle)).await {
+                Ok(objs) => objs,
+                Err(e2) => {
+                    eprintln!("[MTP] WARNING: scan retry FAILED for '{}': {} — files in this folder will not be deletable",
+                        prefix, e2);
+                    return;
+                }
+            }
+        }
     };
 
     for obj in &objects {
