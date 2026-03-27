@@ -369,7 +369,14 @@ pub fn compute_sync_plan(
     // no longer exist on the DAP. This handles the case where ghost directories were
     // cleaned up (files moved to .Trashes) but the manifest still references them.
     // Without this, the plan says "on DAP" for files that are physically absent.
-    let manifest_lookup: HashMap<String, &SyncedFile> = {
+    //
+    // SKIP for MTP destinations — there's no local filesystem to validate against.
+    // The manifest is the authoritative record of what's on the MTP device.
+    let is_mtp = dest_path.starts_with("mtp://");
+    let manifest_lookup: HashMap<String, &SyncedFile> = if is_mtp {
+        // MTP: trust the manifest as-is (no disk validation possible)
+        manifest_lookup
+    } else {
         let before = manifest_lookup.len();
         let validated: HashMap<String, &SyncedFile> = manifest_lookup.into_iter()
             .filter(|(dest_rel, _)| dap_existing_files.contains(dest_rel))

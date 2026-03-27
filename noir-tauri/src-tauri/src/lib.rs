@@ -4901,8 +4901,15 @@ async fn dap_execute_mtp_sync(
         }
     }
 
-    // Add newly copied files (from sync plan, not retry/dedup — use the intended file list)
-    // We use a set to avoid duplicates
+    // Add newly copied files — exclude files that failed (in error list).
+    // Build a set of dest_relative_paths that had errors to exclude from manifest.
+    let error_dest_paths: std::collections::HashSet<String> = all_errors.iter()
+        .filter_map(|e| {
+            // Error format: "dest_rel — error message"
+            e.split(" — ").next().map(|s| s.to_string())
+        })
+        .collect();
+
     let existing_dest_paths: std::collections::HashSet<String> =
         manifest_files.iter().map(|f| f.dest_relative_path.clone()).collect();
 
@@ -4913,7 +4920,7 @@ async fn dap_execute_mtp_sync(
         .collect();
 
     for (original_src, dest_rel) in &original_files_for_manifest {
-        if !existing_dest_paths.contains(dest_rel) {
+        if !existing_dest_paths.contains(dest_rel) && !error_dest_paths.contains(dest_rel) {
             let fallback = original_src.as_str();
             let resolved_src = resolved_map.get(original_src.as_str()).unwrap_or(&fallback);
             manifest_files.push(dap_sync::manifest::SyncedFile {

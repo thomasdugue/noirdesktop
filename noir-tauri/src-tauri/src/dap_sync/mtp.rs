@@ -409,6 +409,36 @@ pub async fn mtp_sync_batch(
                     } else if skipped == 4 {
                         eprintln!("[MTP] ... (suppressing further 'already on device' messages)");
                     }
+                } else if err_str.contains("Transaction ID mismatch") || err_str.contains("timed out") {
+                    // Transaction ID mismatch = MTP session corrupted after a timeout.
+                    // The protocol is desynchronized — all subsequent uploads on this session
+                    // will fail. Skip remaining files in this album folder and continue.
+                    // The next sync will retry with a fresh MTP session.
+                    errors.push(format!("{} — MTP session error: {}", dest_rel, e));
+                    eprintln!("[MTP] SESSION ERROR: {} — {} — skipping remaining files in this folder", dest_rel, e);
+
+                    // Skip files in the same folder
+                    let current_folder = folder_path.clone();
+                    let remaining: Vec<_> = files_to_copy.iter().skip(i + 1)
+                        .take_while(|(_, dr)| {
+                            let parts: Vec<&str> = dr.split('/').collect();
+                            if parts.len() >= 2 {
+                                parts[..parts.len() - 1].join("/") == current_folder
+                            } else {
+                                false
+                            }
+                        })
+                        .map(|(_, dr)| dr.clone())
+                        .collect();
+                    for skipped_rel in &remaining {
+                        errors.push(format!("{} — Skipped (MTP session corrupted by previous timeout)", skipped_rel));
+                    }
+                    if !remaining.is_empty() {
+                        eprintln!("[MTP] Skipped {} more files in folder '{}'", remaining.len(), current_folder);
+                    }
+
+                    // Wait for device to recover before next album
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 } else {
                     // Real error — retry once with fresh file read
                     eprintln!("[MTP] Upload error for {}: {} — retrying...", filename, e);
