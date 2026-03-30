@@ -2690,6 +2690,9 @@ async function openMtpSyncPanel(device, storageIndex) {
   // Mark MTP path as "mounted" so openSyncPanel doesn't show disconnected screen
   mountedVolumes.add(mtpPath)
 
+  // Stop MTP polling BEFORE opening panel — prevents USB conflicts with scan_mtp_device_files
+  stopMtpPolling()
+
   // Open the standard sync panel
   openSyncPanel(dest)
 

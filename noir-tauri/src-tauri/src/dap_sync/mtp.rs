@@ -3,6 +3,12 @@
 // No ghost directories, no data corruption.
 
 use serde::Serialize;
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex as TokioMutex;
+
+/// Global MTP lock — only one MTP operation at a time (USB exclusive access).
+/// Prevents detect/scan/sync from running concurrently and corrupting the USB session.
+static MTP_LOCK: Lazy<TokioMutex<()>> = Lazy::new(|| TokioMutex::new(()));
 
 /// Info about a detected MTP device (DAP connected via USB)
 #[derive(Serialize, Clone, Debug)]
@@ -49,9 +55,10 @@ fn kill_mtp_claimers() {
 /// Detect connected MTP devices (DAPs via USB).
 /// Opens a connection, reads info, then DROPS the connection immediately.
 pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
+    let _lock = MTP_LOCK.lock().await;
+
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-    // Kill again in case launchd respawned ptpcamerad during the wait
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -72,7 +79,6 @@ pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
         }
     };
 
-    // Clone all data we need BEFORE dropping device
     let manufacturer = device.device_info().manufacturer.clone();
     let model = device.device_info().model.clone();
     let serial = device.device_info().serial_number.clone();
@@ -93,9 +99,11 @@ pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
         });
     }
 
-    // Explicitly drop storages and device to release the USB connection
     drop(storages);
     drop(device);
+
+    // Small delay after releasing USB to let OS settle
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     Ok(vec![MtpDeviceInfo {
         manufacturer,
@@ -108,6 +116,7 @@ pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
 /// All-in-one test: connect, list storages, list root files, try to upload a test file.
 /// Single connection — avoids exclusive access issues from multiple open_first() calls.
 pub async fn mtp_test_all(source_path: &str) -> Result<String, String> {
+    let _lock = MTP_LOCK.lock().await;
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
@@ -198,6 +207,7 @@ pub async fn mtp_test_all(source_path: &str) -> Result<String, String> {
 
 /// Send a single file to the MTP device.
 pub async fn mtp_send_file(source_path: &str, dest_folder: &str, dest_filename: &str, storage_index: usize) -> Result<u64, String> {
+    let _lock = MTP_LOCK.lock().await;
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -246,6 +256,7 @@ async fn find_or_create_folder(storage: &mtp_rs::mtp::Storage, folder_name: &str
 
 /// List files on the MTP device storage root.
 pub async fn mtp_list_files(storage_index: usize) -> Result<Vec<MtpFileEntry>, String> {
+    let _lock = MTP_LOCK.lock().await;
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -272,6 +283,8 @@ pub async fn mtp_list_files(storage_index: usize) -> Result<Vec<MtpFileEntry>, S
 /// Returns a HashSet of relative paths (e.g. "Artist - Album/01 - Track.flac").
 /// Used by dap_compute_sync_plan to determine which files are already on the device.
 pub async fn scan_mtp_device_files(storage_index: usize) -> Result<std::collections::HashSet<String>, String> {
+    let _lock = MTP_LOCK.lock().await;
+
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -319,6 +332,8 @@ pub async fn mtp_sync_batch(
     progress_callback: impl Fn(usize, usize, &str), // (current, total, current_file)
     cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(usize, u64, Vec<String>), String> {
+    let _lock = MTP_LOCK.lock().await;
+
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
