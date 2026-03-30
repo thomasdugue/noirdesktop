@@ -264,6 +264,47 @@ pub async fn mtp_list_files(storage_index: usize) -> Result<Vec<MtpFileEntry>, S
     }).collect())
 }
 
+/// Scan all files on an MTP device's Music/ folder.
+/// Returns a HashSet of relative paths (e.g. "Artist - Album/01 - Track.flac").
+/// Used by dap_compute_sync_plan to determine which files are already on the device.
+pub async fn scan_mtp_device_files(storage_index: usize) -> Result<std::collections::HashSet<String>, String> {
+    kill_mtp_claimers();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let device = mtp_rs::MtpDevice::open_first().await
+        .map_err(|e| format!("MTP device not found: {}", e))?;
+
+    let storages = device.storages().await
+        .map_err(|e| format!("Failed to list storages: {}", e))?;
+
+    let storage = storages.get(storage_index)
+        .ok_or_else(|| format!("Storage index {} not found (have {})", storage_index, storages.len()))?;
+
+    let root_objects = storage.list_objects(None).await
+        .map_err(|e| format!("Failed to list root objects: {}", e))?;
+
+    let music_handle = match root_objects.iter()
+        .find(|o| o.is_folder() && o.filename == "Music")
+        .map(|o| o.handle)
+    {
+        Some(h) => h,
+        None => {
+            eprintln!("[MTP] No Music folder on device — treating as empty");
+            return Ok(std::collections::HashSet::new());
+        }
+    };
+
+    let mut files = std::collections::HashSet::new();
+    scan_mtp_folder_recursive(storage, music_handle, "", &mut files).await;
+
+    // Explicitly drop to release USB connection
+    drop(storages);
+    drop(device);
+
+    eprintln!("[MTP] Device scan for plan: {} files found on device", files.len());
+    Ok(files)
+}
+
 /// Sync a batch of files via MTP — single connection for all files.
 /// Each file has a source_path (local or SMB-resolved) and a dest_relative_path (e.g. "Artist - Album/01 - Track.flac").
 /// Files are uploaded into the "Music" folder on the target storage.
@@ -322,6 +363,11 @@ pub async fn mtp_sync_batch(
     let mut total_bytes = 0u64;
     let mut errors = Vec::new();
 
+    // Per-file timeout tracking: files that timed out are skipped on retry,
+    // but siblings in the same folder are still attempted after a recovery delay.
+    let mut timed_out_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut last_timeout: Option<std::time::Instant> = None;
+
     // Cache of created folder handles (folder_name → handle)
     let mut folder_cache: std::collections::HashMap<String, mtp_rs::ptp::ObjectHandle> = std::collections::HashMap::new();
 
@@ -344,6 +390,24 @@ pub async fn mtp_sync_batch(
         }
 
         progress_callback(already_on_device + i + 1, total, dest_rel);
+
+        // Skip files that previously timed out (per-file, not per-folder)
+        if timed_out_files.contains(dest_rel.as_str()) {
+            errors.push(format!("{} — Skipped (previously timed out)", dest_rel));
+            continue;
+        }
+
+        // After a timeout, wait for MTP session to recover before trying the next file
+        if let Some(timeout_at) = last_timeout {
+            let elapsed = timeout_at.elapsed();
+            let recovery_delay = std::time::Duration::from_secs(5);
+            if elapsed < recovery_delay {
+                let remaining = recovery_delay - elapsed;
+                eprintln!("[MTP] Waiting {:.1}s for MTP session recovery before next file...",
+                    remaining.as_secs_f32());
+                tokio::time::sleep(remaining).await;
+            }
+        }
 
         // Parse dest_rel: "Artist - Album/01 - Track.flac" → folder="Artist - Album", file="01 - Track.flac"
         // Or "Artist - Album/Disc 1/01 - Track.flac" → we need nested folders
@@ -407,6 +471,13 @@ pub async fn mtp_sync_batch(
                     } else if skipped == 4 {
                         eprintln!("[MTP] ... (suppressing further 'already on device' messages)");
                     }
+                } else if err_str.contains("Transaction ID mismatch") || err_str.contains("timed out") || err_str.contains("Timeout") {
+                    // Timeout or Transaction ID mismatch — MTP session may be temporarily corrupted.
+                    // Poison only THIS file (not the whole folder) so siblings are still attempted.
+                    errors.push(format!("{} — MTP upload timed out", dest_rel));
+                    eprintln!("[MTP] TIMEOUT: {} — marking file as timed out (siblings will still be attempted after 5s delay)", dest_rel);
+                    timed_out_files.insert(dest_rel.to_string());
+                    last_timeout = Some(std::time::Instant::now());
                 } else {
                     // Real error — retry once with fresh file read
                     eprintln!("[MTP] Upload error for {}: {} — retrying...", filename, e);
@@ -423,8 +494,17 @@ pub async fn mtp_sync_batch(
                                 total_bytes += file_size;
                             }
                             Err(e2) => {
-                                errors.push(format!("{} — MTP upload failed: {}", dest_rel, e2));
-                                eprintln!("[MTP] Upload FAILED: {} — {}", dest_rel, e2);
+                                let e2_str = format!("{}", e2);
+                                if e2_str.contains("Transaction ID mismatch") || e2_str.contains("timed out") || e2_str.contains("Timeout") {
+                                    // Retry also timed out — poison this file
+                                    errors.push(format!("{} — MTP upload timed out (retry)", dest_rel));
+                                    eprintln!("[MTP] TIMEOUT on retry: {} — marking file as timed out", dest_rel);
+                                    timed_out_files.insert(dest_rel.to_string());
+                                    last_timeout = Some(std::time::Instant::now());
+                                } else {
+                                    errors.push(format!("{} — MTP upload failed: {}", dest_rel, e2));
+                                    eprintln!("[MTP] Upload FAILED: {} — {}", dest_rel, e2);
+                                }
                             }
                         }
                     } else {

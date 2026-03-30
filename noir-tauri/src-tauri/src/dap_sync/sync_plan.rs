@@ -292,9 +292,11 @@ pub fn compute_sync_plan(
     cover_cache: &HashMap<String, String>,
     covers_dir: &Path,
     dest_path: &str,
+    external_device_files: Option<std::collections::HashSet<String>>,
 ) -> SyncPlan {
     let total_start = std::time::Instant::now();
     let dest_root = Path::new(dest_path);
+    let is_mtp = dest_path.starts_with("mtp://");
 
     // Build a lookup from dest_relative_path -> SyncedFile for the existing manifest.
     // We compare by destination path (derived from metadata: artist/album/track) instead of
@@ -309,13 +311,31 @@ pub fn compute_sync_plan(
     eprintln!("[PERF-RS] manifest_lookup build: {:?} ({} entries)", t0.elapsed(), manifest_lookup.len());
 
     // Scan the DAP filesystem once upfront: collect all existing files AND album folders.
-    // This is more robust than per-file exists() checks because it lets us detect albums
-    // even when individual filenames don't match exactly (e.g. metadata changed since last sync).
+    // For MTP destinations, use pre-scanned external_device_files (filesystem APIs don't work on mtp:// paths).
+    // For mass storage, walk the local filesystem directly.
     let t_scan = std::time::Instant::now();
     let mut dap_existing_files: std::collections::HashSet<String> = std::collections::HashSet::new();
     // folders_with_files: set of folder paths that contain at least one audio file
     let mut dap_folders_with_files: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if dest_root.exists() {
+    if let Some(ext_files) = external_device_files {
+        // MTP: use pre-scanned device files
+        for file_path in &ext_files {
+            dap_existing_files.insert(file_path.clone());
+            // Extract parent folder for folder-match detection
+            if let Some(slash_pos) = file_path.rfind('/') {
+                let folder = &file_path[..slash_pos];
+                let lower = file_path.to_lowercase();
+                if lower.ends_with(".flac") || lower.ends_with(".mp3")
+                    || lower.ends_with(".wav") || lower.ends_with(".m4a")
+                    || lower.ends_with(".aac") || lower.ends_with(".ogg")
+                    || lower.ends_with(".opus") || lower.ends_with(".alac")
+                    || lower.ends_with(".aiff") || lower.ends_with(".wma")
+                {
+                    dap_folders_with_files.insert(folder.to_string());
+                }
+            }
+        }
+    } else if dest_root.exists() {
         fn walk_dap(dir: &Path, prefix: &str, files: &mut std::collections::HashSet<String>, folders_with_files: &mut std::collections::HashSet<String>) {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 let mut has_audio_files = false;
@@ -474,8 +494,13 @@ pub fn compute_sync_plan(
             // these files show "on DAP" but are actually missing → user must
             // manually delete manifest to recover. With this check, they're
             // automatically re-queued for copy on the next sync.
-            let physical_path = dest_root.join(&dest_rel);
-            if physical_path.exists() {
+            // For MTP: use dap_existing_files (pre-scanned) since filesystem APIs don't work on mtp:// paths.
+            let file_exists = if is_mtp {
+                dap_existing_files.contains(&dest_rel)
+            } else {
+                dest_root.join(&dest_rel).exists()
+            };
+            if file_exists {
                 files_unchanged += 1;
                 unchanged_album_id_set.insert(track.album_id);
             } else {

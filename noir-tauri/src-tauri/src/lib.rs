@@ -2591,8 +2591,18 @@ fn get_cover_bytes_internal(path: &str) -> Option<Vec<u8>> {
     }
 
     // SMB paths : impossible de lire avec Probe::open() (ne supporte que le FS local)
-    // On ne peut compter que sur COVER_CACHE (peuplé par get_cover_smb)
+    // Try to extract cover via SMB (populates COVER_CACHE as side-effect)
     if path.starts_with("smb://") {
+        if let Some(_uri) = get_cover_smb(path) {
+            // get_cover_smb updated COVER_CACHE — retry the cache lookup
+            if let Ok(cache) = COVER_CACHE.lock() {
+                if let Some(cached_file) = cache.entries.get(path) {
+                    if let Ok(data) = std::fs::read(cached_file) {
+                        return Some(data);
+                    }
+                }
+            }
+        }
         return None;
     }
 
@@ -4583,7 +4593,7 @@ fn dap_read_manifest(dest_path: String) -> Result<Option<dap_sync::manifest::Syn
 }
 
 #[tauri::command]
-fn dap_compute_sync_plan(
+async fn dap_compute_sync_plan(
     tracks: Vec<dap_sync::sync_plan::TrackForSync>,
     dest_path: String,
     folder_structure: String,
@@ -4620,12 +4630,34 @@ fn dap_compute_sync_plan(
     eprintln!("[PERF-RS] read_manifest: {:?} ({} files)", t0.elapsed(),
         manifest.as_ref().map(|m| m.files.len()).unwrap_or(0));
 
+    // For MTP, scan device files to determine what's already on the DAP.
+    // This is critical: without it, compute_sync_plan can't check physical file existence
+    // (filesystem APIs don't work on mtp:// paths), and all files show "to add".
+    let mtp_device_files: Option<std::collections::HashSet<String>> = if is_mtp {
+        let parts: Vec<&str> = dest_path.trim_start_matches("mtp://").split('/').collect();
+        let storage_idx: usize = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let t_mtp = std::time::Instant::now();
+        match dap_sync::mtp::scan_mtp_device_files(storage_idx).await {
+            Ok(files) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[PERF-RS] MTP device scan: {:?} ({} files)", t_mtp.elapsed(), files.len());
+                Some(files)
+            }
+            Err(e) => {
+                eprintln!("[MTP] Warning: device scan failed ({}), trusting manifest as-is", e);
+                // Fallback: construct file set from manifest so validation doesn't strip entries
+                manifest.as_ref().map(|m| {
+                    m.files.iter().map(|f| f.dest_relative_path.clone()).collect()
+                })
+            }
+        }
+    } else {
+        None
+    };
+
     let t1 = std::time::Instant::now();
     // For MTP, get volume info from the cached MTP detection (not filesystem df)
     let vol_info = if is_mtp {
-        // Parse storage index from mtp://serial/index
-        let parts: Vec<&str> = dest_path.trim_start_matches("mtp://").split('/').collect();
-        let _storage_idx: usize = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
         // Use a large default — actual free space was shown in sidebar from detect_mtp_devices
         dap_sync::volumes::VolumeInfo {
             name: "MTP Device".into(),
@@ -4656,6 +4688,7 @@ fn dap_compute_sync_plan(
         &cover_entries,
         &covers_dir,
         &dest_path,
+        mtp_device_files,
     );
     #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] dap_compute_sync_plan TOTAL: {:?}", cmd_start.elapsed());
@@ -4742,6 +4775,7 @@ fn dap_execute_sync(
             &cover_entries,
             &covers_dir,
             &dest_path,
+            None, // Mass storage — filesystem scan is done internally
         );
 
         if !plan.enough_space {

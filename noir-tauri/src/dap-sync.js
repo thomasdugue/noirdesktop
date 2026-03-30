@@ -359,6 +359,10 @@ function renderSidebarDestinations() {
 }
 
 function checkMounted(path) {
+  if (path.startsWith('mtp://')) {
+    const serial = path.replace('mtp://', '').split('/')[0]
+    return mtpDevices.some(d => d.serial === serial)
+  }
   return mountedVolumes.has(path)
 }
 
@@ -543,7 +547,7 @@ async function openSyncPanel(dest) {
     return
   }
 
-  const isMounted = mountedVolumes.has(dest.path)
+  const isMounted = checkMounted(dest.path)
   if (!isMounted) {
     dapSubView = 'disconnected'
   } else {
@@ -1773,10 +1777,14 @@ function renderDisconnectedView(grid) {
     if (statusEl) { statusEl.textContent = ''; statusEl.className = 'dap-disc-status' }
 
     await refreshMountedVolumes()
+    // For MTP destinations, also re-detect MTP devices
     const d = getCurrentDest()
+    if (d?.path?.startsWith('mtp://')) {
+      await detectMtpDevices()
+    }
 
     // Also try matching by volume name (macOS may remount at different path e.g. /Volumes/NAME 1)
-    let matched = d && mountedVolumes.has(d.path)
+    let matched = d && checkMounted(d.path)
     if (!matched && d && d.volumeName) {
       const byName = _externalVolumes.find(v => v.name === d.volumeName)
       if (byName) {
