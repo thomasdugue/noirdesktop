@@ -2510,7 +2510,7 @@ fn get_cover(path: &str) -> Option<String> {
             let elapsed = start.elapsed().as_millis();
             if elapsed > 50 {
                 #[cfg(debug_assertions)]
-                println!("[RUST-PERF] get_cover (CACHE HIT): {}ms for {}",
+                println!("[PERF] get_cover (CACHE HIT): {}ms for {}",
                          elapsed, path.split('/').last().unwrap_or(path));
             }
             return Some(format!("noir://localhost/covers/{}", filename));
@@ -2553,7 +2553,7 @@ fn get_cover(path: &str) -> Option<String> {
                 let size_kb = picture.data().len() / 1024;
                 if elapsed > 100 {
                     #[cfg(debug_assertions)]
-                    println!("[RUST-PERF] get_cover (EXTRACTED): {}ms (probe: {}ms, {} KB cover) for {}",
+                    println!("[PERF] get_cover (EXTRACTED): {}ms (probe: {}ms, {} KB cover) for {}",
                              elapsed, probe_time, size_kb, path.split('/').last().unwrap_or(path));
                 }
 
@@ -2567,7 +2567,7 @@ fn get_cover(path: &str) -> Option<String> {
     let elapsed = start.elapsed().as_millis();
     if elapsed > 50 {
         #[cfg(debug_assertions)]
-        println!("[RUST-PERF] get_cover (NO COVER): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
+        println!("[PERF] get_cover (NO COVER): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
     }
     None
 }
@@ -2673,7 +2673,7 @@ fn get_cover_thumbnail(path: &str) -> Option<String> {
         let elapsed = start.elapsed().as_millis();
         if elapsed > 50 {
             #[cfg(debug_assertions)]
-            println!("[RUST-PERF] get_cover_thumbnail (JPG cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
+            println!("[PERF] get_cover_thumbnail (JPG cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
         }
         return Some(format!("noir://localhost/thumbnails/{}_thumb.jpg", hash));
     }
@@ -2682,7 +2682,7 @@ fn get_cover_thumbnail(path: &str) -> Option<String> {
         let elapsed = start.elapsed().as_millis();
         if elapsed > 50 {
             #[cfg(debug_assertions)]
-            println!("[RUST-PERF] get_cover_thumbnail (WebP cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
+            println!("[PERF] get_cover_thumbnail (WebP cache): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
         }
         return Some(format!("noir://localhost/thumbnails/{}_thumb.webp", hash));
     }
@@ -2692,7 +2692,7 @@ fn get_cover_thumbnail(path: &str) -> Option<String> {
     let elapsed = start.elapsed().as_millis();
     if elapsed > 10 {
         #[cfg(debug_assertions)]
-        println!("[RUST-PERF] get_cover_thumbnail (MISS): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
+        println!("[PERF] get_cover_thumbnail (MISS): {}ms for {}", elapsed, path.split('/').last().unwrap_or(path));
     }
     None
 }
@@ -2702,8 +2702,7 @@ fn get_cover_thumbnail(path: &str) -> Option<String> {
 fn generate_thumbnails_batch(paths: Vec<String>) -> u32 {
     let batch_start = std::time::Instant::now();
     let count = paths.len();
-    #[cfg(debug_assertions)]
-    println!("[RUST-PERF] generate_thumbnails_batch: starting batch of {} images", count);
+    // Batch thumbnail generation — only log if something was actually generated
 
     let thumb_dir = get_thumbnail_cache_dir();
     fs::create_dir_all(&thumb_dir).ok();
@@ -2731,7 +2730,7 @@ fn generate_thumbnails_batch(paths: Vec<String>) -> u32 {
                 let img_elapsed = img_start.elapsed().as_millis();
                 if img_elapsed > 200 {
                     #[cfg(debug_assertions)]
-                    println!("[RUST-PERF]   [{}/{}] Generated in {}ms ({} KB source): {}",
+                    println!("[PERF]   [{}/{}] Generated in {}ms ({} KB source): {}",
                              i+1, count, img_elapsed, bytes_len/1024, path.split('/').last().unwrap_or(path));
                 }
             } else {
@@ -2744,9 +2743,10 @@ fn generate_thumbnails_batch(paths: Vec<String>) -> u32 {
 
     let batch_elapsed = batch_start.elapsed().as_millis();
     let avg = if generated > 0 { batch_elapsed / generated as u128 } else { 0 };
-    #[cfg(debug_assertions)]
-    println!("[RUST-PERF] generate_thumbnails_batch: DONE in {}ms - {} generated, {} skipped, {} failed ({}ms/image avg)",
-             batch_elapsed, generated, skipped, failed, avg);
+    if generated > 0 {
+        eprintln!("[Thumbnails] Batch: {} generated, {} skipped, {} failed in {}ms",
+                 generated, skipped, failed, batch_elapsed);
+    }
 
     generated
 }

@@ -55,14 +55,19 @@ pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    #[cfg(debug_assertions)]
     eprintln!("[MTP] Scanning for MTP devices...");
 
-    let device = match mtp_rs::MtpDevice::open_first().await {
-        Ok(d) => d,
-        Err(e) => {
-            #[cfg(debug_assertions)]
+    let device = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        mtp_rs::MtpDevice::open_first()
+    ).await {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => {
             eprintln!("[MTP] No MTP device found: {}", e);
+            return Ok(vec![]);
+        }
+        Err(_) => {
+            eprintln!("[MTP] Device detection timed out after 10s");
             return Ok(vec![]);
         }
     };
@@ -72,7 +77,6 @@ pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
     let model = device.device_info().model.clone();
     let serial = device.device_info().serial_number.clone();
 
-    #[cfg(debug_assertions)]
     eprintln!("[MTP] Device found: {} {} (serial: {})", manufacturer, model, serial);
 
     let storages = device.storages().await

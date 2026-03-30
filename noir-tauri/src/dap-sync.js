@@ -2481,7 +2481,9 @@ async function detectMtpDevices() {
   _mtpDetecting = true
   try {
     const previousSerials = new Set(mtpDevices.map(d => d.serial))
+    console.log('[MTP] Calling dap_detect_mtp_devices...')
     mtpDevices = await invoke('dap_detect_mtp_devices')
+    console.log('[MTP] Detection result:', mtpDevices.length, 'devices', mtpDevices.map(d => d.serial))
     const currentSerials = new Set(mtpDevices.map(d => d.serial))
 
     // Only re-render sidebar if devices changed (avoids log spam from identical polls)
