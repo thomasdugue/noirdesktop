@@ -1345,12 +1345,17 @@ async function computeAndRenderSummary() {
   const dest = getCurrentDest()
   if (!dest) return
 
-  if (!mountedVolumes.has(dest.path)) {
+  if (!checkMounted(dest.path)) {
     details.innerHTML = '<div class="dap-summary-error">Volume not mounted</div>'
     return
   }
 
   details.innerHTML = '<div class="dap-summary-loading">Computing\u2026</div>'
+
+  // Pause MTP polling during plan computation — the plan scans the MTP device,
+  // and concurrent USB access causes "device not found" errors.
+  const isMtpDest = dest.path.startsWith('mtp://')
+  if (isMtpDest) stopMtpPolling()
 
   try {
     const tracksForSync = buildTracksForSync()
@@ -1392,6 +1397,9 @@ async function computeAndRenderSummary() {
     updateStatusTagsInPlace()   // Update status badges without full re-render
   } catch (e) {
     details.innerHTML = `<div class="dap-summary-error">${escapeHtml(String(e))}</div>`
+  } finally {
+    // Resume MTP polling after plan computation
+    if (isMtpDest) startMtpPolling()
   }
 }
 
@@ -2250,6 +2258,9 @@ async function startSync() {
   isSyncing = true
   syncProgress = { phase: 'prepare', current: 0, total: 0, currentFile: '', bytesCopied: 0, totalBytes: 0 }
 
+  // Stop MTP polling during sync — concurrent USB access causes device disconnects
+  if (dest.path.startsWith('mtp://')) stopMtpPolling()
+
   const tracksForSync = buildTracksForSync()
   const folderStructure = dest.folderStructure || 'artist_album_track'
   const mirrorMode = dest.mirrorMode !== false
@@ -2352,6 +2363,9 @@ function setupEventListeners() {
     isSyncing = false
     syncResult = c
     renderSidebarDestinations()
+
+    // Resume MTP polling (was stopped during sync to prevent USB conflicts)
+    startMtpPolling()
 
     // After sync with errors, back off MTP polling for 30s (Transaction ID mismatch recovery)
     if (c.errors?.length > 0) {
