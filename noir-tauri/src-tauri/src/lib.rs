@@ -4583,7 +4583,7 @@ fn dap_read_manifest(dest_path: String) -> Result<Option<dap_sync::manifest::Syn
 }
 
 #[tauri::command]
-fn dap_compute_sync_plan(
+async fn dap_compute_sync_plan(
     tracks: Vec<dap_sync::sync_plan::TrackForSync>,
     dest_path: String,
     folder_structure: String,
@@ -4614,6 +4614,28 @@ fn dap_compute_sync_plan(
     #[cfg(debug_assertions)]
     eprintln!("[PERF-RS] read_manifest: {:?} ({} files)", t0.elapsed(),
         manifest.as_ref().map(|m| m.files.len()).unwrap_or(0));
+
+    // For MTP, scan actual device files to validate manifest against reality.
+    // Without this, a formatted SD card would still show "ON DAP" for all albums
+    // because the local manifest has no way to know the device was wiped.
+    let mtp_device_files = if is_mtp {
+        let parts: Vec<&str> = dest_path.trim_start_matches("mtp://").split('/').collect();
+        let storage_idx: usize = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
+        let t_mtp = std::time::Instant::now();
+        match dap_sync::mtp::scan_mtp_device_files(storage_idx).await {
+            Ok(files) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[PERF-RS] MTP device scan: {:?} ({} files)", t_mtp.elapsed(), files.len());
+                Some(files)
+            }
+            Err(e) => {
+                eprintln!("[MTP] Warning: device scan failed ({}), falling back to manifest only", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let t1 = std::time::Instant::now();
     // For MTP, get volume info from the cached MTP detection (not filesystem df)
@@ -4646,6 +4668,7 @@ fn dap_compute_sync_plan(
         &manifest,
         &folder_structure,
         mirror_mode,
+        mtp_device_files,
         vol_info.free_bytes,
         vol_info.total_bytes,
         &cover_entries,
@@ -4732,6 +4755,7 @@ fn dap_execute_sync(
             &manifest,
             &folder_structure,
             mirror_mode,
+            None, // No external device files for regular volume sync
             vol_info.free_bytes,
             vol_info.total_bytes,
             &cover_entries,

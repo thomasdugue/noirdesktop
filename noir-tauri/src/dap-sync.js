@@ -365,7 +365,11 @@ function checkMounted(path) {
 async function refreshMountedVolumes() {
   try {
     const volumes = await invoke('dap_list_external_volumes')
+    // Preserve MTP paths — they are virtual URIs (mtp://...) not OS-level volumes,
+    // so dap_list_external_volumes never returns them.
+    const mtpPaths = [...mountedVolumes].filter(p => p.startsWith('mtp://'))
     mountedVolumes.clear()
+    for (const p of mtpPaths) mountedVolumes.add(p)
     _externalVolumes = volumes
     for (const v of volumes) {
       mountedVolumes.add(v.path)
@@ -2197,6 +2201,8 @@ function setupEventListeners() {
       return
     }
     refreshMountedVolumes()
+    // USB plug/unplug may also affect MTP devices
+    detectMtpDevices()
   })
 
   let _progressRafPending = false
@@ -2235,11 +2241,15 @@ function setupEventListeners() {
       // Perfect sync — no errors at all
       dapSubView = 'complete'
       await refreshMountedVolumes()
+      // Recompute sync plan so badges reflect the new state (manifest updated by Rust)
+      await computeAndRenderSummary()
     } else if (c.filesCopied > 0) {
       // Partial success — some files copied, some errors
       // Show complete screen (files were synced) but with error report
       dapSubView = 'complete'
       await refreshMountedVolumes()
+      // Recompute sync plan so badges reflect the new state
+      await computeAndRenderSummary()
     } else {
       // Total failure — no files copied
       dapSubView = 'error'
@@ -2296,11 +2306,17 @@ export async function initDapSync() {
   initSidebarToggle()
   // Detect MTP devices (DAPs connected via USB)
   detectMtpDevices()
+  // Poll for MTP device connect/disconnect every 10 seconds
+  // (MTP devices don't mount OS volumes, so volume_change won't fire for them)
+  if (_mtpPollInterval) clearInterval(_mtpPollInterval)
+  _mtpPollInterval = setInterval(() => detectMtpDevices(), 10000)
 }
 
 // === MTP DEVICE DETECTION ===
 let mtpDevices = []
 let mtpExpanded = new Set() // serials of expanded MTP devices in sidebar
+let _mtpPollInterval = null
+let _mtpDetecting = false
 
 /** Get a human-readable name for an MTP destination.
  *  mtp://serial/0 → "FiiO JM21 / Internal Storage"
@@ -2322,16 +2338,42 @@ function getMtpDisplayName(dest) {
 }
 
 async function detectMtpDevices() {
-  if (isSyncing) {
-    console.log('[MTP] Skipping detection — sync in progress (exclusive USB access)')
+  if (isSyncing || _mtpDetecting) {
     return
   }
+  _mtpDetecting = true
   try {
+    const previousSerials = new Set(mtpDevices.map(d => d.serial))
     mtpDevices = await invoke('dap_detect_mtp_devices')
+    const currentSerials = new Set(mtpDevices.map(d => d.serial))
+
+    // Remove MTP paths from mountedVolumes for disconnected devices
+    for (const serial of previousSerials) {
+      if (!currentSerials.has(serial)) {
+        for (const p of [...mountedVolumes]) {
+          if (p.startsWith(`mtp://${serial}/`)) {
+            mountedVolumes.delete(p)
+            console.log(`[MTP] Device disconnected — removed ${p} from mountedVolumes`)
+          }
+        }
+      }
+    }
+
     renderMtpSidebar()
+
+    // If current destination is an MTP device that disappeared, show disconnected
+    const dest = getCurrentDest()
+    if (dest?.path?.startsWith('mtp://') && !mountedVolumes.has(dest.path)) {
+      if (ui.currentView === 'dap-sync' && dapSubView !== 'syncing') {
+        renderSidebarDestinations()
+        app.displayCurrentView()
+      }
+    }
   } catch (e) {
     console.warn('[MTP] Detection failed:', e)
     mtpDevices = []
+  } finally {
+    _mtpDetecting = false
   }
 }
 

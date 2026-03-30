@@ -719,6 +719,42 @@ async fn scan_mtp_folder_recursive(
     }
 }
 
+/// Scan the Music/ folder on an MTP device and return all file paths (relative to Music/).
+/// Used by sync plan computation to verify manifest against actual device contents.
+pub async fn scan_mtp_device_files(storage_index: usize) -> Result<std::collections::HashSet<String>, String> {
+    // Brief delay to ensure USB is ready
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let device = mtp_rs::MtpDevice::open_first().await
+        .map_err(|e| format!("MTP device not found: {}", e))?;
+
+    let storages = device.storages().await
+        .map_err(|e| format!("Failed to list storages: {}", e))?;
+
+    let storage = storages.get(storage_index)
+        .ok_or_else(|| format!("Storage index {} not found (have {})", storage_index, storages.len()))?;
+
+    let root_objects = storage.list_objects(None).await
+        .map_err(|e| format!("Failed to list root objects: {}", e))?;
+
+    let music_handle = match root_objects.iter()
+        .find(|o| o.is_folder() && o.filename == "Music")
+        .map(|o| o.handle)
+    {
+        Some(h) => h,
+        None => {
+            // No Music folder → device is empty (e.g. after format)
+            eprintln!("[MTP] No Music folder on device — treating as empty");
+            return Ok(std::collections::HashSet::new());
+        }
+    };
+
+    let mut files = std::collections::HashSet::new();
+    scan_mtp_folder_recursive(storage, music_handle, "", &mut files).await;
+    eprintln!("[MTP] Device scan for plan: {} files found on device", files.len());
+    Ok(files)
+}
+
 fn format_bytes(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
         format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
