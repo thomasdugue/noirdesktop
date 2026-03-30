@@ -4599,10 +4599,6 @@ async fn dap_compute_sync_plan(
     folder_structure: String,
     mirror_mode: bool,
 ) -> Result<dap_sync::sync_plan::SyncPlan, String> {
-    let cmd_start = std::time::Instant::now();
-    #[cfg(debug_assertions)]
-    eprintln!("[PERF-RS] dap_compute_sync_plan called with {} tracks, dest={}", tracks.len(), dest_path);
-
     let is_mtp = dest_path.starts_with("mtp://");
 
     // Skip filesystem migration for MTP — no local filesystem to migrate
@@ -4613,7 +4609,6 @@ async fn dap_compute_sync_plan(
         }
     }
 
-    let t0 = std::time::Instant::now();
     // For MTP, manifest is stored locally (not on device)
     let manifest = if is_mtp {
         // MTP manifest stored in app data dir, keyed by device serial
@@ -4626,9 +4621,6 @@ async fn dap_compute_sync_plan(
     } else {
         dap_sync::manifest::read_manifest(&dest_path)?
     };
-    #[cfg(debug_assertions)]
-    eprintln!("[PERF-RS] read_manifest: {:?} ({} files)", t0.elapsed(),
-        manifest.as_ref().map(|m| m.files.len()).unwrap_or(0));
 
     // For MTP, scan device files to determine what's already on the DAP.
     // This is critical: without it, compute_sync_plan can't check physical file existence
@@ -4636,13 +4628,8 @@ async fn dap_compute_sync_plan(
     let mtp_device_files: Option<std::collections::HashSet<String>> = if is_mtp {
         let parts: Vec<&str> = dest_path.trim_start_matches("mtp://").split('/').collect();
         let storage_idx: usize = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let t_mtp = std::time::Instant::now();
         match dap_sync::mtp::scan_mtp_device_files(storage_idx).await {
-            Ok(files) => {
-                #[cfg(debug_assertions)]
-                eprintln!("[PERF-RS] MTP device scan: {:?} ({} files)", t_mtp.elapsed(), files.len());
-                Some(files)
-            }
+            Ok(files) => Some(files),
             Err(e) => {
                 eprintln!("[MTP] Warning: device scan failed ({}), trusting manifest as-is", e);
                 // Fallback: construct file set from manifest so validation doesn't strip entries
@@ -4655,7 +4642,6 @@ async fn dap_compute_sync_plan(
         None
     };
 
-    let t1 = std::time::Instant::now();
     // For MTP, get volume info from the cached MTP detection (not filesystem df)
     let vol_info = if is_mtp {
         // Use a large default — actual free space was shown in sidebar from detect_mtp_devices
@@ -4669,8 +4655,6 @@ async fn dap_compute_sync_plan(
     } else {
         dap_sync::volumes::get_volume_info(&dest_path)?
     };
-    #[cfg(debug_assertions)]
-    eprintln!("[PERF-RS] get_volume_info: {:?}", t1.elapsed());
 
     // Clone cover cache entries (brief lock) for cover art resolution
     let cover_entries = COVER_CACHE.lock()
@@ -4690,8 +4674,6 @@ async fn dap_compute_sync_plan(
         &dest_path,
         mtp_device_files,
     );
-    #[cfg(debug_assertions)]
-    eprintln!("[PERF-RS] dap_compute_sync_plan TOTAL: {:?}", cmd_start.elapsed());
     Ok(result)
 }
 

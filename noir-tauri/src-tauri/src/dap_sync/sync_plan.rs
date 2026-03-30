@@ -294,26 +294,18 @@ pub fn compute_sync_plan(
     dest_path: &str,
     external_device_files: Option<std::collections::HashSet<String>>,
 ) -> SyncPlan {
-    let total_start = std::time::Instant::now();
     let dest_root = Path::new(dest_path);
     let is_mtp = dest_path.starts_with("mtp://");
 
     // Build a lookup from dest_relative_path -> SyncedFile for the existing manifest.
-    // We compare by destination path (derived from metadata: artist/album/track) instead of
-    // source_path, because source paths are fragile (SMB UUIDs, mount paths change between
-    // sessions). The dest_relative_path is deterministic from metadata and stable across sessions.
-    let t0 = std::time::Instant::now();
     let manifest_lookup: HashMap<String, &SyncedFile> = manifest
         .as_ref()
         .map(|m| m.files.iter().map(|f| (f.dest_relative_path.clone(), f)).collect())
         .unwrap_or_default();
-    #[cfg(debug_assertions)]
-    eprintln!("[PERF-RS] manifest_lookup build: {:?} ({} entries)", t0.elapsed(), manifest_lookup.len());
 
     // Scan the DAP filesystem once upfront: collect all existing files AND album folders.
     // For MTP destinations, use pre-scanned external_device_files (filesystem APIs don't work on mtp:// paths).
     // For mass storage, walk the local filesystem directly.
-    let t_scan = std::time::Instant::now();
     let mut dap_existing_files: std::collections::HashSet<String> = std::collections::HashSet::new();
     // folders_with_files: set of folder paths that contain at least one audio file
     let mut dap_folders_with_files: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -368,23 +360,6 @@ pub fn compute_sync_plan(
         }
         walk_dap(dest_root, "", &mut dap_existing_files, &mut dap_folders_with_files);
     }
-    // Build a lowercased version for case-insensitive fallback matching
-    let dap_folders_lower: std::collections::HashSet<String> = dap_folders_with_files
-        .iter()
-        .map(|f| f.to_lowercase())
-        .collect();
-    #[cfg(debug_assertions)]
-    {
-        eprintln!("[PERF-RS] DAP filesystem scan: {:?} ({} files, {} folders with files)",
-            t_scan.elapsed(), dap_existing_files.len(), dap_folders_with_files.len());
-        if !dap_folders_with_files.is_empty() {
-            let mut sample: Vec<&String> = dap_folders_with_files.iter().collect();
-            sample.sort();
-            sample.truncate(15);
-            eprintln!("[DEBUG-RS] Sample DAP folders with files: {:?}", sample);
-        }
-    }
-
     // Validate manifest against physical filesystem: remove entries for files that
     // no longer exist on the DAP. This handles the case where ghost directories were
     // cleaned up (files moved to .Trashes) but the manifest still references them.
@@ -411,11 +386,8 @@ pub fn compute_sync_plan(
     let mut selected_dest_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Log first few mismatches for debugging
-    let mut mismatch_log_count: usize = 0;
     // Count manifest entries whose physical files are missing (ghost recovery, exFAT corruption)
     let mut manifest_stale_count: usize = 0;
-
-    let t2 = std::time::Instant::now();
 
     // ── Pre-compute canonical album_artist per album folder ──────────────
     // Compilations and multi-artist albums (OSTs, etc.) have different artist
@@ -506,11 +478,6 @@ pub fn compute_sync_plan(
             } else {
                 // Manifest says it's synced, but file is physically absent.
                 // Re-queue for copy. This handles ghost recovery seamlessly.
-                #[cfg(debug_assertions)]
-                if mismatch_log_count < 5 {
-                    eprintln!("[DEBUG-RS] Manifest entry MISSING on disk: {:?}", dest_rel);
-                    mismatch_log_count += 1;
-                }
                 manifest_stale_count += 1;
                 total_copy_bytes += track.size_bytes;
                 files_to_copy.push(SyncAction {
@@ -534,37 +501,22 @@ pub fn compute_sync_plan(
             // Previous folder match caused false "on DAP" status after partial syncs
             // (e.g., 1 file of 20 copied → entire album marked as "unchanged").
             // The manifest is the only reliable source for unchanged-file detection.
-            {
-                // Log first few mismatches for debugging
-                #[cfg(debug_assertions)]
-                if mismatch_log_count < 5 {
-                    eprintln!("[DEBUG-RS] Track NOT on DAP: dest_rel={:?}, artist={:?}, album={:?}",
-                        dest_rel, track.artist, track.album);
-                    mismatch_log_count += 1;
-                }
-                // New file — use size_bytes from frontend (estimated from metadata).
-                // We skip fs::metadata() on SOURCE files because it's extremely slow on SMB mounts
-                // (~12ms per file × 800 files = 10 seconds). The real file size will be
-                // determined during the actual sync copy operation.
-                total_copy_bytes += track.size_bytes;
-                files_to_copy.push(SyncAction {
-                    source_path: track.path.clone(),
-                    dest_relative_path: dest_rel,
-                    size_bytes: track.size_bytes,
-                    action: "copy".into(),
-                    album_name: track.album.clone().unwrap_or_else(|| "Unknown Album".into()),
-                    artist_name: track.artist.clone().unwrap_or_else(|| "Unknown Artist".into()),
-                    album_id: track.album_id,
-                });
-            }
+            // New file — use size_bytes from frontend (estimated from metadata).
+            total_copy_bytes += track.size_bytes;
+            files_to_copy.push(SyncAction {
+                source_path: track.path.clone(),
+                dest_relative_path: dest_rel,
+                size_bytes: track.size_bytes,
+                action: "copy".into(),
+                album_name: track.album.clone().unwrap_or_else(|| "Unknown Album".into()),
+                artist_name: track.artist.clone().unwrap_or_else(|| "Unknown Artist".into()),
+                album_id: track.album_id,
+            });
         }
     }
     if manifest_stale_count > 0 {
         eprintln!("[DAP-SYNC] Manifest validation: {} files in manifest but missing on disk → re-queued for copy", manifest_stale_count);
     }
-    eprintln!("[PERF-RS] track loop: {:?} ({} tracks, {} unchanged ({} via disk), {} to copy, {} manifest-stale)",
-        t2.elapsed(), tracks.len(), files_unchanged, files_found_on_disk, files_to_copy.len(), manifest_stale_count);
-
     // Mirror mode: find files in manifest that are no longer selected → delete
     let mut files_to_delete = Vec::new();
     let mut total_delete_bytes: u64 = 0;
@@ -659,23 +611,12 @@ pub fn compute_sync_plan(
                 covers_resolved += 1;
             } else {
                 covers_not_found += 1;
-                #[cfg(debug_assertions)]
-                if covers_not_found <= 3 {
-                    eprintln!("[DEBUG-RS] Cover not found for: folder={:?}, track={:?}, artist={:?}, album={:?}",
-                        folder, track_path, artist, album);
-                }
             }
         }
-        eprintln!("[PERF-RS] Cover resolution: {} albums, {} to copy, {} not found",
-            album_folders.len(), covers_resolved, covers_not_found);
     }
 
     let net_bytes = (total_copy_bytes + total_cover_bytes) as i64 - total_delete_bytes as i64;
     let enough_space = net_bytes <= 0 || (net_bytes as u64) <= dest_free_bytes;
-
-    #[cfg(debug_assertions)]
-    eprintln!("[PERF-RS] compute_sync_plan TOTAL: {:?} | {} to copy, {} covers, {} to delete, {} unchanged",
-        total_start.elapsed(), files_to_copy.len(), covers_to_copy.len(), files_to_delete.len(), files_unchanged);
 
     SyncPlan {
         files_to_copy,
