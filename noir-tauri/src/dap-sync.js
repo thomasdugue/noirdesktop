@@ -2317,6 +2317,7 @@ let mtpDevices = []
 let mtpExpanded = new Set() // serials of expanded MTP devices in sidebar
 let _mtpPollInterval = null
 let _mtpDetecting = false
+let _mtpBackoffUntil = 0 // timestamp — skip detection until this time (after errors)
 
 /** Get a human-readable name for an MTP destination.
  *  mtp://serial/0 → "FiiO JM21 / Internal Storage"
@@ -2341,11 +2342,18 @@ async function detectMtpDevices() {
   if (isSyncing || _mtpDetecting) {
     return
   }
+  // Back-off after errors (Transaction ID mismatch etc.) — don't spam the device
+  if (Date.now() < _mtpBackoffUntil) {
+    return
+  }
   _mtpDetecting = true
   try {
     const previousSerials = new Set(mtpDevices.map(d => d.serial))
     mtpDevices = await invoke('dap_detect_mtp_devices')
     const currentSerials = new Set(mtpDevices.map(d => d.serial))
+
+    // Clear back-off on success
+    _mtpBackoffUntil = 0
 
     // Remove MTP paths from mountedVolumes for disconnected devices
     for (const serial of previousSerials) {
@@ -2371,6 +2379,8 @@ async function detectMtpDevices() {
     }
   } catch (e) {
     console.warn('[MTP] Detection failed:', e)
+    // Back off for 30s after a failure (device may need time to recover from corrupted session)
+    _mtpBackoffUntil = Date.now() + 30000
     mtpDevices = []
   } finally {
     _mtpDetecting = false

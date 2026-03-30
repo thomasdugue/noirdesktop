@@ -561,6 +561,9 @@ pub async fn mtp_delete_files(
     // Track parent folders of deleted files for empty-folder cleanup
     let mut affected_folders: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    // Track folders that need handle refresh after InvalidObjectHandle errors
+    let mut stale_folders: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for (i, dest_rel) in files_to_delete.iter().enumerate() {
         if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
             errors.push("Delete cancelled by user".into());
@@ -568,6 +571,27 @@ pub async fn mtp_delete_files(
         }
 
         progress_callback(i + 1, total, dest_rel);
+
+        // If this file's parent folder had stale handles, re-scan it
+        let parent_folder = dest_rel.rfind('/').map(|pos| &dest_rel[..pos]);
+        if let Some(folder) = parent_folder {
+            if stale_folders.contains(folder) {
+                // Re-scan this folder to get fresh handles
+                stale_folders.remove(folder);
+                // Find the folder handle — walk from Music/ down
+                if let Some(folder_handle) = find_folder_handle(storage, music_handle, folder).await {
+                    // Re-scan just this folder's contents
+                    if let Ok(objects) = storage.list_objects(Some(folder_handle)).await {
+                        for obj in &objects {
+                            if !obj.is_folder() {
+                                let full_path = format!("{}/{}", folder, obj.filename);
+                                path_to_handle.insert(full_path, obj.handle);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(&handle) = path_to_handle.get(dest_rel.as_str()) {
             match storage.delete(handle).await {
@@ -579,9 +603,51 @@ pub async fn mtp_delete_files(
                     }
                 }
                 Err(e) => {
-                    let msg = format!("{} — delete failed: {}", dest_rel, e);
-                    eprintln!("[MTP] {}", msg);
-                    errors.push(msg);
+                    let err_str = format!("{}", e);
+                    if err_str.contains("InvalidObjectHandle") {
+                        // Handle went stale after other deletes — mark folder for re-scan
+                        // and retry this file with a fresh handle
+                        if let Some(folder) = parent_folder {
+                            if let Some(folder_handle) = find_folder_handle(storage, music_handle, folder).await {
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                if let Ok(objects) = storage.list_objects(Some(folder_handle)).await {
+                                    let filename = dest_rel.rsplit('/').next().unwrap_or(dest_rel);
+                                    if let Some(fresh_obj) = objects.iter().find(|o| !o.is_folder() && o.filename == filename) {
+                                        // Retry delete with fresh handle
+                                        match storage.delete(fresh_obj.handle).await {
+                                            Ok(()) => {
+                                                deleted += 1;
+                                                affected_folders.insert(folder.to_string());
+                                                // Update remaining handles from this folder
+                                                for obj in &objects {
+                                                    if !obj.is_folder() {
+                                                        let full_path = format!("{}/{}", folder, obj.filename);
+                                                        path_to_handle.insert(full_path, obj.handle);
+                                                    }
+                                                }
+                                                continue;
+                                            }
+                                            Err(e2) => {
+                                                let msg = format!("{} — delete retry failed: {}", dest_rel, e2);
+                                                eprintln!("[MTP] {}", msg);
+                                                errors.push(msg);
+                                            }
+                                        }
+                                    } else {
+                                        // File not found after re-scan — likely already deleted by device
+                                        eprintln!("[MTP] {} — gone after re-scan (already deleted)", dest_rel);
+                                        deleted += 1;
+                                        affected_folders.insert(folder.to_string());
+                                    }
+                                }
+                            }
+                            stale_folders.insert(folder.to_string());
+                        }
+                    } else {
+                        let msg = format!("{} — delete failed: {}", dest_rel, e);
+                        eprintln!("[MTP] {}", msg);
+                        errors.push(msg);
+                    }
                 }
             }
         } else {
@@ -608,6 +674,25 @@ pub async fn mtp_delete_files(
     eprintln!("[MTP] Device connection released");
 
     Ok((deleted, errors))
+}
+
+/// Walk from a parent folder down a path like "Artist - Album/Disc 1" to find the leaf folder handle.
+async fn find_folder_handle(
+    storage: &mtp_rs::mtp::Storage,
+    parent_handle: mtp_rs::ptp::ObjectHandle,
+    folder_path: &str,
+) -> Option<mtp_rs::ptp::ObjectHandle> {
+    let parts: Vec<&str> = folder_path.split('/').collect();
+    let mut current = parent_handle;
+
+    for part in &parts {
+        let objects = storage.list_objects(Some(current)).await.ok()?;
+        current = objects.iter()
+            .find(|o| o.is_folder() && o.filename == *part)?
+            .handle;
+    }
+
+    Some(current)
 }
 
 /// Recursively scan MTP folder and build path → ObjectHandle map.
@@ -722,8 +807,8 @@ async fn scan_mtp_folder_recursive(
 /// Scan the Music/ folder on an MTP device and return all file paths (relative to Music/).
 /// Used by sync plan computation to verify manifest against actual device contents.
 pub async fn scan_mtp_device_files(storage_index: usize) -> Result<std::collections::HashSet<String>, String> {
-    // Brief delay to ensure USB is ready
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    kill_mtp_claimers();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let device = mtp_rs::MtpDevice::open_first().await
         .map_err(|e| format!("MTP device not found: {}", e))?;
