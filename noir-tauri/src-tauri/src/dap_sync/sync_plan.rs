@@ -369,7 +369,14 @@ pub fn compute_sync_plan(
     // no longer exist on the DAP. This handles the case where ghost directories were
     // cleaned up (files moved to .Trashes) but the manifest still references them.
     // Without this, the plan says "on DAP" for files that are physically absent.
-    let manifest_lookup: HashMap<String, &SyncedFile> = {
+    //
+    // SKIP for MTP destinations — there's no local filesystem to validate against.
+    // The manifest is the authoritative record of what's on the MTP device.
+    let is_mtp = dest_path.starts_with("mtp://");
+    let manifest_lookup: HashMap<String, &SyncedFile> = if is_mtp {
+        // MTP: trust the manifest as-is (no disk validation possible)
+        manifest_lookup
+    } else {
         let before = manifest_lookup.len();
         let validated: HashMap<String, &SyncedFile> = manifest_lookup.into_iter()
             .filter(|(dest_rel, _)| dap_existing_files.contains(dest_rel))
@@ -468,14 +475,14 @@ pub fn compute_sync_plan(
         selected_dest_paths.insert(dest_rel.clone());
 
         if manifest_lookup.contains_key(&dest_rel) {
-            // File in manifest — but verify it PHYSICALLY exists on the DAP.
+            // File in manifest — verify it PHYSICALLY exists on the DAP.
             // After ghost directory cleanup or exFAT corruption, the manifest can
             // reference files that no longer exist on disk. Without this check,
-            // these files show "on DAP" but are actually missing → user must
-            // manually delete manifest to recover. With this check, they're
-            // automatically re-queued for copy on the next sync.
-            let physical_path = dest_root.join(&dest_rel);
-            if physical_path.exists() {
+            // these files show "on DAP" but are actually missing.
+            //
+            // For MTP: skip disk check — there's no local filesystem.
+            // The manifest is authoritative for MTP devices.
+            if is_mtp || Path::new(&dest_root).join(&dest_rel).exists() {
                 files_unchanged += 1;
                 unchanged_album_id_set.insert(track.album_id);
             } else {

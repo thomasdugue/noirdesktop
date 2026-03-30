@@ -323,6 +323,8 @@ pub async fn mtp_sync_batch(
     let mut skipped = already_on_device;
     let mut total_bytes = 0u64;
     let mut errors = Vec::new();
+    // Folders to skip after a session error (timeout/Transaction ID mismatch)
+    let mut poisoned_folders: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Cache of created folder handles (folder_name → handle)
     let mut folder_cache: std::collections::HashMap<String, mtp_rs::ptp::ObjectHandle> = std::collections::HashMap::new();
@@ -345,8 +347,6 @@ pub async fn mtp_sync_batch(
             return Ok((copied + skipped, total_bytes, vec!["Sync cancelled by user".into()]));
         }
 
-        progress_callback(already_on_device + i + 1, total, dest_rel);
-
         // Parse dest_rel: "Artist - Album/01 - Track.flac" → folder="Artist - Album", file="01 - Track.flac"
         // Or "Artist - Album/Disc 1/01 - Track.flac" → we need nested folders
         let parts: Vec<&str> = dest_rel.split('/').collect();
@@ -357,6 +357,14 @@ pub async fn mtp_sync_batch(
         } else {
             ("".to_string(), dest_rel.clone())
         };
+
+        // Skip files in folders where a previous upload caused a session error
+        if poisoned_folders.contains(&folder_path) {
+            errors.push(format!("{} — Skipped (MTP session error on previous file in this folder)", dest_rel));
+            continue;
+        }
+
+        progress_callback(already_on_device + i + 1, total, dest_rel);
 
         // Find or create the target folder hierarchy inside Music/
         let target_handle = if folder_path.is_empty() {
@@ -409,6 +417,17 @@ pub async fn mtp_sync_batch(
                     } else if skipped == 4 {
                         eprintln!("[MTP] ... (suppressing further 'already on device' messages)");
                     }
+                } else if err_str.contains("Transaction ID mismatch") || err_str.contains("timed out") {
+                    // Timeout or Transaction ID mismatch = MTP session may be corrupted.
+                    // Poison this folder so remaining files in it are skipped.
+                    // Files in OTHER folders will still be attempted (the session
+                    // often recovers after a short pause between albums).
+                    errors.push(format!("{} — MTP upload timed out", dest_rel));
+                    eprintln!("[MTP] TIMEOUT: {} — poisoning folder '{}' (remaining files will be skipped)", dest_rel, folder_path);
+                    poisoned_folders.insert(folder_path.clone());
+
+                    // Brief pause to let the MTP device recover before next album
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 } else {
                     // Real error — retry once with fresh file read
                     eprintln!("[MTP] Upload error for {}: {} — retrying...", filename, e);
@@ -496,6 +515,175 @@ async fn get_or_create_nested_folder(
     }
 
     Ok(current_handle)
+}
+
+/// Delete files from MTP device by dest_relative_path, then remove empty folders.
+/// Returns (files_deleted, errors).
+pub async fn mtp_delete_files(
+    files_to_delete: &[String],  // dest_relative_paths e.g. "Artist - Album/01 - Track.flac"
+    storage_index: usize,
+    progress_callback: impl Fn(usize, usize, &str),
+    cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(usize, Vec<String>), String> {
+    kill_mtp_claimers();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let device = mtp_rs::MtpDevice::open_first().await
+        .map_err(|e| format!("MTP device not found: {}", e))?;
+
+    let storages = device.storages().await
+        .map_err(|e| format!("Failed to list storages: {}", e))?;
+
+    let storage = storages.get(storage_index)
+        .ok_or_else(|| format!("Storage index {} not found", storage_index))?;
+
+    // Find Music/ folder
+    let root_objects = storage.list_objects(None).await
+        .map_err(|e| format!("Failed to list root: {}", e))?;
+
+    let music_handle = match root_objects.iter().find(|o| o.is_folder() && o.filename == "Music") {
+        Some(o) => o.handle,
+        None => {
+            eprintln!("[MTP] No Music/ folder — nothing to delete");
+            drop(storages);
+            drop(device);
+            return Ok((0, vec![]));
+        }
+    };
+
+    // Build a map of dest_relative_path → ObjectHandle by scanning Music/ recursively
+    let mut path_to_handle: std::collections::HashMap<String, mtp_rs::ptp::ObjectHandle> = std::collections::HashMap::new();
+    scan_mtp_handles_recursive(storage, music_handle, "", &mut path_to_handle).await;
+
+    let total = files_to_delete.len();
+    let mut deleted = 0usize;
+    let mut errors = Vec::new();
+    // Track parent folders of deleted files for empty-folder cleanup
+    let mut affected_folders: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (i, dest_rel) in files_to_delete.iter().enumerate() {
+        if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            errors.push("Delete cancelled by user".into());
+            break;
+        }
+
+        progress_callback(i + 1, total, dest_rel);
+
+        if let Some(&handle) = path_to_handle.get(dest_rel.as_str()) {
+            match storage.delete(handle).await {
+                Ok(()) => {
+                    deleted += 1;
+                    // Track parent folder
+                    if let Some(pos) = dest_rel.rfind('/') {
+                        affected_folders.insert(dest_rel[..pos].to_string());
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{} — delete failed: {}", dest_rel, e);
+                    eprintln!("[MTP] {}", msg);
+                    errors.push(msg);
+                }
+            }
+        } else {
+            // File not found on device — already deleted or never uploaded
+            eprintln!("[MTP] Delete skip (not found): {}", dest_rel);
+        }
+    }
+
+    eprintln!("[MTP] Deleted {}/{} files, {} errors", deleted, total, errors.len());
+
+    // --- Cleanup empty folders ---
+    // Re-scan to find empty folders and delete them bottom-up.
+    // Wait for MTP device to update its directory index after deletions.
+    if !affected_folders.is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let empty_deleted = cleanup_empty_mtp_folders(storage, music_handle).await;
+        if empty_deleted > 0 {
+            eprintln!("[MTP] Cleaned up {} empty folders", empty_deleted);
+        }
+    }
+
+    drop(storages);
+    drop(device);
+    eprintln!("[MTP] Device connection released");
+
+    Ok((deleted, errors))
+}
+
+/// Recursively scan MTP folder and build path → ObjectHandle map.
+/// Also stores folder handles (prefixed with "/" sentinel) for folder cleanup.
+async fn scan_mtp_handles_recursive(
+    storage: &mtp_rs::mtp::Storage,
+    folder_handle: mtp_rs::ptp::ObjectHandle,
+    prefix: &str,
+    map: &mut std::collections::HashMap<String, mtp_rs::ptp::ObjectHandle>,
+) {
+    let objects = match storage.list_objects(Some(folder_handle)).await {
+        Ok(objs) => objs,
+        Err(e) => {
+            // Log error — don't silently skip (causes files to be "not found" during delete)
+            eprintln!("[MTP] WARNING: scan failed for folder '{}': {} — retrying once",
+                if prefix.is_empty() { "Music/" } else { prefix }, e);
+            // Retry once after short delay (MTP device may be busy)
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            match storage.list_objects(Some(folder_handle)).await {
+                Ok(objs) => objs,
+                Err(e2) => {
+                    eprintln!("[MTP] WARNING: scan retry FAILED for '{}': {} — files in this folder will not be deletable",
+                        prefix, e2);
+                    return;
+                }
+            }
+        }
+    };
+
+    for obj in &objects {
+        let path = if prefix.is_empty() {
+            obj.filename.clone()
+        } else {
+            format!("{}/{}", prefix, obj.filename)
+        };
+
+        if obj.is_folder() {
+            Box::pin(scan_mtp_handles_recursive(storage, obj.handle, &path, map)).await;
+        } else {
+            map.insert(path, obj.handle);
+        }
+    }
+}
+
+/// Delete empty folders inside Music/ recursively (bottom-up).
+/// Returns count of deleted folders.
+async fn cleanup_empty_mtp_folders(
+    storage: &mtp_rs::mtp::Storage,
+    music_handle: mtp_rs::ptp::ObjectHandle,
+) -> usize {
+    let mut deleted = 0;
+
+    // List all children of Music/
+    let children = match storage.list_objects(Some(music_handle)).await {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+
+    for child in &children {
+        if child.is_folder() {
+            // Recursively clean subfolder first
+            deleted += Box::pin(cleanup_empty_mtp_folders(storage, child.handle)).await;
+
+            // Re-list to check if now empty (after recursive cleanup)
+            if let Ok(contents) = storage.list_objects(Some(child.handle)).await {
+                if contents.is_empty() {
+                    if let Ok(()) = storage.delete(child.handle).await {
+                        eprintln!("[MTP] Removed empty folder: {}", child.filename);
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    deleted
 }
 
 /// Recursively scan an MTP folder and collect all file paths relative to the scan root.

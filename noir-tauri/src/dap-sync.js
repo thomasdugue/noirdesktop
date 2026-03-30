@@ -1341,6 +1341,13 @@ async function computeAndRenderSummary() {
   const dest = getCurrentDest()
   if (!dest) return
 
+  // Skip plan recomputation for MTP destinations during sync — would compete
+  // for exclusive USB access and cause the device to disconnect (error 0xe00002c5).
+  if (isSyncing && dest.path && dest.path.startsWith('mtp://')) {
+    console.log('[DAP] Skipping plan recompute — MTP sync in progress')
+    return
+  }
+
   if (!mountedVolumes.has(dest.path)) {
     details.innerHTML = '<div class="dap-summary-error">Volume not mounted</div>'
     return
@@ -2119,7 +2126,10 @@ async function startSync() {
     if (dest.path.startsWith('mtp://')) {
       // MTP sync: build file list from sync plan and use MTP-specific command
       const plan = syncPlan
-      if (!plan || !plan.filesToCopy || plan.filesToCopy.length === 0) {
+      const hasFilesToCopy = plan && plan.filesToCopy && plan.filesToCopy.length > 0
+      const hasFilesToDelete = plan && plan.filesToDelete && plan.filesToDelete.length > 0
+
+      if (!hasFilesToCopy && !hasFilesToDelete) {
         showToast('Nothing to sync')
         isSyncing = false
         dapSubView = 'albums'
@@ -2131,11 +2141,16 @@ async function startSync() {
       const storageIndex = parseInt(parts[1]) || 1
 
       // Build file pairs: (resolved_source_path, dest_relative_path)
-      const files = plan.filesToCopy.map(f => [f.sourcePath, f.destRelativePath])
+      const files = hasFilesToCopy ? plan.filesToCopy.map(f => [f.sourcePath, f.destRelativePath]) : []
+      // Build delete list: dest_relative_paths to remove from device
+      const filesToDelete = hasFilesToDelete ? plan.filesToDelete.map(f => f.destRelativePath) : []
 
       await invoke('dap_execute_mtp_sync', {
         files,
+        filesToDelete,
         storageIndex,
+        destPath: dest.path,
+        folderStructure,
       })
     } else {
       // Mass storage sync (filesystem-based)
@@ -2174,7 +2189,15 @@ function cancelSync() {
 // === EVENT LISTENERS ===
 
 function setupEventListeners() {
-  listen('volume_change', () => refreshMountedVolumes())
+  listen('volume_change', () => {
+    // During MTP sync, skip volume refresh — it can trigger detectMtpDevices()
+    // which competes for exclusive USB access and disconnects the DAP.
+    if (isSyncing) {
+      console.log('[DAP] Skipping volume_change — sync in progress')
+      return
+    }
+    refreshMountedVolumes()
+  })
 
   let _progressRafPending = false
   listen('dap_sync_progress', (event) => {
@@ -2299,6 +2322,10 @@ function getMtpDisplayName(dest) {
 }
 
 async function detectMtpDevices() {
+  if (isSyncing) {
+    console.log('[MTP] Skipping detection — sync in progress (exclusive USB access)')
+    return
+  }
   try {
     mtpDevices = await invoke('dap_detect_mtp_devices')
     renderMtpSidebar()
