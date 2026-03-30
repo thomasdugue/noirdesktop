@@ -55,11 +55,13 @@ pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
     kill_mtp_claimers();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
+    #[cfg(debug_assertions)]
     eprintln!("[MTP] Scanning for MTP devices...");
 
     let device = match mtp_rs::MtpDevice::open_first().await {
         Ok(d) => d,
         Err(e) => {
+            #[cfg(debug_assertions)]
             eprintln!("[MTP] No MTP device found: {}", e);
             return Ok(vec![]);
         }
@@ -70,6 +72,7 @@ pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
     let model = device.device_info().model.clone();
     let serial = device.device_info().serial_number.clone();
 
+    #[cfg(debug_assertions)]
     eprintln!("[MTP] Device found: {} {} (serial: {})", manufacturer, model, serial);
 
     let storages = device.storages().await
@@ -78,10 +81,6 @@ pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
     let mut storage_infos = Vec::new();
     for storage in &storages {
         let si = storage.info();
-        eprintln!("[MTP]   Storage: {} ({} free / {} total)",
-            si.description,
-            format_bytes(si.free_space_bytes),
-            format_bytes(si.max_capacity));
         storage_infos.push(MtpStorageInfo {
             id: format!("{:?}", storage.id()),
             description: si.description.clone(),
@@ -93,7 +92,6 @@ pub async fn detect_mtp_devices() -> Result<Vec<MtpDeviceInfo>, String> {
     // Explicitly drop storages and device to release the USB connection
     drop(storages);
     drop(device);
-    eprintln!("[MTP] Device connection released");
 
     Ok(vec![MtpDeviceInfo {
         manufacturer,
@@ -443,8 +441,8 @@ pub async fn mtp_sync_batch(
     eprintln!("[MTP] Batch sync complete: {}/{} files copied, {} already on device, ({:.1} GB), {} errors",
         copied, total, skipped, total_bytes as f64 / 1_073_741_824.0, errors.len());
 
-    // Include skipped count in copied (they're already on device = success)
-    Ok((copied + skipped, total_bytes, errors))
+    // Return only actually copied count (skipped = already on device, not a new copy)
+    Ok((copied, total_bytes, errors))
 }
 
 /// Navigate/create a nested folder path inside a parent (e.g. "Artist - Album/Disc 1").

@@ -2096,12 +2096,148 @@ async function saveDestSettings(dest) {
   }
 }
 
+// === MASS STORAGE WARNING MODAL ===
+
+const MASS_STORAGE_WARNING_KEY = 'noir_mass_storage_warning_shown'
+
+function showMassStorageWarningModal() {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div')
+    modal.id = 'mass-storage-warning-modal'
+    modal.className = 'modal'
+    modal.innerHTML = `
+      <div class="modal-backdrop"></div>
+      <div class="modal-content dap-modal-content dap-ms-warning-content">
+        <div class="dap-modal-hero">
+          <div class="dap-modal-icon-centered dap-ms-warning-icon">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="4" width="20" height="16" rx="2"/>
+              <path d="M2 10h20"/>
+              <circle cx="6" cy="15" r="1" fill="currentColor" stroke="none"/>
+            </svg>
+          </div>
+          <div class="dap-modal-title">Synchronisation par carte SD</div>
+          <div class="dap-modal-subtitle" style="max-width: 300px; margin: 4px auto 0;">La copie directe sur carte SD peut être instable sur macOS</div>
+        </div>
+
+        <div class="dap-ms-warning-body">
+          <p class="dap-ms-warning-intro">macOS gère le format exFAT avec un driver qui peut corrompre les fichiers lors de copies intensives. Noir intègre des protections, mais certains problèmes restent hors de notre contrôle.</p>
+
+          <div class="dap-ms-warning-tips">
+            <div class="dap-ms-warning-tip">
+              <div class="dap-ms-warning-tip-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="2" width="9" height="9" rx="1.5"/><rect x="13" y="2" width="9" height="9" rx="1.5"/><rect x="2" y="13" width="9" height="9" rx="1.5"/><rect x="13" y="13" width="9" height="9" rx="1.5"/>
+                </svg>
+              </div>
+              <div class="dap-ms-warning-tip-text">
+                <strong>Synchronisez par petits lots</strong>
+                <span>2 à 3 albums maximum à la fois</span>
+              </div>
+            </div>
+
+            <div class="dap-ms-warning-tip">
+              <div class="dap-ms-warning-tip-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 9v4"/><path d="M12 17h.01"/>
+                  <path d="M3.6 15.4L10.4 4.6a1.85 1.85 0 0 1 3.2 0l6.8 10.8A1.85 1.85 0 0 1 18.8 18H5.2a1.85 1.85 0 0 1-1.6-2.6z"/>
+                </svg>
+              </div>
+              <div class="dap-ms-warning-tip-text">
+                <strong>Ne retirez pas la carte pendant la copie</strong>
+                <span>Évitez aussi la mise en veille du Mac</span>
+              </div>
+            </div>
+
+            <div class="dap-ms-warning-tip">
+              <div class="dap-ms-warning-tip-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4"/>
+                  <path d="M3 9h18M3 15h18"/>
+                </svg>
+              </div>
+              <div class="dap-ms-warning-tip-text">
+                <strong>Éjectez toujours proprement</strong>
+                <span>Via macOS avant de retirer la carte</span>
+              </div>
+            </div>
+
+            <div class="dap-ms-warning-tip">
+              <div class="dap-ms-warning-tip-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2v6m0 0l3-3m-3 3L9 5"/>
+                  <rect x="5" y="10" width="14" height="12" rx="2"/>
+                  <path d="M9 15h6"/>
+                </svg>
+              </div>
+              <div class="dap-ms-warning-tip-text">
+                <strong>Préférez le MTP quand c'est possible</strong>
+                <span>Connecter en USB est plus fiable</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dap-ms-warning-footer">
+          <label class="dap-ms-warning-checkbox-label">
+            <input type="checkbox" class="dap-ms-warning-checkbox" checked>
+            <span>Ne plus afficher ce message</span>
+          </label>
+        </div>
+
+        <div class="dap-modal-actions">
+          <button class="dap-modal-btn-primary dap-ms-warning-continue" style="width: 100%;">
+            J'ai compris, continuer
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    `
+    document.body.appendChild(modal)
+
+    const abort = new AbortController()
+    const { signal } = abort
+
+    function closeModal(proceed) {
+      const dontShowAgain = modal.querySelector('.dap-ms-warning-checkbox')?.checked
+      if (dontShowAgain) {
+        localStorage.setItem(MASS_STORAGE_WARNING_KEY, '1')
+      }
+      modal.remove()
+      abort.abort()
+      resolve(proceed)
+    }
+
+    modal.querySelector('.dap-ms-warning-continue').addEventListener('click', () => {
+      closeModal(true)
+    }, { signal })
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeModal(false)
+    }, { signal })
+
+    modal.addEventListener('mousedown', (e) => {
+      if (e.target === modal || e.target.classList.contains('modal-backdrop')) closeModal(false)
+    }, { signal })
+  })
+}
+
+function hasMassStorageWarningBeenShown() {
+  return localStorage.getItem(MASS_STORAGE_WARNING_KEY) === '1'
+}
+
 // === SYNC EXECUTION ===
 
 async function startSync() {
   if (isSyncing) return
   const dest = getCurrentDest()
   if (!dest) return
+
+  // Show Mass Storage warning on first use (not for MTP destinations)
+  if (!dest.path.startsWith('mtp://') && !hasMassStorageWarningBeenShown()) {
+    const proceed = await showMassStorageWarningModal()
+    if (!proceed) return
+  }
 
   isSyncing = true
   syncProgress = { phase: 'prepare', current: 0, total: 0, currentFile: '', bytesCopied: 0, totalBytes: 0 }
@@ -2174,7 +2310,11 @@ function cancelSync() {
 // === EVENT LISTENERS ===
 
 function setupEventListeners() {
-  listen('volume_change', () => refreshMountedVolumes())
+  listen('volume_change', () => {
+    refreshMountedVolumes()
+    // USB plug/unplug may also affect MTP devices
+    detectMtpDevices()
+  })
 
   let _progressRafPending = false
   listen('dap_sync_progress', (event) => {
@@ -2205,6 +2345,11 @@ function setupEventListeners() {
     syncResult = c
     renderSidebarDestinations()
 
+    // After sync with errors, back off MTP polling for 30s (Transaction ID mismatch recovery)
+    if (c.errors?.length > 0) {
+      mtpBackoff(30000)
+    }
+
     if (c.errors?.length > 0 && c.errors[0].includes('cancelled')) {
       // Cancel already handled by cancelSync() — just update state silently
       dapSubView = 'albums'
@@ -2212,11 +2357,15 @@ function setupEventListeners() {
       // Perfect sync — no errors at all
       dapSubView = 'complete'
       await refreshMountedVolumes()
+      // Recompute sync plan so badges reflect new state ("to add" → "on DAP")
+      await computeAndRenderSummary()
     } else if (c.filesCopied > 0) {
       // Partial success — some files copied, some errors
       // Show complete screen (files were synced) but with error report
       dapSubView = 'complete'
       await refreshMountedVolumes()
+      // Recompute sync plan so badges reflect copied files
+      await computeAndRenderSummary()
     } else {
       // Total failure — no files copied
       dapSubView = 'error'
@@ -2271,13 +2420,17 @@ export async function initDapSync() {
   await refreshMountedVolumes()
   setupEventListeners()
   initSidebarToggle()
-  // Detect MTP devices (DAPs connected via USB)
+  // Detect MTP devices (DAPs connected via USB) + start hot-plug polling
   detectMtpDevices()
+  startMtpPolling()
 }
 
 // === MTP DEVICE DETECTION ===
 let mtpDevices = []
 let mtpExpanded = new Set() // serials of expanded MTP devices in sidebar
+let _mtpPollingInterval = null
+let _mtpDetecting = false // race guard — prevents concurrent detectMtpDevices calls
+let _mtpBackoffUntil = 0 // timestamp — suppress polling after sync errors (Transaction ID mismatch)
 
 /** Get a human-readable name for an MTP destination.
  *  mtp://serial/0 → "FiiO JM21 / Internal Storage"
@@ -2299,13 +2452,62 @@ function getMtpDisplayName(dest) {
 }
 
 async function detectMtpDevices() {
+  // Race guard — only one detection at a time
+  if (_mtpDetecting) return
+  // Back-off after sync errors (MTP Transaction ID mismatch needs time to recover)
+  if (Date.now() < _mtpBackoffUntil) return
+  _mtpDetecting = true
   try {
+    const previousSerials = new Set(mtpDevices.map(d => d.serial))
     mtpDevices = await invoke('dap_detect_mtp_devices')
-    renderMtpSidebar()
+    const currentSerials = new Set(mtpDevices.map(d => d.serial))
+
+    // Only re-render sidebar if devices changed (avoids log spam from identical polls)
+    const changed = previousSerials.size !== currentSerials.size
+      || [...previousSerials].some(s => !currentSerials.has(s))
+      || [...currentSerials].some(s => !previousSerials.has(s))
+    if (changed) {
+      console.log('[MTP] Devices changed:', mtpDevices.map(d => d.model).join(', ') || 'none')
+      renderMtpSidebar()
+
+      // If active MTP destination disappeared, show disconnected
+      if (currentDestinationId) {
+        const dest = getCurrentDest()
+        if (dest?.path?.startsWith('mtp://')) {
+          const serial = dest.path.replace('mtp://', '').split('/')[0]
+          if (!currentSerials.has(serial)) {
+            mountedVolumes.delete(dest.path)
+            dapSubView = 'disconnected'
+            if (ui.currentView === 'dap-sync') app.displayCurrentView()
+          }
+        }
+      }
+    }
   } catch (e) {
     console.warn('[MTP] Detection failed:', e)
     mtpDevices = []
+  } finally {
+    _mtpDetecting = false
   }
+}
+
+/** Start polling for MTP device hot-plug. Called when entering DAP view. */
+function startMtpPolling() {
+  if (_mtpPollingInterval) return
+  _mtpPollingInterval = setInterval(() => detectMtpDevices(), 10000) // 10s
+}
+
+/** Stop MTP polling. Called when leaving DAP view. */
+function stopMtpPolling() {
+  if (_mtpPollingInterval) {
+    clearInterval(_mtpPollingInterval)
+    _mtpPollingInterval = null
+  }
+}
+
+/** Apply back-off on MTP polling (e.g. after sync with errors). */
+function mtpBackoff(durationMs = 30000) {
+  _mtpBackoffUntil = Date.now() + durationMs
 }
 
 function getStorageIcon(description) {
