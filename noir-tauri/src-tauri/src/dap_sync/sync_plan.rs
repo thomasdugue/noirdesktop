@@ -287,6 +287,8 @@ pub fn compute_sync_plan(
     manifest: &Option<SyncManifest>,
     folder_structure: &str,
     mirror_mode: bool,
+    // Pre-scanned device files (for MTP). When Some, skip filesystem walk and use these instead.
+    external_device_files: Option<std::collections::HashSet<String>>,
     dest_free_bytes: u64,
     dest_total_bytes: u64,
     cover_cache: &HashMap<String, String>,
@@ -309,13 +311,31 @@ pub fn compute_sync_plan(
     eprintln!("[PERF-RS] manifest_lookup build: {:?} ({} entries)", t0.elapsed(), manifest_lookup.len());
 
     // Scan the DAP filesystem once upfront: collect all existing files AND album folders.
-    // This is more robust than per-file exists() checks because it lets us detect albums
-    // even when individual filenames don't match exactly (e.g. metadata changed since last sync).
+    // For MTP devices, use pre-scanned files from external_device_files (USB scan done before).
+    // For regular volumes, walk the filesystem directly.
     let t_scan = std::time::Instant::now();
     let mut dap_existing_files: std::collections::HashSet<String> = std::collections::HashSet::new();
     // folders_with_files: set of folder paths that contain at least one audio file
     let mut dap_folders_with_files: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if dest_root.exists() {
+    if let Some(ext_files) = external_device_files {
+        // MTP: use pre-scanned device files
+        for file_path in &ext_files {
+            dap_existing_files.insert(file_path.clone());
+            // Extract folder from path for folder-match detection
+            if let Some(slash_pos) = file_path.rfind('/') {
+                let folder = &file_path[..slash_pos];
+                let lower = file_path.to_lowercase();
+                if lower.ends_with(".flac") || lower.ends_with(".mp3")
+                    || lower.ends_with(".wav") || lower.ends_with(".m4a")
+                    || lower.ends_with(".aac") || lower.ends_with(".ogg")
+                    || lower.ends_with(".opus") || lower.ends_with(".alac")
+                    || lower.ends_with(".aiff") || lower.ends_with(".wma")
+                {
+                    dap_folders_with_files.insert(folder.to_string());
+                }
+            }
+        }
+    } else if dest_root.exists() {
         fn walk_dap(dir: &Path, prefix: &str, files: &mut std::collections::HashSet<String>, folders_with_files: &mut std::collections::HashSet<String>) {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 let mut has_audio_files = false;
@@ -365,28 +385,24 @@ pub fn compute_sync_plan(
         }
     }
 
-    // Validate manifest against physical filesystem: remove entries for files that
-    // no longer exist on the DAP. This handles the case where ghost directories were
-    // cleaned up (files moved to .Trashes) but the manifest still references them.
-    // Without this, the plan says "on DAP" for files that are physically absent.
-    //
-    // SKIP for MTP destinations — there's no local filesystem to validate against.
-    // The manifest is the authoritative record of what's on the MTP device.
-    let is_mtp = dest_path.starts_with("mtp://");
-    let manifest_lookup: HashMap<String, &SyncedFile> = if is_mtp {
-        // MTP: trust the manifest as-is (no disk validation possible)
-        manifest_lookup
-    } else {
+    // Validate manifest against physical/device filesystem: remove entries for files that
+    // no longer exist on the DAP. This handles ghost directories (exFAT), formatted SD cards
+    // (MTP), and any other case where manifest and reality diverge.
+    // For MTP, this uses the pre-scanned device files; for regular volumes, the filesystem walk.
+    let manifest_lookup: HashMap<String, &SyncedFile> = if !dap_existing_files.is_empty() || !manifest_lookup.is_empty() {
         let before = manifest_lookup.len();
         let validated: HashMap<String, &SyncedFile> = manifest_lookup.into_iter()
             .filter(|(dest_rel, _)| dap_existing_files.contains(dest_rel))
             .collect();
         let removed = before - validated.len();
         if removed > 0 {
-            eprintln!("[DAP-SYNC] Manifest validation: {} files in manifest but missing on disk → will be re-queued for copy", removed);
+            eprintln!("[DAP-SYNC] Manifest validation: {} files in manifest but missing on device → will be re-queued for copy", removed);
         }
         validated
+    } else {
+        manifest_lookup
     };
+    let is_mtp = dest_path.starts_with("mtp://");
 
     let mut files_to_copy = Vec::new();
     let mut files_unchanged: usize = 0;
@@ -561,6 +577,13 @@ pub fn compute_sync_plan(
                     || file.dest_relative_path.ends_with("/cover.jpeg")
                     || file.dest_relative_path.ends_with("/cover.png")
                 {
+                    continue;
+                }
+                // Only delete files that are confirmed to exist on the device.
+                // The manifest may reference files that were physically removed (e.g. SD card
+                // formatted). Use the validated manifest_lookup which was filtered against
+                // actual device files (MTP scan or filesystem walk).
+                if !manifest_lookup.contains_key(&file.dest_relative_path) {
                     continue;
                 }
                 if !selected_dest_paths.contains(&file.dest_relative_path) {
@@ -924,7 +947,7 @@ mod tests {
     ) -> SyncPlan {
         let empty_cache = HashMap::new();
         let dummy_dir = PathBuf::from("/nonexistent");
-        compute_sync_plan(tracks, manifest, structure, mirror, free, total, &empty_cache, &dummy_dir, dest_path)
+        compute_sync_plan(tracks, manifest, structure, mirror, None, free, total, &empty_cache, &dummy_dir, dest_path)
     }
 
     /// Helper: create a physical file at dest_path/relative_path for manifest validation tests.
@@ -1167,6 +1190,7 @@ mod tests {
             ],
         });
         create_dest_file(&dest, "Artist A - Album A/01 - Track 1.flac");
+        create_dest_file(&dest, "Artist B - Album B/01 - Old.flac"); // must exist on "device" for delete to trigger
         let plan = plan_no_covers_at(&dest, &tracks, &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
         assert_eq!(plan.files_to_copy.len(), 0);
         assert_eq!(plan.files_to_delete.len(), 1);
@@ -1330,7 +1354,7 @@ mod tests {
 
         let dest_dir = tempfile::tempdir().unwrap();
         let plan = compute_sync_plan(
-            &tracks, &None, "artist_album_track", true,
+            &tracks, &None, "artist_album_track", true, None,
             1_000_000_000, 2_000_000_000, &cache, dir.path(),
             &dest_dir.path().to_string_lossy(),
         );
@@ -1355,7 +1379,7 @@ mod tests {
         let empty_cache = HashMap::new();
         let dest_dir = tempfile::tempdir().unwrap();
         let plan = compute_sync_plan(
-            &tracks, &None, "artist_album_track", true,
+            &tracks, &None, "artist_album_track", true, None,
             1_000_000_000, 2_000_000_000, &empty_cache, dir.path(),
             &dest_dir.path().to_string_lossy(),
         );
@@ -1406,7 +1430,7 @@ mod tests {
         std::fs::write(&dap_cover, vec![0u8; 5000]).unwrap();
 
         let plan = compute_sync_plan(
-            &tracks, &manifest, "artist_album_track", true,
+            &tracks, &manifest, "artist_album_track", true, None,
             1_000_000_000, 2_000_000_000, &cache, dir.path(),
             &dest_dir.path().to_string_lossy(),
         );
@@ -1429,7 +1453,7 @@ mod tests {
 
         let dest_dir = tempfile::tempdir().unwrap();
         let plan = compute_sync_plan(
-            &tracks, &None, "flat", true,
+            &tracks, &None, "flat", true, None,
             1_000_000_000, 2_000_000_000, &cache, dir.path(),
             &dest_dir.path().to_string_lossy(),
         );
@@ -1486,6 +1510,7 @@ mod tests {
         });
 
         create_dest_file(&dest, "Artist A - Album A/01 - Track 1.flac");
+        create_dest_file(&dest, "Artist B - Album B/01 - Track 1.flac"); // must exist on "device" for delete
         let plan = plan_no_covers_at(
             &dest,
             &[track_a1, track_b3],
@@ -1505,6 +1530,8 @@ mod tests {
     fn test_sync_plan_space_calculation() {
         // 2 tracks to copy (10MB + 20MB = 30MB), 1 to delete (5MB)
         // net = 30MB - 5MB = 25MB
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
         let tracks = vec![
             make_track("/music/new1.flac", "New Album", "Artist", 10_000_000, 1),
             make_track_with_album_id("/music/new2.flac", "New Album 2", "Artist 2", 20_000_000, 1, 2),
@@ -1526,21 +1553,24 @@ mod tests {
             ],
         });
 
-        let plan = plan_no_covers(&tracks, &manifest, "artist_album_track", true, 100_000_000, 200_000_000);
+        create_dest_file(&dest, "Old/Old Album/01 - Old.flac"); // must exist on "device" for delete
+        let plan = plan_no_covers_at(&dest, &tracks, &manifest, "artist_album_track", true, 100_000_000, 200_000_000);
 
         let expected_net = (10_000_000i64 + 20_000_000) - 5_000_000;
         assert_eq!(plan.net_bytes, expected_net);
         assert!(plan.enough_space, "100MB free should be enough for 25MB net");
 
         // Now test with tight space
-        let plan_tight = plan_no_covers(&tracks, &manifest, "artist_album_track", true, 20_000_000, 200_000_000);
+        let plan_tight = plan_no_covers_at(&dest, &tracks, &manifest, "artist_album_track", true, 20_000_000, 200_000_000);
         assert!(!plan_tight.enough_space, "20MB free is not enough for 25MB net");
     }
 
     #[test]
     fn test_sync_plan_empty_selection_mirror() {
         // Manifest has 2 files, selected tracks is empty, mirror on
-        // All manifest files should be in files_to_delete
+        // All manifest files should be in files_to_delete (when files exist on device)
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().to_string_lossy().to_string();
         let manifest = Some(SyncManifest {
             hean_version: "0.1.0".into(),
             last_sync: "2026-01-01T00:00:00Z".into(),
@@ -1564,7 +1594,10 @@ mod tests {
             ],
         });
 
-        let plan = plan_no_covers(&[], &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
+        // Files must exist on "device" for delete to trigger
+        create_dest_file(&dest, "Artist A - Album A/01 - Track 1.flac");
+        create_dest_file(&dest, "Artist B - Album B/01 - Track 1.flac");
+        let plan = plan_no_covers_at(&dest, &[], &manifest, "artist_album_track", true, 1_000_000_000, 2_000_000_000);
 
         assert_eq!(plan.files_to_copy.len(), 0, "no tracks selected = nothing to copy");
         assert_eq!(plan.files_to_delete.len(), 2, "mirror mode = all manifest files deleted");
