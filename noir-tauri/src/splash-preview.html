@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noir — Splash Screen Preview</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=Geist+Mono:wght@300;400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0a0a0a;
+      color: #fff;
+      font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .splash {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: #0a0a0a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 48px;
+    }
+
+    /* === LOGO CONTAINER === */
+    .splash-logo-wrap {
+      position: relative;
+      width: 120px;
+      height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .splash-logo-wrap svg {
+      width: 120px;
+      height: auto;
+      filter: drop-shadow(0 0 20px rgba(255, 255, 255, 0.06));
+      animation: logoBreathe 4s ease-in-out infinite;
+    }
+
+    @keyframes logoBreathe {
+      0%, 100% {
+        transform: scale(1);
+        filter: drop-shadow(0 0 20px rgba(255, 255, 255, 0.06));
+      }
+      50% {
+        transform: scale(1.03);
+        filter: drop-shadow(0 0 30px rgba(255, 255, 255, 0.1));
+      }
+    }
+
+    /* === PARTICLES === */
+    .particles-canvas {
+      position: absolute;
+      inset: -80px;
+      width: calc(100% + 160px);
+      height: calc(100% + 160px);
+      pointer-events: none;
+    }
+
+    /* === STARTING UP TEXT === */
+    .splash-status {
+      font-family: 'Geist Mono', 'SF Mono', monospace;
+      font-size: 11px;
+      font-weight: 400;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.35);
+      animation: statusPulse 3s ease-in-out infinite;
+      user-select: none;
+    }
+
+    @keyframes statusPulse {
+      0%, 100% { opacity: 0.2; }
+      50% { opacity: 0.6; }
+    }
+
+    /* === SUBTLE VIGNETTE === */
+    .splash::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(
+        ellipse 60% 60% at 50% 50%,
+        transparent 0%,
+        rgba(0, 0, 0, 0.4) 100%
+      );
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+<div class="splash">
+  <div class="splash-logo-wrap">
+    <canvas class="particles-canvas" id="particles"></canvas>
+    <!-- Noir eye logo -->
+    <svg viewBox="0 0 343 232" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="31.5" cy="117.5" r="31.5" fill="white"/>
+      <path d="M69 117C62.2 94.6 42 86 33 86C33.5 103.833 32.6 141.8 33 149C57 149 67 126.5 69 117Z" fill="white"/>
+      <circle cx="311.5" cy="117.5" r="31.5" transform="rotate(-180 311.5 117.5)" fill="white"/>
+      <path d="M274 118C280.8 140.4 301 149 310 149C309.5 131.167 310.4 93.2 310 86C286 86 276 108.5 274 118Z" fill="white"/>
+      <rect x="69" y="48" width="64" height="138" rx="32" fill="white"/>
+      <rect x="137" width="69" height="232" rx="32" fill="white"/>
+      <rect x="210" y="48" width="64" height="138" rx="32" fill="white"/>
+      <circle cx="171.5" cy="117.5" r="38.5" fill="black"/>
+      <path d="M70 116.854C75.2991 106.115 111.333 91.9599 132 116.854C116.315 139.112 76.359 131.985 70 116.854Z" fill="black"/>
+      <path d="M211 116.854C216.299 106.115 252.333 91.9599 273 116.854C257.315 139.112 217.359 131.985 211 116.854Z" fill="black"/>
+    </svg>
+  </div>
+
+  <span class="splash-status">Starting up</span>
+</div>
+
+<script>
+  // === PARTICLE SYSTEM ===
+  const canvas = document.getElementById('particles')
+  const ctx = canvas.getContext('2d')
+
+  // Hi-DPI
+  const dpr = window.devicePixelRatio || 1
+  const W = canvas.offsetWidth
+  const H = canvas.offsetHeight
+  canvas.width = W * dpr
+  canvas.height = H * dpr
+  ctx.scale(dpr, dpr)
+
+  // Center of canvas = center of logo
+  const cx = W / 2
+  const cy = H / 2
+
+  // Logo shape boundary (approximate ellipse)
+  const logoRx = 65
+  const logoRy = 44
+
+  class Particle {
+    constructor() {
+      this.reset()
+    }
+
+    reset() {
+      // Spawn on/near the logo edge
+      const angle = Math.random() * Math.PI * 2
+      const edgeVariance = 0.85 + Math.random() * 0.3
+      this.x = cx + Math.cos(angle) * logoRx * edgeVariance
+      this.y = cy + Math.sin(angle) * logoRy * edgeVariance
+
+      // Drift outward slowly
+      const speed = 0.15 + Math.random() * 0.3
+      this.vx = Math.cos(angle) * speed + (Math.random() - 0.5) * 0.1
+      this.vy = Math.sin(angle) * speed + (Math.random() - 0.5) * 0.1
+      // Slight upward bias
+      this.vy -= 0.05 + Math.random() * 0.08
+
+      this.life = 0
+      this.maxLife = 120 + Math.random() * 100
+      this.size = 0.5 + Math.random() * 1.2
+      this.opacity = 0
+    }
+
+    update() {
+      this.x += this.vx
+      this.y += this.vy
+      this.life++
+
+      // Fade in then out
+      const progress = this.life / this.maxLife
+      if (progress < 0.15) {
+        this.opacity = (progress / 0.15) * 0.4
+      } else if (progress > 0.6) {
+        this.opacity = ((1 - progress) / 0.4) * 0.4
+      } else {
+        this.opacity = 0.4
+      }
+
+      if (this.life >= this.maxLife) this.reset()
+    }
+
+    draw() {
+      ctx.beginPath()
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${this.opacity})`
+      ctx.fill()
+    }
+  }
+
+  // Keep it subtle — few particles
+  const particles = Array.from({ length: 28 }, () => {
+    const p = new Particle()
+    // Stagger initial life so they don't all appear at once
+    p.life = Math.floor(Math.random() * p.maxLife)
+    return p
+  })
+
+  function animate() {
+    ctx.clearRect(0, 0, W, H)
+    for (const p of particles) {
+      p.update()
+      p.draw()
+    }
+    requestAnimationFrame(animate)
+  }
+
+  animate()
+</script>
+
+</body>
+</html>

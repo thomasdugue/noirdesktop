@@ -4626,6 +4626,11 @@ async fn dap_compute_sync_plan(
             Ok(files) => {
                 #[cfg(debug_assertions)]
                 eprintln!("[PERF-RS] MTP device scan: {:?} ({} files)", t_mtp.elapsed(), files.len());
+                // Clean the local manifest: remove entries for files no longer on the device.
+                // This handles ghost directories (folder created but files never written).
+                if let Err(e) = dap_sync::mtp::clean_mtp_manifest(&dest_path, &files) {
+                    eprintln!("[MTP] Warning: manifest cleanup failed: {}", e);
+                }
                 Some(files)
             }
             Err(e) => {
@@ -4840,6 +4845,20 @@ async fn dap_execute_mtp_sync(
     let mut all_errors: Vec<String> = Vec::new();
     let mut total_files_deleted: usize = 0;
 
+    // --- Phase 0: Purge ghost (empty) folders on the device ---
+    // Ghost folders are created when MTP uploads fail mid-way: the folder exists
+    // but contains no files. The JM21 firmware ignores them but they waste space
+    // and confuse the sync plan.
+    match dap_sync::mtp::mtp_purge_empty_folders(storage_index).await {
+        Ok(count) if count > 0 => {
+            eprintln!("[MTP-SYNC] Pre-sync ghost purge: {} empty folders deleted", count);
+        }
+        Ok(_) => {} // no ghosts found
+        Err(e) => {
+            eprintln!("[MTP-SYNC] Ghost purge failed (non-fatal): {}", e);
+        }
+    }
+
     // --- Phase 1: Delete files no longer in selection ---
     if !files_to_delete.is_empty() {
         let app_handle_del = app_handle.clone();
@@ -4878,6 +4897,7 @@ async fn dap_execute_mtp_sync(
     let app_handle_copy = app_handle.clone();
     let cancel_copy = cancel_flag.clone();
 
+    let app_handle_replug = app_handle.clone();
     let result = dap_sync::mtp::mtp_sync_batch(
         resolved_files.clone(),
         storage_index,
@@ -4893,6 +4913,7 @@ async fn dap_execute_mtp_sync(
             }));
         },
         cancel_copy,
+        Some(app_handle_replug),
     ).await;
 
     let (files_copied, total_bytes_copied) = match result {
@@ -5031,6 +5052,16 @@ async fn dap_mtp_list_files(storage_index: usize) -> Result<Vec<dap_sync::mtp::M
 #[tauri::command]
 async fn dap_mtp_test(source_path: String) -> Result<String, String> {
     dap_sync::mtp::mtp_test_all(&source_path).await
+}
+
+#[tauri::command]
+async fn dap_mtp_purge_albums(folder_names: Vec<String>, storage_index: usize) -> Result<(usize, Vec<String>), String> {
+    dap_sync::mtp::mtp_purge_album_folders(folder_names, storage_index).await
+}
+
+#[tauri::command]
+async fn dap_mtp_purge_ghosts(storage_index: usize) -> Result<usize, String> {
+    dap_sync::mtp::mtp_purge_empty_folders(storage_index).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -5258,6 +5289,8 @@ pub fn run() {
             dap_mtp_send_file,
             dap_mtp_list_files,
             dap_mtp_test,
+            dap_mtp_purge_albums,
+            dap_mtp_purge_ghosts,
             // Application
             quit_app
         ])

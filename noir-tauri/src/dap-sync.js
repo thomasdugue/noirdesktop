@@ -503,6 +503,74 @@ function showVolumePicker(volumes) {
   document.body.appendChild(overlay)
 }
 
+// === Wave break modal — blocks UI until USB replug ===
+// The DAP firmware crashes after ~470 MTP writes without a physical USB reset.
+// This modal is impossible to dismiss — the user MUST unplug and replug.
+
+let _waveBreakOverlay = null
+
+function showWaveBreakModal(waveNum, totalWaves, filesCopied, filesRemaining) {
+  dismissWaveBreakModal()
+  const overlay = document.createElement('div')
+  overlay.className = 'dap-modal-overlay dap-wave-modal-overlay'
+  overlay.innerHTML = `
+    <div class="dap-modal dap-wave-modal">
+      <div class="dap-wave-icon">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2v6m0 8v6"/>
+          <path d="M6 12H2"/>
+          <path d="M22 12h-4"/>
+          <rect x="7" y="7" width="10" height="10" rx="1"/>
+        </svg>
+      </div>
+      <h3 class="dap-wave-title">Unplug your DAP now</h3>
+      <p class="dap-wave-subtitle">Wave ${waveNum}/${totalWaves} complete — ${filesCopied} files synced</p>
+      <div class="dap-wave-steps">
+        <div class="dap-wave-step dap-wave-step-active" data-step="unplug">
+          <span class="dap-wave-step-num">1</span>
+          <span>Unplug the USB cable</span>
+        </div>
+        <div class="dap-wave-step" data-step="wait">
+          <span class="dap-wave-step-num">2</span>
+          <span>Wait 5 seconds</span>
+        </div>
+        <div class="dap-wave-step" data-step="replug">
+          <span class="dap-wave-step-num">3</span>
+          <span>Plug it back in</span>
+        </div>
+      </div>
+      <p class="dap-wave-remaining">${filesRemaining} files remaining after replug</p>
+    </div>
+  `
+  // NO click-to-dismiss — user must physically replug
+  document.body.appendChild(overlay)
+  _waveBreakOverlay = overlay
+}
+
+function updateWaveBreakModal(phase) {
+  if (!_waveBreakOverlay) return
+  const steps = _waveBreakOverlay.querySelectorAll('.dap-wave-step')
+  const title = _waveBreakOverlay.querySelector('.dap-wave-title')
+  if (phase === 'unplugged') {
+    // Step 1 done, step 2+3 active
+    steps.forEach(s => s.classList.remove('dap-wave-step-active', 'dap-wave-step-done'))
+    const step1 = _waveBreakOverlay.querySelector('[data-step="unplug"]')
+    const step2 = _waveBreakOverlay.querySelector('[data-step="wait"]')
+    const step3 = _waveBreakOverlay.querySelector('[data-step="replug"]')
+    if (step1) step1.classList.add('dap-wave-step-done')
+    if (step2) step2.classList.add('dap-wave-step-active')
+    if (step3) step3.classList.add('dap-wave-step-active')
+    if (title) title.textContent = 'Now plug it back in'
+  }
+}
+
+function dismissWaveBreakModal() {
+  if (_waveBreakOverlay) {
+    _waveBreakOverlay.remove()
+    _waveBreakOverlay = null
+  }
+}
+
 async function createDestinationFromVolume(volume) {
   const dest = {
     name: volume.name,
@@ -2228,10 +2296,66 @@ function setupEventListeners() {
     }
   })
 
+  // MTP wave complete: planned USB replug required between waves
+  // Shows a BLOCKING full-screen modal — the user MUST unplug/replug to continue.
+  // Without a physical USB reset, the DAP firmware will crash.
+  listen('mtp_wave_complete', (event) => {
+    const p = event.payload
+    const fillEl = document.querySelector('.dap-prog-fill')
+    if (fillEl) fillEl.classList.add('dap-prog-pulse')
+    showWaveBreakModal(p.waveNum, p.totalWaves, p.filesCopied, p.filesRemaining)
+  })
+
+  // MTP wave: device was unplugged, waiting for replug
+  listen('mtp_wave_unplugged', () => {
+    updateWaveBreakModal('unplugged')
+  })
+
+  // MTP wave resuming: device replugged, next wave starting
+  listen('mtp_wave_resuming', (event) => {
+    const p = event.payload
+    const fillEl = document.querySelector('.dap-prog-fill')
+    if (fillEl) fillEl.classList.remove('dap-prog-pulse')
+    dismissWaveBreakModal()
+    showToast(`Wave ${p.waveNum} starting — ${p.filesRemaining} files remaining`, 'success')
+  })
+
+  // MTP wave timeout: user never unplugged, sync aborted
+  listen('mtp_wave_timeout', () => {
+    dismissWaveBreakModal()
+    showToast('Sync paused — unplug/replug your DAP and restart to continue', 'warning')
+  })
+
+  // MTP needs replug: emergency — firmware crashed mid-wave, user must unplug/replug
+  // Reuses the wave break modal for consistent blocking UX
+  listen('mtp_needs_replug', (event) => {
+    const p = event.payload
+    const fillEl = document.querySelector('.dap-prog-fill')
+    if (fillEl) fillEl.classList.add('dap-prog-pulse')
+    // Show the same blocking modal — emergency replug is just as critical as a wave break
+    showWaveBreakModal(0, 0, p.filesCopied, p.filesRemaining)
+    // Override the title for emergency context
+    const title = document.querySelector('.dap-wave-title')
+    const subtitle = document.querySelector('.dap-wave-subtitle')
+    if (title) title.textContent = 'DAP needs a reset'
+    if (subtitle) subtitle.textContent = `Firmware stalled after ${p.filesCopied} files`
+  })
+
+  // MTP replug detected: device is back after emergency replug
+  listen('mtp_replug_detected', (event) => {
+    const p = event.payload
+    const fillEl = document.querySelector('.dap-prog-fill')
+    if (fillEl) fillEl.classList.remove('dap-prog-pulse')
+    dismissWaveBreakModal()
+    showToast(`DAP reconnected — ${p.filesRemaining} files remaining`, 'success')
+  })
+
   listen('dap_sync_complete', async (event) => {
     const c = event.payload
     isSyncing = false
     syncResult = c
+    // Always dismiss the wave break / replug modal — sync is done
+    dismissWaveBreakModal()
     renderSidebarDestinations()
 
     if (c.errors?.length > 0 && c.errors[0].includes('cancelled')) {
@@ -2306,18 +2430,49 @@ export async function initDapSync() {
   initSidebarToggle()
   // Detect MTP devices (DAPs connected via USB)
   detectMtpDevices()
-  // Poll for MTP device connect/disconnect every 10 seconds
-  // (MTP devices don't mount OS volumes, so volume_change won't fire for them)
-  if (_mtpPollInterval) clearInterval(_mtpPollInterval)
-  _mtpPollInterval = setInterval(() => detectMtpDevices(), 10000)
+  startMtpPolling()
+
+  // Startup retry: volumes and MTP devices often aren't visible immediately at app launch.
+  // diskutil may not have indexed freshly mounted SD cards yet, and ptpcamerad may still
+  // be claiming the MTP device on the first attempt. Retry after 3s and 8s to catch them.
+  setTimeout(async () => {
+    const hadVolumes = mountedVolumes.size > 0
+    const hadMtp = mtpDevices.length > 0
+    await refreshMountedVolumes()
+    if (!hadMtp) await detectMtpDevices()
+    if (!hadVolumes && mountedVolumes.size > 0) {
+      console.log('[DAP] Startup retry (3s): found volumes after delayed scan')
+    }
+  }, 3000)
+  setTimeout(async () => {
+    const hadVolumes = mountedVolumes.size > 0
+    const hadMtp = mtpDevices.length > 0
+    await refreshMountedVolumes()
+    if (!hadMtp) await detectMtpDevices()
+    if ((!hadVolumes && mountedVolumes.size > 0) || (!hadMtp && mtpDevices.length > 0)) {
+      console.log('[DAP] Startup retry (8s): found devices after delayed scan')
+    }
+  }, 8000)
 }
 
 // === MTP DEVICE DETECTION ===
 let mtpDevices = []
 let mtpExpanded = new Set() // serials of expanded MTP devices in sidebar
-let _mtpPollInterval = null
-let _mtpDetecting = false
-let _mtpBackoffUntil = 0 // timestamp — skip detection until this time (after errors)
+let _mtpPollingInterval = null
+let _mtpDetecting = false // race guard — prevents concurrent detectMtpDevices calls
+let _mtpBackoffUntil = 0 // timestamp — suppress polling after sync errors
+let _mtpConsecutiveFailures = 0 // consecutive detection failures — grace period before "disconnected"
+const MTP_DISCONNECT_THRESHOLD = 3 // require 3 consecutive failures (30s at 10s poll) before declaring disconnected
+
+function startMtpPolling() {
+  if (_mtpPollingInterval) clearInterval(_mtpPollingInterval)
+  _mtpPollingInterval = setInterval(() => detectMtpDevices(), 10000) // 10s
+}
+
+function mtpBackoff(durationMs = 30000) {
+  _mtpBackoffUntil = Date.now() + durationMs
+  _mtpConsecutiveFailures = 0
+}
 
 /** Get a human-readable name for an MTP destination.
  *  mtp://serial/0 → "FiiO JM21 / Internal Storage"
@@ -2339,49 +2494,73 @@ function getMtpDisplayName(dest) {
 }
 
 async function detectMtpDevices() {
-  if (isSyncing || _mtpDetecting) {
-    return
-  }
-  // Back-off after errors (Transaction ID mismatch etc.) — don't spam the device
-  if (Date.now() < _mtpBackoffUntil) {
-    return
-  }
+  // Race guard — only one detection at a time
+  if (_mtpDetecting) return
+  // Back-off after sync errors (MTP Transaction ID mismatch needs time to recover)
+  if (Date.now() < _mtpBackoffUntil) return
   _mtpDetecting = true
   try {
     const previousSerials = new Set(mtpDevices.map(d => d.serial))
-    mtpDevices = await invoke('dap_detect_mtp_devices')
+    const result = await invoke('dap_detect_mtp_devices')
+
+    if (result.length > 0) {
+      // Device detected — reset failure counter, update devices
+      _mtpConsecutiveFailures = 0
+      _mtpBackoffUntil = 0
+      mtpDevices = result
+    } else {
+      // No device found — increment failure counter but DON'T clear mtpDevices yet
+      _mtpConsecutiveFailures++
+      if (_mtpConsecutiveFailures < MTP_DISCONNECT_THRESHOLD) {
+        // Grace period: keep previous devices in memory, don't update UI
+        // This prevents transient USB glitches (post-sync recovery, ptpcamerad) from showing "disconnected"
+        console.log(`[MTP] Detection empty (attempt ${_mtpConsecutiveFailures}/${MTP_DISCONNECT_THRESHOLD}) — keeping previous state`)
+        return
+      }
+      // Threshold reached: NOW declare disconnected
+      console.log(`[MTP] ${MTP_DISCONNECT_THRESHOLD} consecutive failures — declaring disconnected`)
+      mtpDevices = []
+    }
+
     const currentSerials = new Set(mtpDevices.map(d => d.serial))
 
-    // Clear back-off on success
-    _mtpBackoffUntil = 0
+    // Only re-render sidebar if devices changed
+    const changed = previousSerials.size !== currentSerials.size
+      || [...previousSerials].some(s => !currentSerials.has(s))
+      || [...currentSerials].some(s => !previousSerials.has(s))
+    if (changed) {
+      console.log('[MTP] Devices changed:', mtpDevices.map(d => d.model).join(', ') || 'none')
+      renderMtpSidebar()
 
-    // Remove MTP paths from mountedVolumes for disconnected devices
-    for (const serial of previousSerials) {
-      if (!currentSerials.has(serial)) {
-        for (const p of [...mountedVolumes]) {
-          if (p.startsWith(`mtp://${serial}/`)) {
-            mountedVolumes.delete(p)
-            console.log(`[MTP] Device disconnected — removed ${p} from mountedVolumes`)
+      // Remove MTP paths from mountedVolumes for disconnected devices
+      for (const serial of previousSerials) {
+        if (!currentSerials.has(serial)) {
+          for (const p of [...mountedVolumes]) {
+            if (p.startsWith(`mtp://${serial}/`)) {
+              mountedVolumes.delete(p)
+            }
+          }
+        }
+      }
+
+      // If current destination is an MTP device that disappeared, show disconnected
+      if (currentDestinationId) {
+        const dest = getCurrentDest()
+        if (dest?.path?.startsWith('mtp://') && !mountedVolumes.has(dest.path)) {
+          if (ui.currentView === 'dap-sync' && dapSubView !== 'syncing') {
+            renderSidebarDestinations()
+            app.displayCurrentView()
           }
         }
       }
     }
-
-    renderMtpSidebar()
-
-    // If current destination is an MTP device that disappeared, show disconnected
-    const dest = getCurrentDest()
-    if (dest?.path?.startsWith('mtp://') && !mountedVolumes.has(dest.path)) {
-      if (ui.currentView === 'dap-sync' && dapSubView !== 'syncing') {
-        renderSidebarDestinations()
-        app.displayCurrentView()
-      }
-    }
   } catch (e) {
     console.warn('[MTP] Detection failed:', e)
-    // Back off for 30s after a failure (device may need time to recover from corrupted session)
-    _mtpBackoffUntil = Date.now() + 30000
-    mtpDevices = []
+    _mtpConsecutiveFailures++
+    if (_mtpConsecutiveFailures >= MTP_DISCONNECT_THRESHOLD) {
+      mtpDevices = []
+      renderMtpSidebar()
+    }
   } finally {
     _mtpDetecting = false
   }

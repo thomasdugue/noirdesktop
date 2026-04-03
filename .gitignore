@@ -25,3 +25,4 @@ backups/
 !.dev.vars.example
 .env*
 !.env.example
+.gstack/
