@@ -391,12 +391,28 @@ pub fn compute_sync_plan(
     // For MTP, this uses the pre-scanned device files; for regular volumes, the filesystem walk.
     let manifest_lookup: HashMap<String, &SyncedFile> = if !dap_existing_files.is_empty() || !manifest_lookup.is_empty() {
         let before = manifest_lookup.len();
+        // Collect rejected entries BEFORE consuming the iterator
+        let mut rejected: Vec<String> = Vec::new();
         let validated: HashMap<String, &SyncedFile> = manifest_lookup.into_iter()
-            .filter(|(dest_rel, _)| dap_existing_files.contains(dest_rel))
+            .filter(|(dest_rel, _)| {
+                let exists = dap_existing_files.contains(dest_rel);
+                if !exists && rejected.len() < 15 {
+                    rejected.push(dest_rel.clone());
+                }
+                exists
+            })
             .collect();
         let removed = before - validated.len();
         if removed > 0 {
             eprintln!("[DAP-SYNC] Manifest validation: {} files in manifest but missing on device → will be re-queued for copy", removed);
+            eprintln!("[DAP-SYNC] Device has {} files, manifest had {} entries, {} survived validation",
+                dap_existing_files.len(), before, validated.len());
+            eprintln!("[DAP-SYNC] Rejected manifest entries (first 15): {:?}", rejected);
+            // Sample device files for comparison
+            let mut device_sample: Vec<&String> = dap_existing_files.iter().collect();
+            device_sample.sort();
+            device_sample.truncate(15);
+            eprintln!("[DAP-SYNC] Sample device files (first 15): {:?}", device_sample);
         }
         validated
     } else {
@@ -412,6 +428,12 @@ pub fn compute_sync_plan(
 
     // Track which dest_relative_paths are selected (for mirror mode delete detection)
     let mut selected_dest_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Dedup guard: skip duplicate dest_rel paths from input tracks.
+    // library.tracks can contain duplicates (same file scanned from local + NAS,
+    // or re-scan adding the same track twice). Without this, each duplicate
+    // produces a second entry in files_to_copy → double upload → GeneralError.
+    let mut seen_dest_rels: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Log first few mismatches for debugging
     let mut mismatch_log_count: usize = 0;
@@ -487,8 +509,21 @@ pub fn compute_sync_plan(
         };
         let folder_key = format!("{}/{}", artist_folder, album_key);
         let atc = folder_track_counts.get(&folder_key).copied().unwrap_or(0);
-        let dest_rel = build_dest_path(track, folder_structure, atc, canonical_aa);
+        let dest_rel = if is_mtp {
+            build_dest_path_mtp(track, folder_structure, atc, canonical_aa)
+        } else {
+            build_dest_path(track, folder_structure, atc, canonical_aa)
+        };
         selected_dest_paths.insert(dest_rel.clone());
+
+        // Skip duplicate dest_rel (same destination path from different source tracks).
+        // This happens when library.tracks contains duplicates (e.g. same file from
+        // local scan + NAS scan, or re-scan artifacts).
+        if !seen_dest_rels.insert(dest_rel.clone()) {
+            #[cfg(debug_assertions)]
+            eprintln!("[DEBUG-RS] Skipping duplicate dest_rel: {:?} (source: {:?})", dest_rel, track.path);
+            continue;
+        }
 
         if manifest_lookup.contains_key(&dest_rel) {
             // File in manifest — verify it PHYSICALLY exists on the DAP.
@@ -621,7 +656,11 @@ pub fn compute_sync_plan(
             };
             let folder_key = format!("{}/{}", artist_folder, album_key);
             let atc = folder_track_counts.get(&folder_key).copied().unwrap_or(0);
-            let dest_rel = build_dest_path(track, folder_structure, atc, canonical_aa);
+            let dest_rel = if is_mtp {
+                build_dest_path_mtp(track, folder_structure, atc, canonical_aa)
+            } else {
+                build_dest_path(track, folder_structure, atc, canonical_aa)
+            };
             // Extract album folder = everything before the last '/'
             if let Some(pos) = dest_rel.rfind('/') {
                 let folder = &dest_rel[..pos];
@@ -714,6 +753,16 @@ const MAX_FILES_PER_DIR: usize = 25;
 /// macOS exFAT driver corruption. The DAP reads metadata tags, not folder
 /// structure, so this is invisible to the user during playback.
 pub fn build_dest_path(track: &TrackForSync, structure: &str, album_track_count: usize, canonical_album_artist: Option<&str>) -> String {
+    build_dest_path_inner(track, structure, album_track_count, canonical_album_artist, false)
+}
+
+/// Build dest path with MTP flag — MTP destinations skip the exFAT size-based disc split
+/// because MTP bypasses macOS's exFAT driver (no Apple Double files, no EINVAL corruption).
+pub fn build_dest_path_mtp(track: &TrackForSync, structure: &str, album_track_count: usize, canonical_album_artist: Option<&str>) -> String {
+    build_dest_path_inner(track, structure, album_track_count, canonical_album_artist, true)
+}
+
+fn build_dest_path_inner(track: &TrackForSync, structure: &str, album_track_count: usize, canonical_album_artist: Option<&str>, is_mtp: bool) -> String {
     let artist = sanitize_filename(track.artist.as_deref().unwrap_or("Unknown Artist"));
 
     // Use canonical_album_artist (pre-computed from the most common album_artist
@@ -754,7 +803,14 @@ pub fn build_dest_path(track: &TrackForSync, structure: &str, album_track_count:
     // Decide if we need disc subdirectories:
     // 1. Album has more tracks than MAX_FILES_PER_DIR → MUST split to avoid exFAT corruption
     // 2. Album is multi-disc (disc_num > 1 exists) → split for organization
-    let needs_disc_split = album_track_count > MAX_FILES_PER_DIR || disc_num > 1;
+    // MTP bypasses macOS exFAT driver entirely, so the MAX_FILES_PER_DIR constraint
+    // (designed to prevent Apple Double ghost directory corruption) is unnecessary.
+    // For MTP: only split when the album is genuinely multi-disc (tag-based).
+    let needs_disc_split = if is_mtp {
+        disc_num > 1
+    } else {
+        album_track_count > MAX_FILES_PER_DIR || disc_num > 1
+    };
 
     let album_path = if needs_disc_split {
         // disc_num = 0 means no disc_number metadata → default to Disc 1
