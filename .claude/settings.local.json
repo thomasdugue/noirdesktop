@@ -62,7 +62,21 @@
       "Bash(npx @tauri-apps/cli@latest signer generate --help)",
       "Bash(npx @tauri-apps/cli signer generate -w ~/.tauri/noir-desktop.key -p \"noir-beta-2026\" --ci)",
       "Bash(echo \"OK: $f\")",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(while read:*)",
+      "Bash(do echo:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo run:*)",
+      "Read(//Users/tsunami25/.local/share/**)",
+      "Bash(find /Volumes/music -name *sync* -o -name *log*)",
+      "Bash(find /Volumes/music -type f -name .*)",
+      "Bash(find ~ -name *.json -type f)",
+      "Bash(find ~ -type f -name *sync*.log -o -name *log*sync* -o -name *.hean-sync.json)",
+      "Bash(export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$HOME/.nvm/versions/node/v22.14.0/bin:$PATH\")",
+      "Bash(export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/versions/node/v22.14.0/bin:$PATH\")",
+      "Bash(kill 47449)",
+      "Bash(kill 4922)",
+      "Bash(kill 4894)"
     ]
   }
 }
