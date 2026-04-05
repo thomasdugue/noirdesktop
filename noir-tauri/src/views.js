@@ -11,6 +11,95 @@ import {
   loadCachedImage, getCodecFromPath, createParticleCanvas, destroyParticleCanvas,
   showToast, getResponsiveItemCount
 } from './utils.js'
+import { extractColorsFromBase64, extractColorsFromImg, pickAmbientColor } from './fullscreen-player.js'
+
+/**
+ * Apply ambient color from a visible <img> element.
+ * Call this after the cover image has loaded on the page.
+ * Falls back to get_cover_base64 if direct extraction fails (CORS/tainted canvas).
+ */
+function applyAmbientFromImage(imgElement, fallbackPath, label) {
+  // Try direct extraction from the displayed image first
+  const colors = extractColorsFromImg(imgElement)
+  const isDefault = colors[0][0] === 255 && colors[0][1] === 255 && colors[0][2] === 255
+
+  if (!isDefault) {
+    const [r, g, b] = pickAmbientColor(colors)
+    console.log('[AMBIENT]', label, '— direct extraction:', r, g, b)
+    document.documentElement.style.setProperty('--color-ambient-r', r)
+    document.documentElement.style.setProperty('--color-ambient-g', g)
+    document.documentElement.style.setProperty('--color-ambient-b', b)
+    document.querySelector('.albums-view')?.classList.add('ambient-active')
+    return
+  }
+
+  // Fallback: use backend base64 extraction
+  if (fallbackPath) {
+    console.log('[AMBIENT]', label, '— direct failed, trying base64 fallback:', fallbackPath)
+    invoke('get_cover_base64', { path: fallbackPath }).then(dataUri => {
+      if (!dataUri) { console.log('[AMBIENT]', label, '— no base64 data'); return }
+      extractColorsFromBase64(dataUri).then(colors2 => {
+        if (colors2 && colors2.length > 0) {
+          const [r, g, b] = pickAmbientColor(colors2)
+          console.log('[AMBIENT]', label, '— base64 fallback color:', r, g, b)
+          document.documentElement.style.setProperty('--color-ambient-r', r)
+          document.documentElement.style.setProperty('--color-ambient-g', g)
+          document.documentElement.style.setProperty('--color-ambient-b', b)
+          document.querySelector('.albums-view')?.classList.add('ambient-active')
+        }
+      })
+    }).catch(e => console.warn('[AMBIENT]', label, '— fallback error:', e))
+  }
+}
+
+/**
+ * Watch a container for a cover image to appear, then extract ambient color.
+ * Uses MutationObserver to catch dynamically loaded images.
+ */
+function watchForCoverAndApplyAmbient(container, fallbackPath, label) {
+  // Check if image already exists
+  const existingImg = container.querySelector('img')
+  if (existingImg && existingImg.complete && existingImg.naturalWidth > 0) {
+    applyAmbientFromImage(existingImg, fallbackPath, label)
+    return
+  }
+  if (existingImg && !existingImg.complete) {
+    existingImg.addEventListener('load', () => applyAmbientFromImage(existingImg, fallbackPath, label), { once: true })
+    return
+  }
+
+  // No image yet — observe for it to appear
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.tagName === 'IMG') {
+          observer.disconnect()
+          if (node.complete && node.naturalWidth > 0) {
+            applyAmbientFromImage(node, fallbackPath, label)
+          } else {
+            node.addEventListener('load', () => applyAmbientFromImage(node, fallbackPath, label), { once: true })
+          }
+          return
+        }
+        if (node.querySelector) {
+          const img = node.querySelector('img')
+          if (img) {
+            observer.disconnect()
+            if (img.complete && img.naturalWidth > 0) {
+              applyAmbientFromImage(img, fallbackPath, label)
+            } else {
+              img.addEventListener('load', () => applyAmbientFromImage(img, fallbackPath, label), { once: true })
+            }
+            return
+          }
+        }
+      }
+    }
+  })
+  observer.observe(container, { childList: true, subtree: true })
+  // Safety: disconnect after 10s to avoid leaks
+  setTimeout(() => observer.disconnect(), 10000)
+}
 
 // === VIRTUAL SCROLL CONSTANTS ===
 const TRACK_ITEM_HEIGHT = 48
@@ -236,6 +325,13 @@ export function createAlphabetScrollbar(container, items, getFirstLetter, scroll
 export function displayCurrentView() {
   closeAlbumDetail()
 
+  // Reset ambient color and deactivate wash when leaving album/artist pages
+  const root = document.documentElement
+  root.style.setProperty('--color-ambient-r', '0')
+  root.style.setProperty('--color-ambient-g', '0')
+  root.style.setProperty('--color-ambient-b', '0')
+  document.querySelector('.albums-view')?.classList.remove('ambient-active')
+
   // Disconnect cover observer to avoid memory leaks
   app.initCoverObserver()  // ensures observer exists
 
@@ -290,6 +386,12 @@ export function displayCurrentView() {
 export function navigateToArtistPage(artistKey) {
   if (!artistKey || !library.artists[artistKey]) return
 
+  // Reset ambient color — will be re-set by displayArtistPage extraction
+  document.documentElement.style.setProperty('--color-ambient-r', '0')
+  document.documentElement.style.setProperty('--color-ambient-g', '0')
+  document.documentElement.style.setProperty('--color-ambient-b', '0')
+  document.querySelector('.albums-view')?.classList.remove('ambient-active')
+
   ui.navigationHistory.push({
     view: ui.currentView,
     filteredArtist: ui.filteredArtist,
@@ -315,6 +417,12 @@ export function navigateToArtistPage(artistKey) {
 
 export function navigateToAlbumPage(albumKey) {
   if (!albumKey || !library.albums[albumKey]) return
+
+  // Reset ambient color — will be re-set by displayAlbumPage extraction
+  document.documentElement.style.setProperty('--color-ambient-r', '0')
+  document.documentElement.style.setProperty('--color-ambient-g', '0')
+  document.documentElement.style.setProperty('--color-ambient-b', '0')
+  document.querySelector('.albums-view')?.classList.remove('ambient-active')
 
   ui.navigationHistory.push({
     view: ui.currentView,
@@ -978,6 +1086,13 @@ export function displayAlbumPage(albumKey) {
     }
   }
 
+  // Extract ambient color from the displayed cover image (2026 Trend 1)
+  const coverContainer = dom.albumsGridDiv.querySelector('.album-page-cover')
+  const ambientFallback = album.coverPath || (album.tracks.length > 0 ? album.tracks[0].path : null)
+  if (coverContainer) {
+    watchForCoverAndApplyAmbient(coverContainer, ambientFallback, `Album: ${album.album}`)
+  }
+
   const albumsView = document.querySelector('.albums-view')
   if (albumsView) albumsView.scrollTop = 0
 }
@@ -995,6 +1110,10 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
   ui.albumDetailDiv = document.createElement('div')
   ui.albumDetailDiv.className = 'album-detail'
   ui.albumDetailDiv.id = 'album-detail'
+  ui.albumDetailDiv.dataset.albumName = album.album
+
+  // Ambient color will be extracted after the detail panel is inserted in the DOM
+  const detailCoverFallback = album.coverPath || (album.tracks.length > 0 ? album.tracks[0].path : null)
 
   const totalDuration = album.tracks.reduce((acc, t) => acc + (t.metadata?.duration || 0), 0)
 
@@ -1226,6 +1345,12 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
     lastCardInRow.after(ui.albumDetailDiv)
   } else {
     dom.albumsGridDiv.appendChild(ui.albumDetailDiv)
+  }
+
+  // Extract ambient color from album detail cover (2026 Trend 1)
+  const detailCoverContainer = ui.albumDetailDiv.querySelector('.album-detail-cover')
+  if (detailCoverContainer) {
+    watchForCoverAndApplyAmbient(detailCoverContainer, detailCoverFallback, `Detail: ${album.album}`)
   }
 
   setTimeout(() => {
@@ -2649,6 +2774,7 @@ export function displayArtistPage(artistKey) {
 
   const pageContainer = document.createElement('div')
   pageContainer.className = 'artist-page-container'
+  pageContainer.dataset.artistName = artist.name
 
   pageContainer.innerHTML = `
     <div class="album-page-header">
@@ -2721,6 +2847,13 @@ export function displayArtistPage(artistKey) {
       placeholder.style.display = 'none'
     }
   })
+
+  // Extract ambient color from the displayed artist photo/cover (2026 Trend 1)
+  const artistPhotoContainer = pageContainer.querySelector('.artist-page-photo')
+  const ambientArtistFallback = fallbackCoverPath || artist.sample_path || (artist.tracks.length > 0 ? artist.tracks[0].path : null)
+  if (artistPhotoContainer) {
+    watchForCoverAndApplyAmbient(artistPhotoContainer, ambientArtistFallback, `Artist: ${artist.name}`)
+  }
 
   // Separate full albums from loose tracks
   const fullAlbums = artistAlbums.filter(a => a.tracks.length > 1)

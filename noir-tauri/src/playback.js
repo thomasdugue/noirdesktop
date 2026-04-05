@@ -6,7 +6,7 @@ import { invoke, listen } from './state.js'
 import { app } from './app.js'
 import { formatTime, formatQuality, showToast, isValidImageSrc, escapeHtml, getCodecFromPath } from './utils.js'
 import { isDragging } from './drag.js'
-import { isFullscreenOpen, updateFullscreenData, setFullscreenPlayState, setFullscreenRms } from './fullscreen-player.js'
+import { isFullscreenOpen, updateFullscreenData, setFullscreenPlayState, setFullscreenRms, updateAmbientColor } from './fullscreen-player.js'
 
 // === FULLSCREEN PLAY/PAUSE ICON SYNC ===
 
@@ -314,6 +314,9 @@ export async function playTrack(index, context) {
   setFullscreenPlayState(true)
   syncFsPlayPauseIcon(true)
   setTimeout(() => updateFullscreenData(), 200)
+
+  // Update ambient color theming (2026 Trend 1: album-art color)
+  updateAmbientColor(track.path)
 
   // Enregistre la lecture dans l'historique et invalide le cache Home
   invoke('record_play', {

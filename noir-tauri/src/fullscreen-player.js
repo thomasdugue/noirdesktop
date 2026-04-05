@@ -12,7 +12,26 @@ import { app } from './app.js'
 // ============================================================
 
 // Extract colors from a base64 data URI (guaranteed to work, no CORS issues)
-async function extractColorsFromBase64(dataUri, count = 3) {
+/**
+ * Extract colors directly from a visible <img> element (no backend needed).
+ * Works with any img that has already loaded (same-origin or data URI).
+ */
+export function extractColorsFromImg(imgElement, count = 5) {
+  try {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    canvas.width = 64
+    canvas.height = 64
+    ctx.drawImage(imgElement, 0, 0, 64, 64)
+    const data = ctx.getImageData(0, 0, 64, 64).data
+    return colorsFromPixelData(data, count)
+  } catch (e) {
+    console.warn('[AMBIENT] extractColorsFromImg error:', e)
+    return defaultColors()
+  }
+}
+
+export async function extractColorsFromBase64(dataUri, count = 5) {
   return new Promise((resolve) => {
     const img = new Image()
     img.onload = () => {
@@ -35,7 +54,7 @@ function colorsFromPixelData(data, count) {
     const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3]
     if (a < 128) continue
     const brightness = (r + g + b) / 3
-    if (brightness < 20 || brightness > 240) continue
+    if (brightness < 8 || brightness > 248) continue
     pixels.push([r, g, b])
   }
   if (pixels.length < 5) return defaultColors()
@@ -127,6 +146,38 @@ let fsAnimId = null
 let fsParticles = []
 let fsColors = defaultColors()
 let fsIsOpen = false
+
+// ============================================================
+//  AMBIENT COLOR — push dominant color to CSS custom properties
+// ============================================================
+
+export function pickAmbientColor(colors) {
+  // Score each color by vibrancy: saturation × brightness.
+  // Skip near-black, near-white, and desaturated grays.
+  // A good ambient color should be both bright enough AND colorful.
+  const scored = colors.map(([r, g, b]) => {
+    const brightness = r + g + b
+    const saturation = Math.max(r, g, b) - Math.min(r, g, b)
+    // Penalize dark colors heavily (invisible on dark bg)
+    if (brightness < 120) return { color: [r, g, b], score: -1 }
+    // Penalize desaturated grays (boring ambient)
+    if (saturation < 30) return { color: [r, g, b], score: 0 }
+    // Score = saturation weighted heavily + some brightness
+    return { color: [r, g, b], score: saturation * 3 + brightness }
+  })
+  scored.sort((a, b) => b.score - a.score)
+  // Return the most vibrant color
+  return scored[0].color
+}
+
+function applyAmbientColor(colors) {
+  if (!colors || colors.length === 0) return
+  const [r, g, b] = pickAmbientColor(colors)
+  const root = document.documentElement
+  root.style.setProperty('--color-ambient-r', r)
+  root.style.setProperty('--color-ambient-g', g)
+  root.style.setProperty('--color-ambient-b', b)
+}
 let fsIsPlaying = false
 let fsRmsEnergy = 0       // Current RMS from Rust (0.0 - ~0.5)
 let fsSmoothedRms = 0     // Smoothed for animation
@@ -136,6 +187,47 @@ const PARTICLE_COUNT = 600
 // ============================================================
 //  PUBLIC API
 // ============================================================
+
+// ============================================================
+//  PROGRESSIVE DISCLOSURE — auto-hide controls after 3s idle
+// ============================================================
+
+let _fsIdleTimer = null
+const FS_IDLE_DELAY = 3000
+
+function _fsResetIdleTimer() {
+  const el = document.getElementById('fullscreen-player')
+  if (!el || !fsIsOpen) return
+  el.classList.remove('fs-idle')
+  el.classList.add('fs-active')
+  clearTimeout(_fsIdleTimer)
+  _fsIdleTimer = setTimeout(() => {
+    if (fsIsOpen) {
+      el.classList.remove('fs-active')
+      el.classList.add('fs-idle')
+    }
+  }, FS_IDLE_DELAY)
+}
+
+function _fsStartIdleTracking() {
+  const el = document.getElementById('fullscreen-player')
+  if (!el) return
+  el.classList.add('fs-active')
+  el.addEventListener('mousemove', _fsResetIdleTimer)
+  el.addEventListener('mousedown', _fsResetIdleTimer)
+  el.addEventListener('keydown', _fsResetIdleTimer)
+  _fsResetIdleTimer()
+}
+
+function _fsStopIdleTracking() {
+  const el = document.getElementById('fullscreen-player')
+  if (!el) return
+  el.classList.remove('fs-idle', 'fs-active')
+  el.removeEventListener('mousemove', _fsResetIdleTimer)
+  el.removeEventListener('mousedown', _fsResetIdleTimer)
+  el.removeEventListener('keydown', _fsResetIdleTimer)
+  clearTimeout(_fsIdleTimer)
+}
 
 export function openFullscreenPlayer() {
   const el = document.getElementById('fullscreen-player')
@@ -153,6 +245,9 @@ export function openFullscreenPlayer() {
 
   updateFullscreenData()
 
+  // Start progressive disclosure idle tracking
+  _fsStartIdleTracking()
+
   fsAnimId = requestAnimationFrame(draw)
 }
 
@@ -162,6 +257,9 @@ export function closeFullscreenPlayer() {
 
   // Fermer le lyrics overlay s'il est ouvert
   app.closeFullscreenLyrics?.()
+
+  // Stop progressive disclosure idle tracking
+  _fsStopIdleTracking()
 
   el.classList.remove('visible')
   el.classList.add('hidden')
@@ -220,6 +318,8 @@ export function updateFullscreenData() {
               const col = colors[Math.floor(Math.random() * colors.length)]
               p.r = col[0]; p.g = col[1]; p.b = col[2]
             }
+            // Apply ambient color to main UI (Trend 1: album-art color theming)
+            applyAmbientColor(colors)
           }
         })
       })
@@ -266,6 +366,21 @@ let _lastColorTrackPath = null
 
 export function setNextTrackInfoCallback(cb) {
   _getNextTrackInfoCb = cb
+}
+
+// Update ambient color from main playback (works even when fullscreen is closed)
+export function updateAmbientColor(trackPath) {
+  if (!trackPath || trackPath === _lastColorTrackPath) return
+  _lastColorTrackPath = trackPath
+  invoke('get_cover_base64', { path: trackPath }).then(dataUri => {
+    if (!dataUri) return
+    extractColorsFromBase64(dataUri).then(colors => {
+      if (colors && colors.length > 0) {
+        fsColors = colors
+        applyAmbientColor(colors)
+      }
+    })
+  })
 }
 
 export function setCurrentTrackPathCallback(cb) {
