@@ -1670,7 +1670,7 @@ export async function displayHomeView() {
         }
         return { key, album, addedDate: mostRecentDate }
       })
-      .filter(item => item.addedDate > 0)
+      .filter(item => item.addedDate > 0 && item.album.tracks.length >= 5)
       .sort((a, b) => b.addedDate - a.addedDate)
       .slice(0, 25)
 
@@ -1706,7 +1706,10 @@ export async function displayHomeView() {
   // Compare by album name (from listening history) against each album's .album property
   // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
   const playedAlbumNames = new Set(allPlayedAlbums.map(e => e?.album || ''))
-  const unplayedAlbums = Object.keys(library.albums).filter(key => !playedAlbumNames.has(library.albums[key]?.album))
+  const unplayedAlbums = Object.keys(library.albums).filter(key => {
+    const album = library.albums[key]
+    return album && album.tracks.length >= 5 && !playedAlbumNames.has(album.album)
+  })
 
   if (unplayedAlbums.length > 0) {
     const { carousel: maxCarousel } = getResponsiveItemCount()
@@ -1790,7 +1793,7 @@ export async function displayHomeView() {
   // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
   const hiResAlbumKeys = Object.keys(library.albums).filter(key => {
     const album = library.albums[key]
-    return album.tracks.some(track => {
+    return album.tracks.length >= 5 && album.tracks.some(track => {
       const bd = track.metadata?.bitDepth
       const sr = track.metadata?.sampleRate
       return (bd && bd >= 24) || (sr && sr >= 88200)
@@ -1863,6 +1866,7 @@ export async function displayHomeView() {
   // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
   const longAlbumKeys = Object.keys(library.albums).filter(key => {
     const album = library.albums[key]
+    if (album.tracks.length < 5) return false
     const totalDuration = album.tracks.reduce((sum, track) => {
       return sum + (track.metadata?.duration || 0)
     }, 0)
@@ -1947,7 +1951,7 @@ export async function displayHomeView() {
       }
       return { key, album, addedDate: mostRecentDate }
     })
-    .filter(item => item.addedDate >= oneWeekAgo)
+    .filter(item => item.addedDate >= oneWeekAgo && item.album.tracks.length >= 5)
     .sort((a, b) => b.addedDate - a.addedDate)
     .slice(0, 15)
 
@@ -2005,7 +2009,7 @@ export async function displayHomeView() {
 
   // === 9. Random Mix ===
   // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
-  const allAlbumKeys = Object.keys(library.albums)
+  const allAlbumKeys = Object.keys(library.albums).filter(key => library.albums[key].tracks.length >= 5)
   if (allAlbumKeys.length >= 10) {
     // Use session cache if available, otherwise shuffle and cache
     if (!_sessionRandomMixSelection || _sessionRandomMixSelection.every(k => !library.albums[k])) {
