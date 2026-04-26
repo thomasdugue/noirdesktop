@@ -337,12 +337,6 @@ export function displayCurrentView() {
 
   transitionView(async () => {
     dom.albumsGridDiv.textContent = ''
-    dom.albumsGridDiv.classList.remove('dap-sync-view') // Remove DAP-specific overflow:hidden on .albums-view
-    // Restore search bar and deselect DAP sidebar item when leaving DAP sync view
-    if (ui.currentView !== 'dap-sync') {
-      app.hideDapTopBar?.()
-      app.renderSidebarDestinations?.()
-    }
     dom.albumsViewDiv.classList.remove('hidden')
 
     dom.albumsViewDiv.classList.toggle('home-visible', ui.currentView === 'home')
@@ -371,9 +365,6 @@ export function displayCurrentView() {
         break
       case 'playlist':
         app.displayPlaylistView()
-        break
-      case 'dap-sync':
-        app.displayDapSyncView()
         break
     }
   })
@@ -513,7 +504,7 @@ export function navigateBack() {
 }
 
 export function switchView(view) {
-  if (!['home', 'albums', 'artists', 'tracks', 'dap-sync'].includes(view)) return
+  if (!['home', 'albums', 'artists', 'tracks'].includes(view)) return
 
   dom.navItems.forEach(item => {
     item.classList.toggle('active', item.dataset.view === view)

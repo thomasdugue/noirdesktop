@@ -26,8 +26,6 @@ import { initNetworkUI, populateNetworkSources } from './network.js'
 // Onboarding
 import { initOnboarding } from './onboarding.js'
 
-// DAP Sync
-import { initDapSync, openSyncPanel, closeSyncPanel, loadDestinations as loadDapDestinations, refreshMountedVolumes, displayDapSyncView, hideDapTopBar, renderSidebarDestinations, hasDapDestination, getMountedDestinations, isAlbumSelectedForDap, isArtistFullySelectedForDap, toggleAlbumDapSelection, toggleArtistDapSelection, toggleAlbumsOnDest, showDapSyncModal, getDapDestinationName, startSync as startDapSync } from './dap-sync.js'
 
 // EQ
 import {
@@ -205,25 +203,6 @@ app.selectFolder = selectFolder
 
 // Network / NAS
 app.populateNetworkSources = populateNetworkSources
-
-// DAP Sync
-app.openSyncPanel = openSyncPanel
-app.closeSyncPanel = closeSyncPanel
-app.loadDapDestinations = loadDapDestinations
-app.refreshMountedVolumes = refreshMountedVolumes
-app.displayDapSyncView = displayDapSyncView
-app.hideDapTopBar = hideDapTopBar
-app.renderSidebarDestinations = renderSidebarDestinations
-app.hasDapDestination = hasDapDestination
-app.getMountedDestinations = getMountedDestinations
-app.isAlbumSelectedForDap = isAlbumSelectedForDap
-app.isArtistFullySelectedForDap = isArtistFullySelectedForDap
-app.toggleAlbumDapSelection = toggleAlbumDapSelection
-app.toggleArtistDapSelection = toggleArtistDapSelection
-app.toggleAlbumsOnDest = toggleAlbumsOnDest
-app.showDapSyncModal = showDapSyncModal
-app.getDapDestinationName = getDapDestinationName
-app.startDapSync = startDapSync
 
 // Playback
 app.playTrack = playTrack
@@ -964,9 +943,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Network / NAS UI
   initNetworkUI()
-
-  // DAP Sync
-  initDapSync()
 
   // Onboarding
   initOnboarding()

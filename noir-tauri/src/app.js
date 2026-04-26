@@ -108,15 +108,6 @@ export const app = {
   // === Network / NAS ===
   populateNetworkSources: null,
 
-  // === DAP Sync ===
-  openSyncPanel: null,
-  closeSyncPanel: null,
-  loadDapDestinations: null,
-  refreshMountedVolumes: null,
-  displayDapSyncView: null,
-  hideDapTopBar: null,
-  renderSidebarDestinations: null,
-
   // === Onboarding ===
   showOnboarding: null,
   hideOnboarding: null,

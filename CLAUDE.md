@@ -4,22 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**Hean** — a macOS audiophile desktop music player built with Tauri v2 (Rust backend + vanilla JS frontend). Supports local files, NAS/SMB streaming, DAP sync (SD card/USB), and bit-perfect playback via CoreAudio.
+**Hean** — a macOS audiophile desktop music player built with Tauri v2 (Rust backend + vanilla JS frontend). Supports local files, NAS/SMB streaming, and bit-perfect playback via CoreAudio.
+
+DAP sync (SD card / USB / MTP) was archived on 2026-04-22 before the beta launch — see [`docs/archive/dap-sync/`](docs/archive/dap-sync/).
 
 ## Repository structure
 
 ```
 noir-tauri/          Main app (all development happens here)
-  src/               Frontend — 18 vanilla ES6 modules, no bundler
-  src-tauri/         Rust backend — Tauri commands, audio engine, DAP sync
-  src-tauri/src/     Core Rust source (lib.rs = 75+ commands, audio/, network/, dap_sync/)
+  src/               Frontend — 17 vanilla ES6 modules, no bundler
+  src-tauri/         Rust backend — Tauri commands, audio engine
+  src-tauri/src/     Core Rust source (lib.rs = Tauri commands, audio/, network/)
   scripts/           Build scripts, .env.local (tokens for compile-time injection)
   CLAUDE.md          ⚠️ DETAILED architecture guide — READ THIS FIRST for any code work
-docs/                Specs, beta launch guide, test suite docs
+docs/                Specs, beta launch guide, archived features
 research/            Market analysis, feature assessments
 ```
 
-**The detailed CLAUDE.md is at `noir-tauri/CLAUDE.md` (661 lines).** It contains architecture, state management patterns, critical invariants, audio pipeline details, DAP sync internals, and session history. Always read it before making changes.
+**The detailed CLAUDE.md is at `noir-tauri/CLAUDE.md`.** It contains architecture, state management patterns, critical invariants, audio pipeline details, and session history. Always read it before making changes.
 
 ## Build commands
 

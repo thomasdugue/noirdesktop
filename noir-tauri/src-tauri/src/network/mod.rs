@@ -2,6 +2,7 @@
 
 pub mod credentials;
 pub mod smb;
+pub mod smb_utils;
 pub mod discovery;
 pub mod scanner;
 
