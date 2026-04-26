@@ -214,6 +214,14 @@ export async function playTrack(index, context) {
       console.error('Rust audio_play error:', e)
       playback.audioIsPlaying = false
       dom.playPauseBtn.textContent = '▶'
+      const msg = String(e ?? '')
+      if (isSmb && (msg.includes('SMB download failed') || msg.includes('Timeout: SMB') || msg.includes('SMB credentials'))) {
+        showToast('NAS injoignable — vérifie que le serveur est allumé')
+      } else if (msg.includes('File not found')) {
+        showToast('Fichier introuvable')
+      } else {
+        showToast('Lecture impossible')
+      }
     })
     .finally(() => {
       if (progressContainer) progressContainer.classList.remove('smb-buffering')

@@ -106,26 +106,6 @@
         </div>
       </div>
 
-      <!-- Section DAP Sync (SD Card / USB sync) -->
-      <div class="sb-dap-section">
-        <div class="sb-dap-header open" id="dap-sync-header-toggle">
-          <span class="sb-dap-title">DAP Sync</span>
-
-          <!-- Toggle arrow -->
-          <button class="btn-toggle-indexation sb-dap-toggle" id="btn-toggle-dap" title="Show/hide devices">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M6 9l6 6 6-6"/>
-            </svg>
-          </button>
-        </div>
-        <div class="sb-dap-list" id="dap-sync-destinations">
-          <!-- Mass-storage devices populated dynamically -->
-        </div>
-        <div class="sb-dap-list" id="dap-mtp-devices">
-          <!-- MTP devices populated dynamically -->
-        </div>
-      </div>
-
       <!-- Module Indexation (en bas de la sidebar) -->
       <div id="indexation-module" class="indexation-module">
         <!-- Header (toujours visible, cliquable pour toggle) -->
@@ -226,9 +206,6 @@
           </div>
         </div>
 
-        <!-- DAP Sync top bar — shown only in DAP sync view -->
-        <div class="dap-sync-bar hidden" id="dap-sync-bar"></div>
-
         <div class="search-bar-actions">
           <button id="feedback-btn" class="feedback-header-btn" title="Give Feedback">
             Give feedback <span class="beta-badge">BETA</span>
@@ -312,16 +289,6 @@
         <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
       </svg>
       <span>Edit Metadata</span>
-    </button>
-    <div class="context-menu-separator"></div>
-    <button class="context-menu-item" data-action="toggle-dap-track">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="5" y="1" width="14" height="22" rx="2.5"/>
-        <rect x="7" y="3" width="10" height="8" rx="1"/>
-        <circle cx="12" cy="17" r="3.5"/>
-        <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"/>
-      </svg>
-      <span>Add to my DAP</span>
     </button>
     <div class="context-menu-separator"></div>
     <button class="context-menu-item context-menu-item-danger" data-action="remove-from-library">

@@ -68,7 +68,7 @@ pub fn extend_mount_map_with_sources(
                     let share = &smb_prefix[share_start + 1..];
                     let uuid_key = format!("smb://{}/{}", source_id, share);
                     if !map.contains_key(&uuid_key) {
-                        eprintln!("[DAP-SYNC] SMB map: {} → {} (UUID alias for {})",
+                        eprintln!("[SMB] mount map: {} → {} (UUID alias for {})",
                             uuid_key, mount_point, smb_prefix);
                         map.insert(uuid_key, mount_point.clone());
                     }
@@ -111,7 +111,7 @@ pub fn resolve_smb_path(path: &str, mount_map: &HashMap<String, String>) -> Stri
         };
         // Log once per session to aid debugging — only log if path doesn't exist
         if !std::path::Path::new(&resolved).exists() {
-            eprintln!("[DAP-SYNC] SMB FALLBACK resolution failed: {} → {} (file not found)", path, resolved);
+            eprintln!("[SMB] FALLBACK resolution failed: {} → {} (file not found)", path, resolved);
             // Try alternate mount points: /Volumes/{share} 1, /Volumes/{share} 2, etc.
             for suffix in 1..=5 {
                 let alt = if remaining.is_empty() {
@@ -120,7 +120,7 @@ pub fn resolve_smb_path(path: &str, mount_map: &HashMap<String, String>) -> Stri
                     format!("/Volumes/{} {}/{}", share, suffix, remaining)
                 };
                 if std::path::Path::new(&alt).exists() {
-                    eprintln!("[DAP-SYNC] SMB FALLBACK found alternate: {}", alt);
+                    eprintln!("[SMB] FALLBACK found alternate: {}", alt);
                     return alt;
                 }
             }

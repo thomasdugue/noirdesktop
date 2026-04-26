@@ -37,7 +37,7 @@ src/           Vanilla JS (ES6 modules) + CSS + HTML — no bundler
 src-tauri/     Rust backend (Tauri commands + audio engine)
 ```
 
-### Frontend — 18 JS modules
+### Frontend — 17 JS modules
 
 The JS was refactored (Feb 2026) from a 9 600-line monolith into:
 
@@ -52,7 +52,6 @@ The JS was refactored (Feb 2026) from a 9 600-line monolith into:
 | `playlists.js` | ~1 495 | Playlists CRUD, favorites, add-to-playlist menus |
 | `library.js` | ~934 | Cover loading (thumbnail/full/internet/artist), metadata, library scanning, indexation UI |
 | `network.js` | ~882 | NAS/SMB source management, share browser modal, `browseFolder`, `saveNetworkSource`, connect/disconnect flow |
-| `dap-sync.js` | ~1 695 | **DAP Sync module** — SD card/USB synchronization (see detailed section below) |
 | `fullscreen-player.js` | ~416 | Fullscreen immersive view: particle system (3 phases), color extraction from cover art |
 | `shortcuts.js` | ~555 | Configurable local shortcuts + global media keys (Cmd+Shift+P/Right/Left fallbacks), persisted to localStorage. F7/F8/F9 intentionnellement absents (conflictent avec Apple Music) |
 | `eq.js` | ~392 | EQ panel UI (8-band parametric), connects to `set_eq_bands` Tauri command |
@@ -147,10 +146,8 @@ await transitionView(async () => {
 - `--color-bg-lighter: #111` / `--color-bg-surface: #161616` / `--color-bg-hover: #1a1a1a`
 - `--color-border: #222` / `--color-border-light: #333`
 - `--color-text: #fff` / `--color-text-muted: #888` / `--color-text-faint: #555`
-- Accent vert : `#4ade80` (statut success, badges "on DAP")
-- Rouge : `#f87171` (erreurs, badges "to remove")
-
-**Convention CSS DAP Sync** : préfixe `dap-` pour toutes les classes. Sous-préfixes : `dap-dest-` (destination bar), `dap-det-` (details panel), `dap-alb-` (album rows), `dap-sync-` (syncing view), `dap-complete-` (success view).
+- Accent vert : `#4ade80` (statut success)
+- Rouge : `#f87171` (erreurs)
 
 ### Cover art resolution pipeline
 
@@ -161,7 +158,7 @@ await transitionView(async () => {
 3. **`get_cover`** (IPC Rust) → extraction depuis les tags du fichier audio (lofty)
 4. **`fetch_internet_cover`** (IPC Rust) → MusicBrainz + CoverArtArchive (nécessite `artist` + `album` non null)
 
-**⚠️ Contrainte `isConnected`** : `loadThumbnailFromQueue()` vérifie `imgElement.isConnected` dès l'entrée en file d'attente (ligne 400 de library.js). Si l'élément `<img>` n'est PAS connecté au DOM, la fonction retourne immédiatement sans charger la cover. Conséquence : ne JAMAIS créer un `<img>` détaché et le passer à `loadThumbnailAsync` en espérant qu'il sera inséré plus tard. L'`<img>` doit être dans le DOM AVANT l'appel. Pattern correct dans DAP sync : insérer l'`<img>` dans le wrapper `.dap-alb-art` (déjà dans le DOM), puis appeler `loadThumbnailAsync`.
+**⚠️ Contrainte `isConnected`** : `loadThumbnailFromQueue()` vérifie `imgElement.isConnected` dès l'entrée en file d'attente (ligne 400 de library.js). Si l'élément `<img>` n'est PAS connecté au DOM, la fonction retourne immédiatement sans charger la cover. Conséquence : ne JAMAIS créer un `<img>` détaché et le passer à `loadThumbnailAsync` en espérant qu'il sera inséré plus tard. L'`<img>` doit être dans le DOM AVANT l'appel.
 
 **Internet cover storage** : `~/.noir_desktop/covers/internet_{md5(artist|||album)}.jpg`
 
@@ -185,235 +182,15 @@ await transitionView(async () => {
 | `media_controls.rs` | souvlaki wrapper — enregistre Noir dans `MPRemoteCommandCenter` pour intercepter les media keys même quand Apple Music tourne. Expose `init_media_controls`, `update_metadata`, `update_playback_state`. Émet `media-control` vers JS. |
 | `eq.rs` | 8-band parametric EQ (biquad filters) |
 | `resampler.rs` | Sample rate conversion (rubato FFT, 1024-sample chunks) |
-| `dap_sync/` | DAP Sync subsystem: db, manifest, sync_plan, sync_engine, volumes, watcher, smb_utils (see dedicated section above) |
+| `network/smb_utils.rs` | Parse `mount` output → map `smb://host/share` to local `/Volumes/...` — used as fallback by `audio_play` and `audio_preload_next` for local SMB mounts |
 | `audio/types.rs` | Shared types: `AudioInfo`, `PlaybackCommand`, standard sample rates |
 | `audio/backend.rs` | `AudioBackend` trait (abstraction for future WASAPI port) |
 
-### DAP Sync subsystem — Frontend (`src/dap-sync.js`)
+### DAP Sync — feature archivée
 
-Module dédié à la synchronisation de Digital Audio Players (SD card, USB mass storage). Gère le cycle complet : configuration device → sélection albums → calcul du plan → exécution sync → feedback résultat.
+La feature DAP Sync (synchronisation vers Digital Audio Player via Mass Storage / MTP / SMB) a été retirée du build actif le 2026-04-22 à cause de bugs d'instabilité non résolus. Le code est conservé sur la branche `archive/dap-sync-v1` et le tag `dap-sync-archive-2026-04`. Voir [`docs/archive/dap-sync/`](../docs/archive/dap-sync/) pour le rapport complet (architecture, décisions, bugs connus, procédure de réintégration).
 
-**Sub-views** : `setup` | `albums` | `syncing` | `complete` | `disconnected` | `settings` | `first-sync`
-
-**État local (module-level, PAS dans `state.js`)** :
-
-| Variable | Type | Rôle |
-|----------|------|------|
-| `destinations` | `Array` | Liste des devices DAP configurés (depuis SQLite via `dap_get_destinations`) |
-| `currentDestinationId` | `number\|null` | ID du device actif |
-| `selectedAlbums` | `Set<number>` | IDs des albums sélectionnés pour sync |
-| `syncPlan` | `Object\|null` | Plan de sync retourné par `dap_compute_sync_plan` |
-| `isSyncing` | `boolean` | Sync en cours |
-| `mountedVolumes` | `Set<string>` | Chemins des volumes montés |
-| `dapSubView` | `string` | Sub-view courante |
-| `syncProgress` | `Object` | Progression de la sync en cours |
-| `syncResult` | `Object\|null` | Résultat de la dernière sync |
-| `albumSearchFilter` | `string` | Filtre texte dans la liste |
-| `currentTab` | `string` | Onglet actif : `albums` \| `artists` \| `tracks` |
-| `currentSortKey` | `string` | Tri actif : `alpha-asc` \| `alpha-desc` \| `bitrate-asc` \| `bitrate-desc` \| `status` |
-| `detailsExpanded` | `boolean` | Panneau détails du header device déplié/replié |
-| `_copyAlbumIds` | `Set<number>` | Set pré-calculé des albumIds ayant des fichiers à copier (O(1) lookup) |
-| `_deleteSourcePaths` | `Set<string>` | Set pré-calculé des source paths à supprimer (O(1) lookup) |
-| `_summaryDebounceTimer` | `number\|null` | Timer du debounce de `computeAndRenderSummary` (500ms) |
-| `_saveSelectionsTimer` | `number\|null` | Timer du debounce de `saveSelections` (800ms) |
-| `_needsOnDapPreselection` | `boolean` | Flag : après le 1er plan, auto-désélectionner les albums pas encore sur le DAP |
-
-**Fonctions clés** :
-
-| Fonction | Rôle |
-|----------|------|
-| `initDapSync()` | Init : lance le volume watcher, charge destinations + volumes, setup event listeners |
-| `openSyncPanel(dest)` | Ouvre le panneau pour un device → `loadSelections` → `navigateToDapSync` |
-| `renderAlbumsView(grid)` | Vue principale : dest bar + details + tabs + search/sort + select-all + albums list + footer |
-| `renderAlbumRows()` | Rendu des rows album : DocumentFragment, status badges O(1), click handlers, thumbnails batchés |
-| `renderArtistRows()` | Rows par artiste : groupement albums, checkbox toggle tous les albums de l'artiste |
-| `renderTrackRows()` | Rows par track : flatten de tous les albums/tracks |
-| `computeAndRenderSummary()` | **Cœur** : `buildTracksForSync()` → IPC `dap_compute_sync_plan` → `precomputeSyncPlanLookups()` → `renderSummary()` → `renderDapTopBar()` → `updateStatusTagsInPlace()` |
-| `debouncedComputeAndRenderSummary()` | Wrapper debounce 500ms pour `computeAndRenderSummary` |
-| `precomputeSyncPlanLookups()` | Construit `_copyAlbumIds` et `_deleteSourcePaths` pour lookups O(1) |
-| `updateStatusTagsInPlace()` | Met à jour les badges "on DAP" / "to add" / "to remove" sans full re-render |
-| `buildTracksForSync()` | Construit le tableau `TrackForSync[]` à envoyer au backend Rust |
-| `saveSelections()` | Debounced (800ms) → `_doSaveSelections()` → IPC `dap_save_selections_batch` |
-| `showDapTopBar()` / `hideDapTopBar()` | Remplace la search bar par la barre d'info sync (ou restaure) |
-| `updateSyncButton()` | Met à jour le bouton Sync dans la dest-bar (disabled/enabled, pulse si changements pendants) |
-| `renderSummary(plan, dest)` | Panneau détails 2 colonnes (Selection + Sync) + footer (free after sync / last sync) |
-| `toggleDestDetails()` | Toggle expand/collapse du panneau détails (max-height transition) |
-| `startSync()` | Lance la sync : IPC `dap_execute_sync` → passe en subview `syncing` |
-| `renderSidebarDestinations()` | Rendu sidebar : icône DAP, status monté/démonté, badge syncing |
-| `loadThumbsBatched(queue)` | Charge les thumbnails par batch de 8 via `requestAnimationFrame` |
-
-**Flux checkbox click** :
-```
-click → toggle selectedAlbums Set → chk.classList.toggle('on')
-  → updateSelectAllCheckbox()  [instantané]
-  → saveSelections()           [debounce 800ms → IPC dap_save_selections_batch]
-  → updateSyncNowButton()      [instantané]
-  → debouncedComputeAndRenderSummary()  [debounce 500ms → IPC dap_compute_sync_plan → update badges]
-```
-
-**Flux page load** :
-```
-openSyncPanel(dest)
-  → loadSelections(dest.id)     [IPC dap_get_selections]
-  → navigateToDapSync()         [ui.currentView = 'dap-sync' → displayCurrentView()]
-    → renderAlbumsView(grid)    [DOM construction]
-      → renderAlbumRows()       [DocumentFragment, O(1) badges, batched thumbs]
-      → computeAndRenderSummary()  [async: buildTracksForSync → IPC Rust → update UI]
-```
-
-**Intégration cross-module** :
-- `app.js` mediator : `openSyncPanel`, `closeSyncPanel`, `loadDapDestinations`, `refreshMountedVolumes`, `displayDapSyncView`, `hideDapTopBar`, `renderSidebarDestinations`
-- `views.js` : `displayCurrentView()` appelle `app.displayDapSyncView()` pour `case 'dap-sync'`. Quand on quitte la vue DAP : `app.hideDapTopBar()` restaure la search bar, `app.renderSidebarDestinations()` désélectionne le device dans la sidebar
-- `renderer.js` : importe et enregistre toutes les fonctions DAP sur `app`
-- `index.html` : `<div class="dap-sync-bar hidden" id="dap-sync-bar">` dans le header (remplace la search bar), `<div id="dap-sync-destinations">` dans la sidebar
-
-**Événements Tauri écoutés** :
-- `volume_change` → `refreshMountedVolumes()` (re-détecte les volumes montés, auto-crée destinations pour nouveaux volumes amovibles)
-- `dap_sync_progress` → met à jour `syncProgress`, throttled via `requestAnimationFrame`
-- `dap_sync_complete` → `isSyncing = false`, `await refreshMountedVolumes()`, switch vers `complete` ou `albums`
-
-**Auto-volume detection** : `refreshMountedVolumes()` auto-crée des destinations pour les volumes amovibles non encore configurés (USB, SD, micro SD). La contrainte UNIQUE sur `path` dans `dap_destinations` empêche les doublons. `_externalVolumes` (module-level) stocke les objets `ExternalVolume` complets du dernier refresh.
-
-**Multi-destination modal** : `showDapSyncModal({ albumKeys, artistName })` affiche un sélecteur de destination (pills) quand plusieurs volumes sont montés. Le toggle album se fait au moment du confirm (pas avant l'ouverture). `toggleAlbumsOnDest(albumKeys, destId, action)` gère le toggle sur n'importe quelle destination. `getMountedDestinations()` filtre par volumes montés.
-
-**Disconnected screen retry** : le Retry button utilise un fallback par `volumeName` si le path exact ne matche pas (macOS peut remonter un volume sous un path différent, e.g. `/Volumes/NAME 1`). En cas de match par nom, le path de la destination est mis à jour automatiquement en base. Feedback inline (status message + shake animation) en plus du toast.
-
-**Optimisations de performance (critiques)** :
-1. **DocumentFragment** : `renderAlbumRows()` construit toutes les rows dans un fragment, un seul appendChild → single DOM reflow
-2. **O(1) status badges** : `_copyAlbumIds` (Set) et `_deleteSourcePaths` (Set) pré-calculés après chaque sync plan. Avant : `filesToCopy.some(f => f.albumId === id)` = O(n) par album = O(n²) total
-3. **Debounce save** : `saveSelections()` debounced 800ms — évite d'envoyer tous les albums via IPC à chaque clic
-4. **Debounce compute** : `computeAndRenderSummary()` debounced 500ms — évite de recalculer le plan Rust à chaque clic
-5. **Thumbnails batchés** : `loadThumbsBatched()` charge 8 thumbnails par `requestAnimationFrame` — évite de flood l'IPC
-6. **`updateStatusTagsInPlace()`** : met à jour les badges en modifiant `.innerHTML` des éléments existants au lieu de re-render toute la liste
-
-### DAP Sync subsystem — Backend Rust (`src-tauri/src/dap_sync/`)
-
-```
-dap_sync/
-├── mod.rs          — Module manifest (7 sous-modules)
-├── db.rs           — SQLite : tables dap_destinations + dap_sync_selection
-├── manifest.rs     — Lecture/écriture .hean-sync.json sur le device
-├── sync_plan.rs    — Calcul du plan (diff manifest vs sélection)
-├── sync_engine.rs  — Exécution copy/delete + écriture manifest
-├── volumes.rs      — Enumération volumes USB/SD (diskutil + df)
-├── watcher.rs      — Surveillance /Volumes (notify crate) → événements mount/unmount
-└── smb_utils.rs    — Résolution smb:// → chemin local (parse mount output)
-```
-
-**Tables SQLite** (dans `~/.local/share/com.noir.app/dap_sync.db`) :
-
-```sql
--- Destinations (devices DAP configurés)
-CREATE TABLE dap_destinations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    path TEXT NOT NULL UNIQUE,                    -- /Volumes/SDCARD
-    volume_name TEXT,
-    folder_structure TEXT NOT NULL DEFAULT 'artist_album_track',
-    mirror_mode INTEGER NOT NULL DEFAULT 1,
-    show_in_sidebar INTEGER NOT NULL DEFAULT 1,
-    last_sync_at TEXT,
-    last_sync_albums_count INTEGER DEFAULT 0,
-    last_sync_size_bytes INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Sélections (quels albums syncer sur quel device)
-CREATE TABLE dap_sync_selection (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    destination_id INTEGER NOT NULL REFERENCES dap_destinations(id) ON DELETE CASCADE,
-    album_id INTEGER NOT NULL,
-    selected INTEGER NOT NULL DEFAULT 1,
-    UNIQUE(destination_id, album_id)
-);
-```
-
-**Structs clés** :
-
-| Struct | Fichier | Rôle |
-|--------|---------|------|
-| `DapDestination` | `db.rs` | Config device : name, path, folder_structure, mirror_mode |
-| `TrackForSync` | `sync_plan.rs` | Track envoyée par le frontend : path, title, artist, album, size_bytes, album_id |
-| `SyncPlan` | `sync_plan.rs` | Résultat du calcul : files_to_copy, files_to_delete, files_unchanged, enough_space |
-| `SyncAction` | `sync_plan.rs` | Action individuelle : source_path, dest_relative_path, size_bytes, action, album_id |
-| `SyncManifest` | `manifest.rs` | Fichier `.hean-sync.json` sur le device : liste des fichiers synchés |
-| `SyncedFile` | `manifest.rs` | Fichier dans le manifest : dest_relative_path, size_bytes, quick_hash (SHA256 first+last 4KB) |
-| `ExternalVolume` | `volumes.rs` | Volume détecté : name, path, total_bytes, free_bytes, is_removable |
-| `SyncProgress` | `sync_engine.rs` | Événement progress : phase, current/total, current_file, bytes_copied |
-| `SyncComplete` | `sync_engine.rs` | Événement fin : success, files_copied, files_deleted, duration_ms, errors |
-
-**Commandes Tauri `dap_*`** (dans `lib.rs`) :
-
-| Commande | Rôle |
-|----------|------|
-| `dap_list_external_volumes` | Liste les volumes USB/SD removable |
-| `dap_get_volume_info` | Info espace d'un volume (free/total bytes) |
-| `dap_save_destination` | Crée/met à jour un device DAP en base |
-| `dap_get_destinations` | Liste tous les devices configurés |
-| `dap_get_destination` | Récupère un device par ID |
-| `dap_delete_destination` | Supprime un device + ses sélections (CASCADE) |
-| `dap_eject_volume` | Éjecte un volume via `diskutil eject` |
-| `dap_save_selection` | Sauvegarde une sélection album unitaire |
-| `dap_save_selections_batch` | Sauvegarde batch dans une transaction |
-| `dap_get_selections` | Récupère les sélections d'un device |
-| `dap_read_manifest` | Lit `.hean-sync.json` du device |
-| `dap_compute_sync_plan` | Calcule le plan sans exécuter (preview) |
-| `dap_execute_sync` | Exécute la sync dans un thread séparé → émet `dap_sync_progress` + `dap_sync_complete` |
-| `dap_cancel_sync` | Met le flag `DAP_SYNC_CANCEL` pour avorter la sync |
-| `dap_start_volume_watcher` | Démarre la surveillance des montages/démontages |
-
-**Algorithme `compute_sync_plan`** (sync_plan.rs) :
-1. Lit le manifest (`.hean-sync.json`) → construit `HashMap<dest_relative_path, SyncedFile>`
-2. Pour chaque track sélectionnée :
-   - Calcule `dest_relative_path` depuis les métadonnées (artist/album/track) via `build_dest_path()`
-   - Si le path existe dans le manifest → `unchanged` (même contenu, pas de re-copie)
-   - Sinon → `files_to_copy` (utilise `track.size_bytes` du frontend, PAS `fs::metadata`)
-3. Mirror mode : fichiers dans le manifest non sélectionnés → `files_to_delete`
-4. Vérifie l'espace : `enough_space = net_bytes ≤ 0 || net_bytes ≤ free_bytes`
-
-**⚠️ Décision de performance critique** : `compute_sync_plan` n'appelle PAS `fs::metadata()` sur les fichiers source pour obtenir la taille réelle. Cause : sur SMB, chaque `fs::metadata()` prend ~12ms (I/O réseau). Avec 800 fichiers à copier → **10 secondes bloquantes**. On utilise `track.size_bytes` (estimé côté JS depuis les métadonnées) à la place. La taille réelle est déterminée pendant la copie effective (`sync_engine.rs`). **NE JAMAIS réintroduire `fs::metadata` dans `compute_sync_plan`.**
-
-**Exécution sync** (`sync_engine.rs`) — 3 phases :
-1. **Delete** : supprime les fichiers du DAP non sélectionnés (mirror mode). Covers protégées du mirror mode (pas dans `selected_dest_paths`). Orphaned covers nettoyées par `cleanup_empty_dirs` après suppression.
-2. **Copy + covers inline** : copie les fichiers audio via chunked I/O (256KB, cancel check par chunk) + résolution SMB. Source ouverte AVANT `create_dir_all` (prévention ghost dirs). Covers copiées inline après le dernier audio de chaque album (pas de Phase 2b séparée). `cleanup_empty_parent_dirs` après chaque erreur.
-3. **Manifest** : écrit `.hean-sync.json` avec la liste des fichiers synchés + quick_hash (SHA256 first+last 4KB). `cleanup_empty_dirs` parcourt tout l'arbre en fin de sync.
-
-**Protection anti-ghost exFAT** — 3 niveaux :
-1. **Prévention** : source ouverte (`File::open`) AVANT `create_dir_all`. Si source introuvable → aucun dossier créé.
-2. **Nettoyage immédiat** : `cleanup_empty_parent_dirs(dest)` après chaque erreur (File::create, write, fsync, rename). Remonte vers la racine, supprime les dossiers sans contenu réel.
-3. **Nettoyage global** : `cleanup_empty_dirs(dest_path)` en fin de TOUTE sync (pas seulement cancel). Supprime les dossiers sans fichier audio (covers orphelines incluses).
-
-**Résolution SMB** (`smb_utils.rs`) :
-- `build_smb_mount_map()` parse la sortie de `mount` pour mapper `smb://host/share` → `/Volumes/share`
-- `resolve_smb_path()` résout une URL SMB en chemin local via cette map
-- Utilisé dans `sync_engine.rs` (copie) — PAS dans `sync_plan.rs` (calcul plan)
-
-**Global cache statics in `lib.rs`:**
-
-| Static | Type | Notes |
-|--------|------|-------|
-| `TRACKS_CACHE` | `Mutex<TracksCache>` | All tracks with metadata — source for `load_tracks_from_cache` |
-| `METADATA_CACHE` | `Mutex<MetadataCache>` | Per-path metadata cache (`HashMap<String, Metadata>`) |
-| `COVER_CACHE` | `Mutex<CoverCache>` | Cover art paths |
-| `NETWORK_SOURCES` | `Lazy<Mutex<Vec<NetworkSource>>>` | NAS sources (loaded once at startup) |
-| `PROGRESSIVE_DOWNLOADS` | `Lazy<Mutex<HashMap<PathBuf, (Arc<AtomicU64>, Arc<AtomicBool>)>>>` | Registry: temp file → (bytes_written, download_done) |
-| `CURRENT_DOWNLOAD_CANCEL` | `Lazy<Mutex<Option<Arc<AtomicBool>>>>` | Cancel flag for the active SMB download thread |
-
-**Critical — `write_metadata` must update BOTH caches:** `METADATA_CACHE` invalidation alone is not enough. When `genre_enrichment_complete` fires (background async task), the JS listener calls `load_tracks_from_cache` → replaces `library.tracks` from `TRACKS_CACHE`. If `TRACKS_CACHE` was not updated, JS-side mutations are overwritten with stale data. Always update `TRACKS_CACHE` + call `save_tracks_cache()` inside `write_metadata`.
-
-**Tauri commands grouped by domain:**
-- **Cache/metadata** (18): `scan_folder_with_metadata`, `get_cover`, `get_cover_thumbnail`, `fetch_internet_cover`, `fetch_artist_image`, `load_tracks_from_cache`, `start_background_scan`, `write_metadata`, …
-- **Playlists** (11): `get_playlists`, `create_playlist`, `add_track_to_playlist`, `toggle_favorite`, `export_playlist_m3u`, `import_playlist_m3u`, …
-- **Audio playback** (9): `audio_play`, `audio_pause`, `audio_seek`, `audio_preload_next` (async, SMB-aware), `set_gapless_enabled`, …
-- **Audio devices** (8): `get_audio_devices`, `refresh_audio_devices`, `set_audio_device`, `get_system_default_device_id`, `set_exclusive_mode`, `hog_mode_status`, …
-- **Media controls** (2): `update_media_metadata`, `update_media_playback_state` — mis à jour par JS à chaque changement de track/état play
-- **Listening history** (8): `record_play`, `get_top_artists`, `get_recent_albums`, …
-- **EQ** (3): `set_eq_enabled`, `set_eq_bands`, `get_eq_state`
-- **Network/NAS** (10): `add_network_source`, `remove_network_source`, `get_network_sources`, `toggle_network_source`, `scan_network_source_cmd`, `discover_nas_devices`, `smb_connect`, `smb_list_shares`, `smb_browse`, `update_network_source_credentials`
-- **DAP Sync** (15): `dap_list_external_volumes`, `dap_get_volume_info`, `dap_save_destination`, `dap_get_destinations`, `dap_get_destination`, `dap_delete_destination`, `dap_eject_volume`, `dap_save_selection`, `dap_save_selections_batch`, `dap_get_selections`, `dap_read_manifest`, `dap_compute_sync_plan`, `dap_execute_sync`, `dap_cancel_sync`, `dap_start_volume_watcher`
-- **Feedback** (1): `submit_feedback`
-
-**Startup flow:** `init_cache()` → `load_tracks_from_cache()` (instant, from disk) → `start_background_scan()` (async, emits `scan_progress` events, **local files only**) → `enrich_genres_from_deezer()` (async, emits `genre_enrichment_complete`). NAS scanning only triggered via `scan_network_source_cmd` (never from `start_background_scan`). `media_controls::init_media_controls()` called in `setup()` to register `MPRemoteCommandCenter` immediately.
+**Reste encore actif** : `network/smb_utils.rs` (résolution `smb://` → chemin local), utilisé par le streaming audio SMB.
 
 ### Network/NAS subsystem (`src-tauri/src/network/`)
 
@@ -527,9 +304,7 @@ All persisted to `~/.local/share/noir/` (via `dirs::data_dir()`):
 | `covers/` | Extracted cover art (named by `{hash}.jpg/png`) |
 | `smb_buffer/` | Progressive download temp files (`{hash}.tmp`) — cleaned up on app exit |
 | `feedback/` | User feedback JSON files |
-| `dap_sync.db` | SQLite DB for DAP destinations + album selections (tables: `dap_destinations`, `dap_sync_selection`) |
-
-DAP sync also writes `.hean-sync.json` on the destination device root (e.g. `/Volumes/SDCARD/.hean-sync.json`) — manifest of synced files with quick hashes.
+| `dap_sync.db` | **Feature archivée** — SQLite DB des destinations DAP (tables laissées en place pour préserver les configs des beta-testers, plus lues depuis 2026-04-22) |
 
 ### Security conventions
 
@@ -547,25 +322,13 @@ DAP sync also writes `.hean-sync.json` on the destination device root (e.g. `/Vo
 - **Virtual scroll**: `views.js` maintains a 60-node DOM pool (`POOL_SIZE=60`, `TRACK_ITEM_HEIGHT=48`). Never modify track DOM nodes outside this system.
 - **Gapless preload timing**: `audio_preload_next` must be called ~60s before track end for SMB tracks (10s for local). Timing logic in `playback.js`.
 - **Event delegation**: album/artist grid cards carry `dataset.albumKey` / `dataset.artistKey`. Add interactions via delegation on the grid container, not per-card listeners.
-- **DAP Sync — top bar scope** : la barre d'info sync (`#dap-sync-bar`) remplace la search bar UNIQUEMENT sur la vue `dap-sync`. `hideDapTopBar()` doit être appelé dans `displayCurrentView()` quand `ui.currentView !== 'dap-sync'` pour restaurer la search bar. `renderSidebarDestinations()` doit aussi être appelé pour désélectionner le device dans la sidebar.
-- **DAP Sync — pas de `fs::metadata` dans `compute_sync_plan`** : la résolution SMB + `fs::metadata()` coûte ~12ms/fichier. Avec 800 fichiers : 10 secondes bloquantes. Utiliser `track.size_bytes` (estimé JS) à la place. **Régression critique si réintroduit.**
-- **Cover thumbnails — `isConnected` obligatoire** : `loadThumbnailAsync` vérifie `imgElement.isConnected` avant de lancer le chargement. Un `<img>` détaché du DOM (créé via `document.createElement` mais pas encore inséré) est silencieusement ignoré. Toujours insérer l'`<img>` dans le DOM AVANT d'appeler `loadThumbnailAsync`. Pattern DAP sync : `wrapper.appendChild(img)` puis `loadThumbnailAsync(path, img, artist, album)`.
-- **DAP Sync — `dest_relative_path` comme clé de déduplication** : le plan compare par chemin de destination (construit depuis artist/album/track), PAS par source path. Les paths SMB changent entre sessions (UUID différent). La clé `dest_relative_path` est stable.
-- **DAP Sync — debounce obligatoire** : `saveSelections` (800ms) et `computeAndRenderSummary` (500ms) DOIVENT être debounced. Sans debounce, chaque clic checkbox envoie tous les albums via IPC + recalcule le plan Rust = gel UI.
-- **DAP Sync — pre-computed Sets** : `_copyAlbumIds` et `_deleteSourcePaths` DOIVENT être des `Set` pré-calculés après chaque sync plan. L'ancien pattern `filesToCopy.some(f => f.albumId === id)` était O(n) par album = O(n²) total avec ~160 albums × ~800 fichiers.
-- **DAP Sync — DocumentFragment** : `renderAlbumRows()` DOIT construire dans un `DocumentFragment` avant un seul `appendChild`. Créer les rows une par une dans le DOM cause un reflow par row = gel visible.
-- **DAP Sync — progress bar basée sur tracks** : la barre de progression pendant la sync utilise `current / total` (nombre de fichiers), PAS `bytesCopied / totalBytes`. Plus intuitif pour l'utilisateur (4/8 = 50% quand 4 tracks sur 8 sont copiées).
-- **DAP Sync — albumId** : le hash JS `albumKeyToId(albumKey)` génère un ID numérique stable à partir de la clé string de l'album. Ce même ID est passé côté Rust dans `TrackForSync.album_id` et revient dans `SyncAction.album_id` pour le mapping bidirectionnel.
+- **Cover thumbnails — `isConnected` obligatoire** : `loadThumbnailAsync` vérifie `imgElement.isConnected` avant de lancer le chargement. Un `<img>` détaché du DOM (créé via `document.createElement` mais pas encore inséré) est silencieusement ignoré. Toujours insérer l'`<img>` dans le DOM AVANT d'appeler `loadThumbnailAsync`.
 - **`transitionView` async**: `transitionView(renderFn)` awaits `renderFn()` before fade-in. `displayHomeView` is async (fetches data from Rust). The `renderVersion` counter prevents stale renders when multiple transitions overlap. `scan_complete` listener must check `shouldReload` before triggering `reloadLibraryFromCache()` — unconditional reload causes race conditions with the initial `displayHomeView`.
 - **SMB singleton**: `libsmbclient` is process-level — only one `SmbClient` can exist at a time. All SMB ops share `CONNECTION` mutex. Never instantiate a second `SmbClient` concurrently.
 - **Metadata editing**: `panels.js` → `enterTrackEditMode()` (single track) and `showBulkEditModal()` (N tracks). After save, always call `app.groupTracksIntoAlbumsAndArtists()` to rebuild the artist/album index.
 - **Release profile**: `Cargo.toml` has `opt-level=3`, `lto=true`, `strip=true`, `codegen-units=1`.
 - **souvlaki `!Send` workaround**: `media_controls.rs` uses `unsafe impl Send for MediaControlsWrapper`. Justified because `MPRemoteCommandCenter` uses GCD internally (thread-safe by macOS design). Do not remove or move without understanding this constraint.
 - **Media keys**: F7/F8/F9 global shortcuts intentionally absent from `shortcuts.js` — they conflict with Apple Music in media-key mode. Media key routing is handled via `MPRemoteCommandCenter` (souvlaki in `media_controls.rs`). The `media-control` Tauri event is what JS listens to.
-- **DAP Sync — JAMAIS de dossier vide sur exFAT** : les dossiers vides sur exFAT deviennent des entrées fantômes non-supprimables qui bloquent toutes les syncs futures. `copy_file_verified_cancellable` ouvre la source AVANT `create_dir_all`. Chaque erreur de copie déclenche `cleanup_empty_parent_dirs`. Fin de sync déclenche `cleanup_empty_dirs` (global). **NE JAMAIS réintroduire `create_dir_all` avant la vérification de la source.**
-- **DAP Sync — covers inline, jamais en phase séparée** : les covers sont copiées immédiatement après le dernier audio de chaque album, pas dans une Phase 2b. L'ancienne approche (toutes les covers en bloc après tous les audio) causait de la corruption exFAT. **NE JAMAIS réintroduire une phase séparée pour les covers.**
-- **DAP Sync — covers protégées du mirror mode** : `compute_sync_plan` exclut les covers (`cover.jpg/jpeg/png`) de `files_to_delete` car elles ne sont pas dans `selected_dest_paths`. Les covers orphelines sont nettoyées par `cleanup_empty_dirs` quand le dossier n'a plus d'audio. **NE JAMAIS supprimer cette exclusion.**
-- **DAP Sync — cancel side JS** : `dap_cancel_sync` pose un flag AtomicBool, mais le thread Rust peut être bloqué sur un `read()` SMB. Le JS a un timeout de 3s qui ramène l'utilisateur à la vue albums immédiatement, sans attendre la confirmation Rust.
 
 ## Décisions techniques actées
 
@@ -664,9 +427,5 @@ Lire la spec correspondante AVANT de travailler sur une feature :
 - **2026-03-08** : Fix home page — (1) `transitionView` rendu async avec `renderVersion` pour annuler les renders obsolètes, (2) `displayHomeView` awaitée dans `displayCurrentView`, (3) `scan_complete` conditionnel (ne reload que si `new_tracks > 0 || removed_tracks > 0`), (4) `min-width: 0` sur `.main-content` — cause racine du grid 4496px (carousels `calc(100% + extra)` inflataient le flex item), (5) fallback `thumbnailCache` pour covers Recently Played, (6) media queries responsive `.home-recent-grid` (3 cols → 2 → 1).
 - **2026-03-09** : Onboarding integration — Intégration du prototype onboarding (6 étapes) dans l'app. Fixes : (1) CSS variables manquantes `--sp-*`, `--fs-*`, `--color-green` dans `:root`, (2) stats 0/0/0 → payload `data.stats.mp3_count` au lieu de `data.mp3_count`, (3) NAS "Unknown" → `device.display_name`/`device.hostname` au lieu de `device.name`/`device.host`, (4) IPv6 → fallback hostname `.local`, (5) `smb_connect` manquait `isGuest`/`domain`, (6) `add_network_source` manquait `name`/`domain`/`isGuest`, (7) `[object Object]` dans folders → `share.name`, (8) scan progress → champs corrects `data.phase`/`data.current`/`data.total`/`data.folder`, (9) NAS scan 0 tracks → `add_network_source` retourne `NetworkSource` objet, fix `result.id`.
 - **2026-03-15** : Home page carousels — (1) Rename "New Releases" → "Recently Added" + NAS albums inclus (fix ADDED_DATES_CACHE dans `scan_network_source_cmd` pour tracks NAS), (2) Session-level caching pour Discover/Audiophile/Long Albums/Random Mix/Discovery Mix (sélection stable par session, invalidée sur `scan_complete` ou `genre_enrichment_complete`), (3) Fix covers Recently Played — cause racine : lookup album avec clé composite `"artist — album"` alors que `library.albums` utilise `normalizeKey(albumName)` seul. Fix : lookup 4 niveaux (normalizedKey → compositeKey → linear scan → track path), (4) Fix covers Discovery Mix — cause racine : `tryLoadCover()` vérifiait `!img.isConnected` AVANT d'appeler `loadThumbnailAsync`, mais l'élément n'était pas encore dans le DOM (homeContainer attaché plus tard). Résultat : retour immédiat pour TOUS les mixes, aucune cover chargée. Fix : remplacé par le même pattern `.then()` que `createCarouselAlbumItem` (pushes to queue, processed after DOM built). (5) Ajout `coverCandidates` multi-album dans `generateDiscoveryMixes` avec fallback chain + reconstruction pour ancien format localStorage.
-- **2026-03-15** : DAP Sync — sprint UX polish + cover fix. **UX** : (1) Select All toggle visuel immédiat, (2) default selection = albums déjà on DAP (flag `_needsOnDapPreselection` + auto-deselect après 1er plan), (3) sort dropdown button+menu (même pattern que views.js), (4) bitrate sort fonctionnel (`getQualityRank()` primary + `getAlbumBitrate()` tiebreaker), (5) top bar vidée (feedback/settings seulement), bouton Sync déplacé dans dest-bar avec icône SVG, (6) stats sync dans panneau déployable 2 colonnes (Selection + Sync) + footer (free/last sync), (7) dest-bar entièrement cliquable pour toggle détails, (8) animation fade-in subtile sur changement d'onglet (`dapTabIn` 180ms, `prefers-reduced-motion` respecté), (9) tailles de police augmentées (album names 13px, artists 11.5px, tabs 12.5px, details labels 11.5px), (10) barre de progression syncing basée sur nombre de tracks (pas bytes), icône transfert agrandie 96px, (11) écran success : icône DAP blanche 76px + badge check animé + 6 micro-particules flottantes + espacement Done/eject augmenté. **Bug fix** : covers albums internet (Deezer/MusicBrainz) ne s'affichaient pas — cause : `loadThumbsBatched` créait un `<img>` détaché du DOM → `loadThumbnailFromQueue` rejetait via `isConnected` check → fix : `<img>` inséré DANS le wrapper `.dap-alb-art` déjà connecté au DOM avant l'appel `loadThumbnailAsync`. **CSS** : supprimé le `display: none` en doublon sur `.dap-dest-details.collapsed` (conflictait avec la transition max-height), ajouté `padding/border-width: 0` au collapsed state.
 - **2026-03-16** : Fix playlist mosaic covers — 2 bugs corrigés dans `playlists.js`. **(1) Déduplication incohérente** : `getPlaylistAlbumCovers` dédupliquait par `artist::album` (artist+album combinés) alors que `library.albums` déduplique par album seul (`normalizeKey(album)`). Conséquence : les variations "feat." dans les noms d'artistes créaient de faux albums distincts → même pochette affichée 2, 3 ou 4 fois dans la mosaïque, ou cellules fantômes noires. Fix : renommé en `getPlaylistAlbumCovers`, retourne des objets `{ path, artist, album }`, déduplique par `album.trim().normalize('NFC')` seul. **(2) Fallback internet manquant** : `loadPlaylistThumbs` n'avait que 3 niveaux de fallback (cache → thumbnail → get_cover). Les albums sans cover embarquée (récupérée via MusicBrainz/Deezer) restaient noirs. Fix : ajout étape 4 `fetch_internet_cover(artist, album)` + injection `data-cover-artist`/`data-cover-album` dans `buildPlaylistThumbHtml`. Invariants ajoutés dans CLAUDE.md pour prévenir les régressions.
-- **2026-03-14** : DAP Sync — sprint UX + performance critique. **Bugs corrigés** : (B1) `SyncAction` manquait `album_id` → tags "to add"/"to remove" ne s'affichaient jamais → ajouté dans struct + build, (B2) Checkbox albums ne recalculait pas le plan → ajout `computeAndRenderSummary()`, (B3) `computeAndRenderSummary()` re-rendait seulement l'onglet Albums → remplacé par `renderTabContent()`, (B4) Sync non-incrémental → comparaison par `dest_relative_path` (stable across SMB sessions) au lieu de `source_path`, (B5) Storage 0B/0B après sync → `await refreshMountedVolumes()` avant `displayCurrentView()`, (B6) Tags dans mauvaise colonne → CSS `.dap-alb-badges` largeur fixe. **Performance** (cause racine identifiée via marqueurs `[PERF]`/`[PERF-RS]`) : `fs::metadata()` sur fichiers SMB = 12ms/fichier × 805 fichiers = **10.5 secondes**. Fix : suppression de `fs::metadata()` + `resolve_smb_path()` dans `compute_sync_plan()`, utilisation de `track.size_bytes` (estimé JS). Résultat : 10.7s → **32ms** (330× plus rapide). **Optimisations JS** : (1) DocumentFragment pour single DOM reflow, (2) Sets pré-calculés `_copyAlbumIds`/`_deleteSourcePaths` pour O(1) lookups (était O(n²)), (3) debounce `saveSelections` 800ms + `computeAndRenderSummary` 500ms, (4) thumbnails batchés 8/frame, (5) `updateStatusTagsInPlace()` au lieu de full re-render. **UI** : (1) couleurs jaunes supprimées (monochrome), (2) stats intégrées dans header device repliable (`dap-dest-details`), (3) bouton Cancel supprimé du footer, (4) colonnes tags dédiées, (5) sort dropdown (A→Z, Z→A, bitrate ↑↓, status), (6) bouton Change supprimé, (7) icône Settings agrandie (même design que Settings app), (8) top bar info sync remplace search bar uniquement sur vue DAP, (9) sidebar device se désélectionne en quittant la vue DAP. **Marqueurs de performance** encore présents dans le code (`console.time('[PERF]')` et `eprintln!("[PERF-RS]")`) — à retirer une fois la stabilité confirmée.
-- **2026-03-23** : DAP Sync — élimination des ghost directories exFAT et corruption covers. **Ghost dirs** : cause racine identifiée — `create_dir_all` créait des dossiers AVANT de vérifier la source → si la copie échouait, le dossier vide devenait une entrée fantôme non-supprimable sur exFAT, bloquant toutes les syncs futures. Fix 3 niveaux : (1) source ouverte avant mkdir, (2) `cleanup_empty_parent_dirs` après chaque erreur, (3) `cleanup_empty_dirs` global en fin de sync. **Covers** : (1) copiées inline (après dernier audio de chaque album) au lieu d'une Phase 2b séparée — prévient corruption exFAT, (2) exclues du mirror mode delete (n'étaient pas dans `selected_dest_paths` → supprimées à chaque re-sync), (3) orphelines nettoyées par `cleanup_empty_dirs` quand dossier n'a plus d'audio. **Cancel** : (1) JS timeout 3s ramène à albums immédiatement (thread Rust peut bloquer sur SMB read), (2) cancel check ajouté avant opérations SMB bloquantes. **Sanitization** : `$` ajouté aux caractères strippés, migration manifest auto-rename fichiers sur le DAP quand les règles changent.
-- **2026-03-17** : DAP Sync — auto-volume detection + multi-destination + disconnected screen redesign. **Auto-volume** : `refreshMountedVolumes()` auto-crée destinations pour volumes amovibles non configurés (UNIQUE constraint empêche doublons). `_externalVolumes` stocke les objets ExternalVolume complets. **Multi-dest modal** : `showDapSyncModal` avec sélecteur destination (pills), `toggleAlbumsOnDest(albumKeys, destId, action)`, `getMountedDestinations()`. Context menu handlers (`panels.js`) simplifiés — n'appellent plus le toggle directement, passent par la modale. **Disconnected screen** : icône DAP avec badge X rouge (remplace emoji prise), particules atténuées, pulse animation, chemin monospace inline. **Retry fix** : fallback `volumeName` quand le path ne matche plus (macOS remonte parfois sous un path différent), mise à jour automatique du path en base, feedback inline (status error message + shake animation icon) en plus du toast.
-- **2026-03-24** : DAP Sync — batch adaptatif pour la copie audio. Optimisé pour les bibliothèques musicales (albums 10-20 tracks, 3-150 MB/fichier). Double seuil aligné sur les albums : 512 MB ou 40 fichiers (256 MB / 20 en mode dégradé). Sécurité : flush mid-album à 2 GB (hi-res 24/192 × 20 tracks). À chaque frontière de batch : checkpoint manifest partiel (reprise crash) + spot-check F_NOCACHE du dernier fichier (détection corruption exFAT early). Mode dégradé automatique si le spot-check échoue. Implémentation additive : zéro modification de `copy_file_verified()`, progress per-file, cleanup every-10-files, retry/error handling, cancel check — tout inchangé.
+- **2026-04-22** : Retrait de la feature DAP Sync (Mass Storage / MTP / SMB) avant le lancement de la beta — instabilité non résolue sur MTP (Transaction ID mismatch, timeouts, InvalidObjectHandle). Code archivé sur branche `archive/dap-sync-v1` + tag `dap-sync-archive-2026-04`. Rapport complet dans [`docs/archive/dap-sync/`](../docs/archive/dap-sync/). `smb_utils.rs` déplacé vers `network/` (partagé avec le streaming audio). Les tables SQLite `dap_destinations` / `dap_sync_selection` sont laissées en place dans la DB utilisateur pour préserver les configurations des beta-testers en vue d'une future réintégration. Les sprints DAP Sync (2026-03-14, 03-15, 03-17, 03-23, 03-24) sont résumés dans l'archive (voir DECISIONS.md et KNOWN_ISSUES.md).
