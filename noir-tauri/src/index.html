@@ -482,6 +482,40 @@
         </div>
       </div>
 
+      <!-- Section PRIVACY -->
+      <div class="settings-section">
+        <div class="settings-section-title">
+          Privacy
+          <span id="settings-sentry-status-dot" class="settings-status-dot" title="Crash reporting status"></span>
+        </div>
+
+        <div class="settings-row">
+          <div class="settings-row-left">
+            <label class="settings-label">Send error reports</label>
+            <span class="settings-description">Anonymized crash reports help fix bugs faster. Paths and identifiers are scrubbed before sending.</span>
+          </div>
+          <label class="settings-toggle">
+            <input type="checkbox" id="settings-sentry-enabled" checked>
+            <span class="settings-toggle-slider"></span>
+          </label>
+        </div>
+
+        <div id="settings-sentry-restart-hint" class="settings-row settings-restart-hint" style="display:none;">
+          <span class="settings-description">Restart Hean for this change to take effect.</span>
+        </div>
+
+        <div class="settings-row settings-row-vertical">
+          <details class="settings-details">
+            <summary>What gets sent <span class="settings-details-arrow">›</span></summary>
+            <ul class="settings-details-list">
+              <li><span class="settings-yes">Sent</span> &mdash; stack traces from crashes and uncaught errors, app version, macOS version, hardware architecture.</li>
+              <li><span class="settings-no">Not sent</span> &mdash; your IP address, file paths to your music, library content, identifiers, or anything you've typed in the app.</li>
+              <li><span class="settings-tip">Tip</span> &mdash; you can also write to <span class="settings-mono">contact@hean.app</span> to delete your data.</li>
+            </ul>
+          </details>
+        </div>
+      </div>
+
       <!-- Footer version + Quitter -->
       <div class="settings-footer">
         <span class="settings-version" id="settings-version-label">Hean v0.1.0</span>
@@ -804,6 +838,14 @@
             <span class="feedback-radio-label">Low</span>
           </label>
         </div>
+      </div>
+
+      <!-- Attach logs (helps diagnose bugs) -->
+      <div class="feedback-field feedback-attach-logs">
+        <label class="feedback-checkbox">
+          <input type="checkbox" id="feedback-attach-logs" checked>
+          <span class="feedback-checkbox-label">Attach recent logs <span class="feedback-optional">— last ~200KB, helps debug</span></span>
+        </label>
       </div>
 
       <!-- Buttons -->
