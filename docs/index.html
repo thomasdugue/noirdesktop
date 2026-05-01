@@ -29,9 +29,13 @@
     .token-wrap { display: flex; align-items: center; gap: 8px; }
     .token-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); transition: background 0.3s; flex-shrink: 0; }
     .token-dot.ok { background: var(--green); box-shadow: 0 0 8px rgba(62,207,106,0.35); }
-    .token-input { background: var(--bg2); border: 1px solid var(--border2); border-radius: 5px; padding: 6px 11px; color: var(--sub); font-family: var(--font); font-size: 12px; width: 260px; outline: none; letter-spacing: 0.04em; }
+    .token-input { background: var(--bg2); border: 1px solid var(--border2); border-radius: 5px; padding: 6px 11px 6px 28px; color: var(--sub); font-family: var(--font); font-size: 12px; width: 260px; outline: none; letter-spacing: 0.04em; }
     .token-input:focus { border-color: var(--muted); color: var(--text); }
     .token-input::placeholder { color: var(--dim); }
+    .token-wrap { position: relative; }
+    .token-icon { position: absolute; left: 24px; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; pointer-events: none; opacity: 0.7; }
+    .token-icon.github { color: var(--sub); }
+    .token-icon.sentry { color: #b8a4ff; }
     .btn-sm { background: var(--bg2); border: 1px solid var(--border2); border-radius: 5px; padding: 6px 13px; color: var(--sub); font-family: var(--font); font-size: 12px; cursor: pointer; letter-spacing: 0.04em; transition: all 0.15s; }
     .btn-sm:hover { border-color: var(--muted); color: var(--text); }
 
@@ -50,6 +54,31 @@
     .filter-chip.bug.active { border-color: var(--red); color: var(--red); }
     .filter-chip.ux.active { border-color: var(--blue); color: var(--blue); }
     .filter-chip.sprint.active { border-color: var(--green); color: var(--green); }
+    .filter-chip.sentry.active { border-color: #b8a4ff; color: #b8a4ff; }
+    .filter-row { display: flex; gap: 5px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
+    .filter-row-label { font-size: 8px; letter-spacing: 0.25em; color: var(--dim); text-transform: uppercase; margin-right: 4px; }
+
+    /* ── Source icon (GitHub / Sentry) ── */
+    .row-source { width: 12px; height: 12px; flex-shrink: 0; margin-top: 3px; opacity: 0.55; }
+    .row-source.sentry { color: #b8a4ff; opacity: 0.85; }
+    .row-source.github { color: var(--muted); }
+    .issue-row.sentry-row:hover .row-source.sentry { opacity: 1; }
+
+    /* ── Sentry-specific badges ── */
+    .badge.lvl-fatal   { background: rgba(184,69,69,0.18); color: #ff8585; border: 1px solid rgba(255,90,90,0.35); }
+    .badge.lvl-error   { background: rgba(224,88,88,0.10); color: #e07070; border: 1px solid rgba(224,88,88,0.22); }
+    .badge.lvl-warning { background: rgba(212,164,78,0.10); color: #d4a44e; border: 1px solid rgba(212,164,78,0.22); }
+    .badge.lvl-info    { background: rgba(90,172,255,0.10); color: #7dc0ff; border: 1px solid rgba(90,172,255,0.22); }
+    .badge.lvl-debug   { background: var(--bg3); color: var(--muted); border: 1px solid var(--border2); }
+    .badge.nature      { background: rgba(184,164,255,0.07); color: #b8a4ff; border: 1px solid rgba(184,164,255,0.22); }
+
+    .sentry-events { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: #b8a4ff; flex-shrink: 0; margin-top: 2px; font-variant-numeric: tabular-nums; opacity: 0.8; }
+    .sentry-events svg { width: 10px; height: 10px; }
+    .issue-row.sentry-row { cursor: pointer; }
+    .issue-row.sentry-row:hover { background: rgba(184,164,255,0.04); border-color: rgba(184,164,255,0.18); }
+
+    /* Token dot variant for Sentry */
+    .token-dot.sentry.ok { background: #b8a4ff; box-shadow: 0 0 8px rgba(184,164,255,0.4); }
     .issue-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
     .issue-tab { flex: 1; text-align: center; font-size: 10px; letter-spacing: 0.08em; padding: 5px 6px; border-radius: 4px; background: var(--bg2); border: 1px solid var(--border2); color: var(--muted); cursor: pointer; text-transform: uppercase; transition: all 0.12s; }
     .issue-tab:hover { color: var(--sub); border-color: var(--muted); }
@@ -187,12 +216,18 @@
       <span class="app-title">Dev Dashboard</span>
     </div>
     <div class="header-right">
-      <div class="token-wrap">
+      <div class="token-wrap" title="GitHub Personal Access Token (issues + actions)">
         <div class="token-dot" id="tokenStatus"></div>
+        <svg class="token-icon github" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         <input class="token-input" id="tokenInput" type="password" placeholder="GitHub PAT" autocomplete="off" spellcheck="false">
-        <button class="btn-sm" onclick="saveToken()">Save</button>
-        <button class="btn-sm" onclick="loadIssues(); loadReportTab(activeReportTab)">↻</button>
       </div>
+      <div class="token-wrap" title="Sentry User Auth Token (event:read scope)">
+        <div class="token-dot sentry" id="sentryTokenStatus"></div>
+        <svg class="token-icon sentry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 L21 18 L17 18 L12 9 L7 18 L3 18 Z"/></svg>
+        <input class="token-input" id="sentryTokenInput" type="password" placeholder="Sentry Token" autocomplete="off" spellcheck="false">
+      </div>
+      <button class="btn-sm" onclick="saveTokens()">Save</button>
+      <button class="btn-sm" onclick="loadIssues(); loadReportTab(activeReportTab)">↻</button>
     </div>
   </header>
 
@@ -208,11 +243,20 @@
         <span class="issue-tab" onclick="setIssueTab('completed',this)">Completed</span>
       </div>
       <div class="filter-bar" id="filterBar">
-        <span class="filter-chip active" onclick="setFilter('all',this)">All</span>
-        <span class="filter-chip bug" onclick="setFilter('bug',this)">Bugs</span>
-        <span class="filter-chip ux" onclick="setFilter('ux',this)">UX</span>
-        <span class="filter-chip sprint" onclick="setFilter('sprint',this)">⚡ Sprint</span>
-        <span class="filter-chip" onclick="setFilter('high',this)">🔴 High</span>
+        <div class="filter-row">
+          <span class="filter-row-label">Source</span>
+          <span class="filter-chip src-all active" onclick="setSourceFilter('all',this)">All</span>
+          <span class="filter-chip src-github" onclick="setSourceFilter('github',this)">GitHub</span>
+          <span class="filter-chip src-sentry sentry" onclick="setSourceFilter('sentry',this)">Sentry</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-row-label">Type</span>
+          <span class="filter-chip active" onclick="setFilter('all',this)">All</span>
+          <span class="filter-chip bug" onclick="setFilter('bug',this)">Bugs</span>
+          <span class="filter-chip ux" onclick="setFilter('ux',this)">UX</span>
+          <span class="filter-chip sprint" onclick="setFilter('sprint',this)">⚡ Sprint</span>
+          <span class="filter-chip" onclick="setFilter('high',this)">🔴 High</span>
+        </div>
       </div>
       <div class="issues-list" id="issuesList">
         <div class="empty-state"><p>Entre ton PAT<br>et clique Save.</p></div>
@@ -295,20 +339,29 @@ const REPO_OWNER = 'thomasdugue', FEEDBACK_REPO = 'noir-feedback', MAIN_REPO = '
 const PROJECT_DIR = '~/Documents/Thomas/noirdesktop/noir-tauri'
 const ENV_CMD = 'export $(cat scripts/.env.local | xargs)'
 
-let allIssues = [], closedIssues = [], selected = new Set(), activeFilter = 'all', activeIssueTab = 'open'
+// Sentry — région EU/Frankfurt, project hean-app/rust
+const SENTRY_ORG = 'hean-app', SENTRY_PROJECT = 'rust', SENTRY_API = 'https://de.sentry.io/api/0'
+
+let allIssues = [], closedIssues = [], sentryIssues = []
+let selected = new Set(), activeFilter = 'all', activeSourceFilter = 'all', activeIssueTab = 'open'
 let activeReportTab = 'feedback-report'
 let artifactCache = {} // { name: [{id, created_at, size_in_bytes, run_id}] }
 
-// ── Token ──
-function saveToken() {
-  const v = document.getElementById('tokenInput').value.trim()
-  if (!v) return
-  localStorage.setItem('noir_gh_token', v)
-  setDot(true); loadIssues(); loadReportTab(activeReportTab)
-  showToast('Token sauvegardé ✓')
+// ── Tokens (GitHub PAT + Sentry user auth token) ──
+function saveTokens() {
+  const gh = document.getElementById('tokenInput').value.trim()
+  const sentry = document.getElementById('sentryTokenInput').value.trim()
+  if (gh) { localStorage.setItem('noir_gh_token', gh); setDot(true) }
+  if (sentry) { localStorage.setItem('noir_sentry_token', sentry); setSentryDot(true) }
+  loadIssues(); loadReportTab(activeReportTab)
+  showToast('Tokens sauvegardés ✓')
 }
+// Backwards-compat alias (au cas où un onclick=saveToken() survit dans une vieille version cachée)
+function saveToken() { saveTokens() }
 function getToken() { return localStorage.getItem('noir_gh_token') || '' }
+function getSentryToken() { return localStorage.getItem('noir_sentry_token') || '' }
 function setDot(ok) { document.getElementById('tokenStatus').className = 'token-dot' + (ok ? ' ok' : '') }
+function setSentryDot(ok) { document.getElementById('sentryTokenStatus').className = 'token-dot sentry' + (ok ? ' ok' : '') }
 
 // ── GitHub API ──
 function ghFetch(path, opts = {}) {
@@ -320,21 +373,74 @@ function ghFetch(path, opts = {}) {
 
 // ── Issues ──
 async function loadIssues() {
-  if (!getToken()) return
+  if (!getToken() && !getSentryToken()) return
   document.getElementById('issuesList').innerHTML = `<div class="loading"><div class="spinner"></div> Chargement…</div>`
+
+  // Fetch GitHub + Sentry en parallèle. Chacun gère ses erreurs sans bloquer l'autre.
+  await Promise.all([loadGithubIssues(), loadSentryIssues()])
+
+  renderIssues(); updateIssueTabCounts()
+}
+
+async function loadGithubIssues() {
+  if (!getToken()) { allIssues = []; closedIssues = []; setDot(false); return }
   try {
     const [openRes, closedRes] = await Promise.all([
       ghFetch(`/repos/${REPO_OWNER}/${FEEDBACK_REPO}/issues?state=open&per_page=100`),
       ghFetch(`/repos/${REPO_OWNER}/${FEEDBACK_REPO}/issues?state=closed&per_page=100`)
     ])
-    if (!openRes.ok) throw new Error(`${openRes.status}`)
-    allIssues = (await openRes.json()).filter(i => !i.pull_request)
-    closedIssues = closedRes.ok ? (await closedRes.json()).filter(i => !i.pull_request) : []
-    setDot(true); renderIssues(); updateIssueTabCounts()
+    if (!openRes.ok) throw new Error(`GH ${openRes.status}`)
+    allIssues = (await openRes.json()).filter(i => !i.pull_request).map(i => ({ ...i, _source: 'github' }))
+    closedIssues = closedRes.ok ? (await closedRes.json()).filter(i => !i.pull_request).map(i => ({ ...i, _source: 'github' })) : []
+    setDot(true)
   } catch (e) {
-    setDot(false)
-    document.getElementById('issuesList').innerHTML = `<div class="empty-state"><p>Erreur: ${e.message}</p></div>`
+    console.error('[GitHub] loadIssues error:', e)
+    setDot(false); allIssues = []; closedIssues = []
   }
+}
+
+async function loadSentryIssues() {
+  const token = getSentryToken()
+  if (!token) { sentryIssues = []; setSentryDot(false); return }
+  try {
+    // Issues non résolues, derniers 14 jours. L'endpoint project-level ne supporte
+    // pas ?sort=freq → on garde le sort par défaut (lastSeen) et on prend les 50 plus récentes.
+    const params = new URLSearchParams({
+      statsPeriod: '14d',
+      query: 'is:unresolved',
+      limit: '50',
+    })
+    const url = `${SENTRY_API}/projects/${SENTRY_ORG}/${SENTRY_PROJECT}/issues/?${params}`
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } })
+    if (!res.ok) throw new Error(`Sentry ${res.status}`)
+    const data = await res.json()
+    sentryIssues = data.map(s => ({
+      _source: 'sentry',
+      id: s.id,
+      shortId: s.shortId,
+      title: s.title || s.metadata?.value || '(no title)',
+      level: s.level || 'error',                              // fatal/error/warning/info/debug
+      nature: deriveSentryNature(s),                          // 'JS Error' | 'Rust Panic' | 'Error' | ...
+      count: parseInt(s.count, 10) || 0,
+      userCount: s.userCount || 0,
+      lastSeen: s.lastSeen,
+      permalink: s.permalink || `https://${SENTRY_ORG}.sentry.io/issues/${s.id}/`,
+      culprit: s.culprit || '',
+    }))
+    setSentryDot(true)
+  } catch (e) {
+    console.error('[Sentry] loadIssues error:', e)
+    setSentryDot(false); sentryIssues = []
+  }
+}
+
+/** Identifie la nature de l'erreur Sentry pour un badge court (JS / Rust / Error). */
+function deriveSentryNature(s) {
+  const type = s.metadata?.type || s.type || ''
+  if (/JavaScriptError|ReferenceError|TypeError|SyntaxError/i.test(type)) return 'JS'
+  if (/panic|Rust/i.test(type) || /panicked at/i.test(s.metadata?.value || '')) return 'Rust'
+  if (/error/i.test(type)) return 'Error'
+  return type || 'Event'
 }
 function setIssueTab(tab, el) {
   activeIssueTab = tab
@@ -344,36 +450,104 @@ function setIssueTab(tab, el) {
   renderIssues()
 }
 function updateIssueTabCounts() {
-  const count = activeIssueTab === 'open' ? allIssues.length : closedIssues.length
-  document.getElementById('issueCount').textContent = `${count}`
+  // Count = total visible avec filtres actuels (calculé dans renderIssues)
+  // Ici on met juste un placeholder qui sera réécrit par renderIssues
 }
-function setFilter(f, el) { activeFilter = f; document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active')); el.classList.add('active'); renderIssues() }
+function setFilter(f, el) {
+  activeFilter = f
+  // Ne désactiver que les chips de la même rangée (Type)
+  el.parentElement.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'))
+  el.classList.add('active')
+  renderIssues()
+}
+function setSourceFilter(s, el) {
+  activeSourceFilter = s
+  el.parentElement.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'))
+  el.classList.add('active')
+  renderIssues()
+}
 function getFiltered() {
-  const source = activeIssueTab === 'open' ? allIssues : closedIssues
-  if (activeFilter === 'all' || activeIssueTab === 'completed') return source
-  if (activeFilter === 'bug') return source.filter(i => i.labels.some(l => l.name === 'category:bug'))
-  if (activeFilter === 'ux') return source.filter(i => i.labels.some(l => l.name === 'category:ux'))
-  if (activeFilter === 'sprint') return source.filter(i => i.labels.some(l => l.name === 'sprint-candidate'))
-  if (activeFilter === 'high') return source.filter(i => i.labels.some(l => l.name === 'priority:high'))
-  return source
+  const isClosed = activeIssueTab === 'completed'
+  // Sentry n'a pas de notion "completed" exposée ici → masqué dans l'onglet completed
+  let source = []
+  if (isClosed) {
+    if (activeSourceFilter === 'sentry') return []
+    return closedIssues
+  }
+  if (activeSourceFilter === 'github')      source = [...allIssues]
+  else if (activeSourceFilter === 'sentry') source = [...sentryIssues]
+  else                                      source = [...allIssues, ...sentryIssues]
+
+  if (activeFilter === 'all') return source
+
+  // Filtres "type" : appliqués aux GitHub (via labels) et adaptés aux Sentry (via level)
+  return source.filter(i => {
+    if (i._source === 'sentry') {
+      if (activeFilter === 'high') return ['fatal','error'].includes(i.level)
+      if (activeFilter === 'bug')  return ['fatal','error'].includes(i.level)
+      // 'ux' et 'sprint' n'ont pas de mapping Sentry → exclu de ces filtres
+      return false
+    }
+    // GitHub
+    if (activeFilter === 'bug')    return i.labels.some(l => l.name === 'category:bug')
+    if (activeFilter === 'ux')     return i.labels.some(l => l.name === 'category:ux')
+    if (activeFilter === 'sprint') return i.labels.some(l => l.name === 'sprint-candidate')
+    if (activeFilter === 'high')   return i.labels.some(l => l.name === 'priority:high')
+    return true
+  })
 }
 function getLabel(i, p) { return i.labels.find(l => l.name.startsWith(p))?.name.replace(p, '') ?? null }
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+
+// SVG icons inline (monochrome pour matcher le design)
+const ICON_GITHUB = `<svg class="row-source github" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>`
+const ICON_SENTRY = `<svg class="row-source sentry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 L21 18 L17 18 L12 9 L7 18 L3 18 Z"/><path d="M10 14 L14 14 L12 11 Z" fill="currentColor"/></svg>`
+const ICON_BOLT = `<svg viewBox="0 0 12 12" fill="currentColor"><path d="M7 1 L2 7 L5 7 L4.5 11 L10 5 L7 5 Z"/></svg>`
+
 function renderIssues() {
   const issues = getFiltered(), el = document.getElementById('issuesList')
   const isClosed = activeIssueTab === 'completed'
   document.getElementById('issueCount').textContent = `${issues.length}`
-  if (!issues.length) { el.innerHTML = `<div class="empty-state"><p>${isClosed ? 'Aucune issue fermée.' : 'Aucune issue.'}</p></div>`; return }
-  el.innerHTML = issues.map(i => {
-    const cat = getLabel(i,'category:'), eff = getLabel(i,'effort:'), prio = getLabel(i,'priority:')
-    const sp = i.labels.some(l => l.name === 'sprint-candidate'), sel = selected.has(i.number)
-    const b = [cat?`<span class="badge ${cat}">${cat}</span>`:'', prio==='high'?`<span class="badge high">🔴</span>`:'', sp?`<span class="badge sprint">⚡</span>`:'', eff?`<span class="badge effort">${eff}</span>`:''].filter(Boolean).join('')
-    if (isClosed) {
-      const closedAt = i.closed_at ? timeAgo(i.closed_at) : ''
-      return `<div class="issue-row closed-row"><div class="issue-content"><div class="issue-title" style="color:var(--sub)">${esc(i.title)}</div><div class="issue-meta">${b}${closedAt ? `<span class="badge effort">${closedAt}</span>` : ''}</div></div><span class="issue-number">#${i.number}</span></div>`
-    }
-    return `<div class="issue-row ${sel?'selected':''}" onclick="toggleIssue(${i.number},this)"><div class="issue-checkbox"></div><div class="issue-content"><div class="issue-title">${esc(i.title)}</div><div class="issue-meta">${b}</div></div><span class="issue-number">#${i.number}</span></div>`
-  }).join('')
+  if (!issues.length) {
+    const msg = isClosed ? 'Aucune issue fermée.'
+      : (activeSourceFilter === 'sentry' && !getSentryToken() ? 'Entre ton Sentry Token<br>pour voir les erreurs.' : 'Aucune issue.')
+    el.innerHTML = `<div class="empty-state"><p>${msg}</p></div>`
+    return
+  }
+  el.innerHTML = issues.map(i => i._source === 'sentry' ? renderSentryRow(i) : renderGithubRow(i, isClosed)).join('')
+}
+
+function renderGithubRow(i, isClosed) {
+  const cat = getLabel(i, 'category:'), eff = getLabel(i, 'effort:'), prio = getLabel(i, 'priority:')
+  const sp = i.labels.some(l => l.name === 'sprint-candidate'), sel = selected.has(i.number)
+  const b = [
+    cat ? `<span class="badge ${cat}">${cat}</span>` : '',
+    prio === 'high' ? `<span class="badge high">🔴</span>` : '',
+    sp ? `<span class="badge sprint">⚡</span>` : '',
+    eff ? `<span class="badge effort">${eff}</span>` : '',
+  ].filter(Boolean).join('')
+  if (isClosed) {
+    const closedAt = i.closed_at ? timeAgo(i.closed_at) : ''
+    return `<div class="issue-row closed-row">${ICON_GITHUB}<div class="issue-content"><div class="issue-title" style="color:var(--sub)">${esc(i.title)}</div><div class="issue-meta">${b}${closedAt ? `<span class="badge effort">${closedAt}</span>` : ''}</div></div><span class="issue-number">#${i.number}</span></div>`
+  }
+  return `<div class="issue-row ${sel ? 'selected' : ''}" onclick="toggleIssue(${i.number},this)"><div class="issue-checkbox"></div>${ICON_GITHUB}<div class="issue-content"><div class="issue-title">${esc(i.title)}</div><div class="issue-meta">${b}</div></div><span class="issue-number">#${i.number}</span></div>`
+}
+
+function renderSentryRow(i) {
+  const lvl = (i.level || 'error').toLowerCase()
+  const seen = i.lastSeen ? timeAgo(i.lastSeen) : ''
+  const badges = [
+    `<span class="badge lvl-${lvl}">${lvl.toUpperCase()}</span>`,
+    `<span class="badge nature">${esc(i.nature)}</span>`,
+    seen ? `<span class="badge effort">${seen}</span>` : '',
+  ].filter(Boolean).join('')
+  const eventsLabel = i.count > 0 ? (i.count > 999 ? `${Math.round(i.count/1000)}k` : i.count) : ''
+  // pas de checkbox — click direct → ouvre Sentry
+  return `<div class="issue-row sentry-row" onclick="openSentryIssue('${esc(i.permalink)}')">${ICON_SENTRY}<div class="issue-content"><div class="issue-title">${esc(i.title)}</div><div class="issue-meta">${badges}</div></div><span class="sentry-events" title="${i.count} events · ${i.userCount} users">${ICON_BOLT}${eventsLabel}</span></div>`
+}
+
+function openSentryIssue(url) {
+  if (url) window.open(url, '_blank', 'noopener')
 }
 
 // ── Selection ──
@@ -560,8 +734,10 @@ function showToast(m) { const e = document.getElementById('toast'); e.textConten
 
 // ── Init ──
 ;(function() {
-  const t = getToken()
-  if (t) { document.getElementById('tokenInput').value = t; setDot(true); loadIssues(); loadReportTab('feedback-report') }
+  const gh = getToken(), st = getSentryToken()
+  if (gh) { document.getElementById('tokenInput').value = gh; setDot(true) }
+  if (st) { document.getElementById('sentryTokenInput').value = st; setSentryDot(true) }
+  if (gh || st) { loadIssues(); loadReportTab('feedback-report') }
 })()
 </script>
 </body>
