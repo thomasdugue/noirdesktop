@@ -15,8 +15,8 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { Octokit } from '@octokit/rest'
-import { writeFileSync, readFileSync, existsSync } from 'fs'
-import { join, dirname } from 'path'
+import { writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'fs'
+import { join, dirname, relative } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -99,6 +99,85 @@ function getLabel(issue, prefix) {
   return issue.labels.find(l => l.name.startsWith(prefix))?.name.replace(prefix, '') ?? '?'
 }
 
+// ── Chargement de la codebase (utilisé pour les plans détaillés) ────────────
+//
+// Le mode --plan injecte les fichiers source dans le prompt pour qu'Opus
+// raisonne sur du vrai code (pas juste une description). Cap à 200 KB par
+// fichier pour rester sous la limite de contexte d'Opus 4.5 (200k tokens).
+
+const REPO_ROOT    = join(__dirname, '..')              // = noir-tauri/
+const FRONTEND_DIR = join(REPO_ROOT, 'src')              // src/*.js (frontend)
+const BACKEND_DIR  = join(REPO_ROOT, 'src-tauri/src')    // *.rs (backend)
+const PER_FILE_CAP = 60_000                              // octets max par fichier (~15k tokens)
+const TOTAL_CAP    = 600_000                             // budget total (~150k tokens, laisse marge pour Opus 200k)
+
+// Whitelist des fichiers Rust prioritaires (les plus structurants pour comprendre
+// l'architecture). On évite de walker récursivement tout src-tauri/src/ qui dépasserait
+// largement le budget.
+const RUST_PRIORITY = [
+  'lib.rs',                          // toutes les commandes Tauri + setup
+  'audio_engine.rs',                 // moteur audio principal
+  'audio_decoder.rs',                // décodage Symphonia + SmbProgressiveFile
+  'audio/coreaudio_backend.rs',      // CoreAudio HAL (backend macOS)
+  'audio/coreaudio_stream.rs',       // streaming + gapless
+  'media_controls.rs',               // media keys (souvlaki)
+  'eq.rs',                           // EQ paramétrique
+  'resampler.rs',                    // resampling
+  'network/smb.rs',                  // SMB client
+  'network/scanner.rs',              // SMB scan + progressive download
+  'network/mod.rs',                  // types réseau
+  'sentry_init.rs',                  // error tracking
+  'logging.rs',                      // logs persistés
+]
+
+function loadCodebase() {
+  const files = []
+  let totalBytes = 0
+
+  function tryAdd(fullPath, lang) {
+    if (!existsSync(fullPath)) return
+    if (!statSync(fullPath).isFile()) return
+    const content = readFileSync(fullPath, 'utf-8')
+    const truncated = content.length > PER_FILE_CAP
+    const usable = truncated ? content.slice(0, PER_FILE_CAP) + '\n// [...truncated]' : content
+    if (totalBytes + usable.length > TOTAL_CAP) return false
+    files.push({ path: relative(REPO_ROOT, fullPath), lang, content: usable, truncated })
+    totalBytes += usable.length
+    return true
+  }
+
+  // Frontend JS — on prend tout (16 fichiers ~ 400 KB après cap)
+  if (existsSync(FRONTEND_DIR)) {
+    for (const entry of readdirSync(FRONTEND_DIR).sort()) {
+      if (!entry.endsWith('.js')) continue
+      tryAdd(join(FRONTEND_DIR, entry), 'js')
+    }
+  }
+
+  // Backend Rust — whitelist priorisée (les plus structurants en premier)
+  for (const rel of RUST_PRIORITY) {
+    tryAdd(join(BACKEND_DIR, rel), 'rust')
+  }
+
+  return { files, totalBytes }
+}
+
+function formatCodebaseForPrompt(files) {
+  return files.map(({ path, lang, content, truncated }) =>
+    `### \`${path}\`${truncated ? ' (truncated)' : ''}\n\`\`\`${lang}\n${content}\n\`\`\``
+  ).join('\n\n')
+}
+
+// Cache : on charge la codebase une seule fois par run
+let _codebaseCache = null
+function getCodebase() {
+  if (!_codebaseCache) {
+    _codebaseCache = loadCodebase()
+    console.log(`📚 Codebase loaded: ${_codebaseCache.files.length} files, ${(_codebaseCache.totalBytes / 1024).toFixed(0)} KB`)
+  }
+  return _codebaseCache
+}
+
 // ── Utilitaires Sentry (via worker proxy, le token est côté serveur) ─────────
 
 async function fetchSentryIssue(shortId) {
@@ -176,40 +255,71 @@ async function detailedPlan(issue) {
     ? `\nNB : C'est un crash réel remonté par Sentry (avec stack trace ci-dessous). Concentre-toi sur le diagnostic à partir de la pile d'appels et propose un fix défensif.`
     : ''
 
-  const prompt = `Tu es ingénieur senior du codebase Noir Desktop.
+  const codebase = getCodebase()
+  const codebaseSection = formatCodebaseForPrompt(codebase.files)
 
+  // Le prompt est découpé en 2 blocs :
+  //   1. Le bloc CODEBASE (gros, identique entre toutes les issues du run) → caché via prompt caching.
+  //      Premier appel = full price. Appels suivants dans la même fenêtre 5min = 90% moins cher.
+  //   2. Le bloc ISSUE (petit, spécifique à chaque issue) → pas de cache.
+  const codebaseBlock = `Tu es ingénieur senior du codebase Noir Desktop.
+Tu vas recevoir l'INTÉGRALITÉ du code source ci-dessous, puis une issue à analyser. Ton plan doit être ancré dans le code RÉEL — cite les fonctions, lignes, patterns existants. N'invente rien.
+
+## Contexte général
 ${CODEBASE_CONTEXT}
 
----
+## Code source actuel (\`main\` branch)
+${codebaseSection}`
+
+  const issueBlock = `## Issue à analyser
+
 ${idLine}${sourceHint}
 ${issue.body ? `\nDescription :\n${issue.body}` : ''}
 ${issue._agentComment ? `\nClassification :\n${issue._agentComment.slice(0, 800)}` : ''}
 
-Génère un plan d'implémentation précis en JSON strict (sans markdown) :
+## Format de réponse
+
+Réponds UNIQUEMENT en JSON strict (pas de markdown, pas de texte avant/après).
+
 {
-  "root_cause": "cause racine hypothétique — 2-3 phrases techniques",
-  "modules": ["fichier.js"],
+  "root_cause": "cause racine identifiée à partir du code réel — 2-3 phrases techniques précises (cite fonction/fichier exact)",
+  "modules": ["chemin/exact/fichier.js"],
   "rust_involved": false,
   "steps": [
     {
       "n": 1,
-      "file": "src/playback.js",
-      "where": "fonction ou zone du code",
-      "what": "ce qu'il faut faire — précis",
-      "hint": "// pseudo-code court"
+      "file": "noir-tauri/src/playback.js",
+      "where": "fonction X ligne ~Y, dans le bloc Z",
+      "what": "modification précise — ce qui change exactement",
+      "hint": "// snippet de code concret (pas du pseudo)"
     }
   ],
-  "edge_cases": ["cas limite 1", "cas limite 2"],
-  "tests": ["scénario de test 1", "scénario de test 2"],
-  "regressions": "ce qui pourrait casser ailleurs",
-  "effort": "décomposition : Xh analyse + Xh implem + Xh test"
+  "edge_cases": ["cas limite vraisemblable au vu du code", "..."],
+  "tests": ["scénario de test concret avec inputs précis", "..."],
+  "regressions": "ce qui pourrait casser ailleurs (cite les call sites concernés)",
+  "effort": "Xh analyse + Xh implem + Xh test (justifié)"
 }`
 
   try {
     const msg = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 4096,
-      messages: [{ role: 'user', content: prompt }],
+      model: 'claude-opus-4-7',
+      max_tokens: 16000,
+      // Adaptive thinking : Opus 4.7 décide quand/combien réfléchir.
+      // Sur 4.7, c'est le seul mode supporté (budget_tokens = 400).
+      thinking: { type: 'adaptive' },
+      // xhigh = recommandé par Anthropic pour les tâches de coding/agentic
+      // (entre high et max). Effort matters more sur 4.7 que sur tout Opus précédent.
+      output_config: { effort: 'xhigh' },
+      messages: [{
+        role: 'user',
+        content: [
+          // Bloc codebase identique entre toutes les issues du run → cache 90% off
+          // sur les appels 2/3/N dans la fenêtre 5 min. Min cacheable sur Opus 4.7 = 4096 tokens.
+          { type: 'text', text: codebaseBlock, cache_control: { type: 'ephemeral' } },
+          // Bloc spécifique à chaque issue — pas de cache.
+          { type: 'text', text: issueBlock },
+        ],
+      }],
     })
     let raw = msg.content[0].text.trim()
     raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
