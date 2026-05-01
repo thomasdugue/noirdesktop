@@ -20,6 +20,9 @@ import { initAutoUpdate } from './auto-update.js'
 // Feedback
 import { initFeedbackButton } from './feedback.js'
 
+// Error tracking (forward window.onerror + unhandledrejection vers Sentry)
+import { initErrorTracking } from './error-tracking.js'
+
 // Network / NAS
 import { initNetworkUI, populateNetworkSources } from './network.js'
 
@@ -559,6 +562,36 @@ async function populateSettingsValues() {
   if (autoResume) {
     autoResume.checked = localStorage.getItem('settings_auto_resume') === 'true'
   }
+
+  // Privacy — Sentry toggle + status dot + restart hint
+  await loadSentryToggleState()
+}
+
+/** Lit l'état Sentry depuis le backend Rust et synchronise UI :
+ *  - checkbox cochée si enabled
+ *  - status dot vert (animé) si réellement actif (DSN + init OK)
+ *  - hint "restart needed" si l'utilisateur a toggled mais Sentry pas init au boot
+ */
+async function loadSentryToggleState() {
+  const toggle = document.getElementById('settings-sentry-enabled')
+  const dot = document.getElementById('settings-sentry-status-dot')
+  const hint = document.getElementById('settings-sentry-restart-hint')
+  if (!toggle || !dot) return
+
+  try {
+    const state = await invoke('get_sentry_enabled')
+    toggle.checked = !!state.enabled
+    dot.classList.toggle('is-active', !!state.is_active)
+    dot.title = state.is_active
+      ? 'Crash reporting active'
+      : (state.enabled ? 'Will activate after restart' : 'Crash reporting disabled')
+    if (hint) {
+      // Hint visible quand enabled mais pas actif (besoin de restart pour init Sentry)
+      hint.style.display = (state.enabled && !state.is_active) ? '' : 'none'
+    }
+  } catch (e) {
+    console.error('[SETTINGS] failed to load sentry state:', e)
+  }
 }
 
 function initSettingsPanel() {
@@ -674,6 +707,30 @@ function initSettingsPanel() {
       localStorage.setItem('settings_gapless', enabled)
       invoke('set_gapless_enabled', { enabled }).catch(console.error)
       showToast(enabled ? 'Gapless playback enabled' : 'Gapless playback disabled')
+    })
+  }
+
+  // Privacy — Sentry toggle. État persisté côté Rust (config.json) car la
+  // décision doit être lue AVANT que la WebView soit prête au boot.
+  const sentryToggle = document.getElementById('settings-sentry-enabled')
+  if (sentryToggle) {
+    sentryToggle.addEventListener('change', async () => {
+      const enabled = sentryToggle.checked
+      try {
+        const fullyActive = await invoke('set_sentry_enabled', { enabled })
+        // Re-sync l'UI (status dot + hint) avec la nouvelle réalité
+        await loadSentryToggleState()
+        if (enabled && !fullyActive) {
+          showToast('Restart Hean to enable error reporting')
+        } else {
+          showToast(enabled ? 'Error reporting enabled' : 'Error reporting disabled')
+        }
+      } catch (e) {
+        console.error('[SETTINGS] set_sentry_enabled failed:', e)
+        // Rollback visuel si l'écriture échoue
+        sentryToggle.checked = !enabled
+        showToast('Failed to save preference')
+      }
     })
   }
 }
@@ -890,6 +947,9 @@ window.debugLibrary = function() {
 }
 
 // === LANCEMENT ===
+
+// Error tracking d'abord — pour capturer les erreurs des autres inits
+initErrorTracking()
 
 // Init modules qui n'ont pas besoin du DOM
 initLibrary()

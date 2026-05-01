@@ -29,6 +29,12 @@ use audio_engine::AudioEngine;
 // === MEDIA CONTROLS (MPRemoteCommandCenter — media keys macOS) ===
 mod media_controls;
 
+// === ERROR TRACKING (Sentry — Rust panics + JS errors forwardés) ===
+mod sentry_init;
+
+// === LOGGING (tracing → fichier persistant pour debug post-mortem) ===
+mod logging;
+
 // === NETWORK / NAS MODULES ===
 mod network;
 
@@ -80,6 +86,10 @@ struct Config {
     /// Tracks explicitly excluded by the user (persist across restarts/scans)
     #[serde(default)]
     excluded_paths: Vec<String>,
+    /// Send anonymized error reports to Sentry. None = pas encore défini → default true.
+    /// L'utilisateur peut désactiver dans Settings → Privacy.
+    #[serde(default)]
+    sentry_enabled: Option<bool>,
 }
 
 // Cache des métadonnées
@@ -4143,6 +4153,73 @@ async fn submit_feedback(payload: FeedbackPayload) -> Result<String, String> {
     }
 }
 
+/// Capture une erreur JS forwardée depuis le frontend.
+/// Appelée par `window.onerror` et `unhandledrejection` côté JS via invoke().
+/// No-op si Sentry n'est pas configuré (pas de DSN au build).
+#[tauri::command]
+fn report_js_error(
+    message: String,
+    source: Option<String>,
+    line: Option<u32>,
+    stack: Option<String>,
+) {
+    tracing::error!(
+        target: "js_error",
+        source = source.as_deref().unwrap_or(""),
+        line = line.unwrap_or(0),
+        "{}",
+        message
+    );
+    sentry_init::capture_js_error(
+        &message,
+        source.as_deref(),
+        line,
+        stack.as_deref(),
+    );
+}
+
+/// Retourne les logs récents (concaténation des 1-2 derniers fichiers de log)
+/// tronqués à `max_kb` kilo-octets. Utilisé par le bouton "Joindre les logs"
+/// du modal feedback.
+#[tauri::command]
+fn get_recent_logs(max_kb: Option<u32>) -> String {
+    let limit = max_kb.unwrap_or(200).clamp(1, 2000) as usize * 1024;
+    logging::read_recent_logs(limit)
+}
+
+/// État du toggle "Send anonymized error reports" pour le panel Settings.
+/// Retourne :
+/// - `enabled` : préférence runtime actuelle (peut différer du boot si toggled)
+/// - `is_active` : true si Sentry est réellement actif (DSN présent + init au boot
+///   + enabled). Si false alors qu'enabled=true, l'utilisateur doit redémarrer
+///   pour que les events partent vraiment.
+#[tauri::command]
+fn get_sentry_enabled() -> serde_json::Value {
+    serde_json::json!({
+        "enabled": sentry_init::is_enabled(),
+        "is_active": sentry_init::is_initialized() && sentry_init::is_enabled(),
+    })
+}
+
+/// Met à jour le toggle Sentry et persist dans config.json.
+/// Effet immédiat via `before_send` qui drop les events quand désactivé.
+/// Si Sentry n'a pas été init au boot (enabled=false au démarrage) et qu'on
+/// active maintenant, le toggle persiste mais ne prend effet qu'au prochain reboot.
+#[tauri::command]
+fn set_sentry_enabled(enabled: bool) -> Result<bool, String> {
+    sentry_init::set_enabled(enabled);
+
+    // Persiste dans config.json
+    let mut config = load_config();
+    config.sentry_enabled = Some(enabled);
+    save_config(&config);
+
+    tracing::info!("[SENTRY] toggle set to {} (active: {})", enabled, sentry_init::is_initialized() && enabled);
+
+    // Retourne true si le changement est pleinement actif sans redémarrage
+    Ok(sentry_init::is_initialized() || !enabled)
+}
+
 // =====================================================================
 // === NETWORK / NAS — TAURI COMMANDS ===
 // =====================================================================
@@ -4503,6 +4580,17 @@ fn noir_response_with_headers(mime: &str, data: Vec<u8>) -> tauri::http::Respons
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Lit la préférence utilisateur AVANT init Sentry pour respecter le toggle
+    // Privacy → Send error reports. Si l'utilisateur a désactivé, init() retourne
+    // None et aucun network call n'est fait. Default true (premier lancement,
+    // beta-tester invité a consenti via l'invitation).
+    let sentry_enabled = load_config().sentry_enabled.unwrap_or(true);
+    let _sentry_guard = sentry_init::init(sentry_enabled);
+
+    // Initialise les logs persistés (~/.local/share/noir/logs/noir.log).
+    // Même règle de scope que Sentry — le guard doit vivre jusqu'à la fin.
+    let _logging_guard = logging::init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -4686,6 +4774,13 @@ pub fn run() {
             write_metadata,
             // Feedback
             submit_feedback,
+            // Error tracking (JS → Sentry forwarder)
+            report_js_error,
+            // Logs (pour bouton "Joindre les logs" du feedback)
+            get_recent_logs,
+            // Privacy toggle (Sentry on/off depuis Settings)
+            get_sentry_enabled,
+            set_sentry_enabled,
             // Network / NAS (SMB Library Sync)
             discover_nas_devices,
             smb_connect,

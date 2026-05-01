@@ -89,6 +89,10 @@ function resetFeedbackForm() {
   const email = document.getElementById('feedback-email')
   if (email) email.value = ''
 
+  // Logs cochés par défaut pour les bugs, décoché sinon
+  const attachLogs = document.getElementById('feedback-attach-logs')
+  if (attachLogs) attachLogs.checked = true
+
   updateSeverityVisibility('bug')
   setSendingState(false)
 }
@@ -145,6 +149,21 @@ async function submitFeedback() {
     timestamp: new Date().toISOString(),
   }
 
+  // Joindre les logs récents si la checkbox est cochée
+  let descriptionWithLogs = description
+  const attachLogsEl = document.getElementById('feedback-attach-logs')
+  if (attachLogsEl?.checked) {
+    try {
+      const logs = await invoke('get_recent_logs', { maxKb: 200 })
+      if (logs && logs.length > 0) {
+        descriptionWithLogs = `${description}\n\n---\n### Recent logs (last 200KB)\n\`\`\`\n${logs}\n\`\`\``
+      }
+    } catch (e) {
+      console.warn('[FEEDBACK] failed to attach logs:', e)
+      // pas bloquant — on envoie sans les logs
+    }
+  }
+
   setSendingState(true)
 
   try {
@@ -152,7 +171,7 @@ async function submitFeedback() {
       payload: {
         type,
         title,
-        description,
+        description: descriptionWithLogs,
         severity: type === 'bug' ? severity : null,
         email: email || null,
         context,

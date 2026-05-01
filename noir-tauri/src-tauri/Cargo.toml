@@ -63,6 +63,10 @@ pavao = "0.2"
 mdns-sd = "0.11"
 # UUIDs pour identifiants de sources réseau
 uuid = { version = "1", features = ["v4"] }
+sentry = { version = "0.47.0", features = ["backtrace", "contexts", "panic", "debug-images"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-appender = "0.2.5"
 
 
 

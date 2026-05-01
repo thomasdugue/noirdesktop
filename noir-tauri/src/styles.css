@@ -677,6 +677,31 @@ body.sidebar-resizing * {
   color: var(--color-text);
   background: rgba(255,255,255,0.08);
 }
+.feedback-attach-logs {
+  margin-top: 8px;
+}
+.feedback-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.feedback-checkbox input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--color-text);
+  cursor: pointer;
+  margin: 0;
+}
+.feedback-checkbox-label {
+  font-size: 12px;
+  color: var(--color-text);
+}
+.feedback-checkbox-label .feedback-optional {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
 .feedback-field {
   margin-bottom: 14px;
 }
@@ -6129,6 +6154,134 @@ body:not(.player-visible) .track-info-panel {
   background: var(--color-accent);
 }
 
+/* === PRIVACY SECTION (Sentry toggle + status + transparent disclosure) === */
+
+/* Section title accommodates an inline status dot */
+.settings-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Status dot — green when Sentry actively reporting, dim when off */
+.settings-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #2a2a2a;
+  transition: background 0.4s ease, box-shadow 0.4s ease;
+  margin-bottom: 1px; /* optical alignment with uppercase letter baseline */
+}
+
+.settings-status-dot.is-active {
+  background: var(--color-accent);
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+  animation: settings-status-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes settings-status-pulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(74, 222, 128, 0.5); }
+  50%      { box-shadow: 0 0 10px rgba(74, 222, 128, 0.8); }
+}
+
+/* Restart-required hint — subtle, never alarming */
+.settings-restart-hint {
+  margin-top: -8px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: rgba(224, 135, 0, 0.06);
+  border-left: 2px solid rgba(224, 135, 0, 0.5);
+  border-radius: 2px;
+  min-height: auto;
+}
+.settings-restart-hint .settings-description {
+  color: rgba(224, 135, 0, 0.85);
+}
+
+/* Disclosure (<details>) for "What gets sent" — monochrome, minimal chrome */
+.settings-details {
+  width: 100%;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+.settings-details summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  letter-spacing: 0.4px;
+  color: var(--color-text-muted);
+  transition: color 0.15s ease;
+}
+.settings-details summary::-webkit-details-marker {
+  display: none;
+}
+.settings-details summary:hover {
+  color: var(--color-accent-hover);
+}
+.settings-details-arrow {
+  display: inline-block;
+  font-size: 13px;
+  color: var(--color-text-faint);
+  transition: transform 0.2s ease;
+}
+.settings-details[open] .settings-details-arrow {
+  transform: rotate(90deg);
+}
+.settings-details-list {
+  list-style: none;
+  padding: 12px 0 4px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid #1a1a1a;
+  margin-top: 6px;
+}
+.settings-details-list li {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--color-text-muted);
+  padding-left: 0;
+}
+
+/* Inline tags inside the disclosure */
+.settings-yes,
+.settings-no,
+.settings-tip {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: 1px;
+}
+.settings-yes {
+  color: var(--color-accent);
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.25);
+}
+.settings-no {
+  color: var(--color-text-muted);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid #2a2a2a;
+}
+.settings-tip {
+  color: var(--color-text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid #333;
+}
+.settings-mono {
+  font-family: var(--font-body);
+  color: var(--color-accent-hover);
+}
+
 /* Settings Range slider */
 .settings-range {
   width: 100%;
@@ -8374,6 +8527,29 @@ body:not(.player-visible) .track-info-panel {
 #onboarding-overlay .device-item.selected .device-status {
   background: var(--color-green);
   box-shadow: 0 0 8px rgba(74, 222, 128, 0.4);
+}
+
+/* Permission hint (macOS Local Network popup warning) */
+#onboarding-overlay .permission-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: var(--sp-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--color-border-light);
+  border-radius: 6px;
+  font-size: var(--fs-small);
+  color: var(--color-text-muted);
+  line-height: 1.4;
+}
+#onboarding-overlay .permission-hint svg {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+#onboarding-overlay .permission-hint strong {
+  color: var(--color-text);
+  font-weight: 500;
 }
 
 /* Spinner */
