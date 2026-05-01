@@ -50,6 +50,14 @@ export default {
       return handleSentryIssues(request, env)
     }
 
+    // ── Route : GET /sentry/issue/{shortId} ──
+    // Récupère le détail d'une issue Sentry (metadata + dernière stack trace)
+    // Utilisé par sprint-planner.js pour générer un plan d'implémentation.
+    const issueMatch = path.match(/^\/sentry\/issue\/([A-Z][A-Z0-9]*-\d+)$/i)
+    if (request.method === 'GET' && issueMatch) {
+      return handleSentryIssueDetail(request, env, issueMatch[1].toUpperCase())
+    }
+
     // ── Route : POST /feedback (ou racine, legacy) ──
     if (request.method === 'POST' && (path === '' || path === '/feedback')) {
       return handleFeedback(request, env)
@@ -99,6 +107,98 @@ async function handleSentryIssues(request, env) {
   const body = await upstream.text()
   return new Response(body, {
     status: upstream.status,
+    headers: {
+      ...CORS_HEADERS,
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    },
+  })
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Sentry issue detail : pour un shortId (ex. RUST-1), retourne l'issue
+// + le dernier event (avec stack trace). Utilisé pour générer des plans
+// d'implémentation à partir de crashes Sentry.
+// ────────────────────────────────────────────────────────────────────
+async function handleSentryIssueDetail(request, env, shortId) {
+  if (!env.SENTRY_AUTH_TOKEN) {
+    return jsonError(500, 'SENTRY_AUTH_TOKEN secret not configured on worker')
+  }
+
+  const headers = {
+    'Authorization': `Bearer ${env.SENTRY_AUTH_TOKEN}`,
+    'Accept': 'application/json',
+    'User-Agent': 'Noir-Worker/1.0',
+  }
+
+  // 1. Résoudre le shortId → numeric group ID
+  const lookupUrl = `${SENTRY_API_BASE}/organizations/${SENTRY_ORG}/shortids/${shortId}/`
+  let lookup
+  try {
+    const lookupRes = await fetch(lookupUrl, { headers })
+    if (!lookupRes.ok) {
+      const detail = await lookupRes.text()
+      return jsonError(lookupRes.status, `Sentry shortId lookup failed: ${detail.slice(0, 200)}`)
+    }
+    lookup = await lookupRes.json()
+  } catch (e) {
+    return jsonError(502, `Sentry shortId lookup network error: ${e.message}`)
+  }
+
+  const groupId = lookup.groupId || lookup.group?.id
+  if (!groupId) {
+    return jsonError(404, `Sentry issue ${shortId} not found`)
+  }
+
+  // 2. Fetch issue detail + latest event en parallèle
+  let issue, latestEvent
+  try {
+    const [issueRes, eventRes] = await Promise.all([
+      fetch(`${SENTRY_API_BASE}/issues/${groupId}/`, { headers }),
+      fetch(`${SENTRY_API_BASE}/issues/${groupId}/events/latest/`, { headers }),
+    ])
+    issue = issueRes.ok ? await issueRes.json() : null
+    latestEvent = eventRes.ok ? await eventRes.json() : null
+  } catch (e) {
+    return jsonError(502, `Sentry detail fetch error: ${e.message}`)
+  }
+
+  if (!issue) {
+    return jsonError(404, `Sentry issue ${shortId} (group ${groupId}) not accessible`)
+  }
+
+  // Extraire la stack trace la plus parlante du latestEvent
+  let stackTrace = null
+  if (latestEvent?.entries) {
+    const exceptionEntry = latestEvent.entries.find(e => e.type === 'exception')
+    if (exceptionEntry?.data?.values?.[0]?.stacktrace?.frames) {
+      stackTrace = exceptionEntry.data.values[0].stacktrace.frames
+        .slice(-10) // 10 dernières frames (les plus pertinentes)
+        .map(f => `  at ${f.function || '?'} (${f.filename || '?'}:${f.lineNo || '?'})`)
+        .join('\n')
+    }
+  }
+
+  // Réponse compacte pour l'agent (pas tout le payload Sentry brut)
+  return new Response(JSON.stringify({
+    shortId: issue.shortId,
+    title: issue.title,
+    culprit: issue.culprit,
+    level: issue.level,
+    type: issue.type,
+    status: issue.status,
+    count: issue.count,
+    userCount: issue.userCount,
+    firstSeen: issue.firstSeen,
+    lastSeen: issue.lastSeen,
+    permalink: issue.permalink,
+    metadata: issue.metadata,
+    stackTrace,
+    eventMessage: latestEvent?.message || null,
+    eventTags: latestEvent?.tags || [],
+    platform: latestEvent?.platform || null,
+  }), {
+    status: 200,
     headers: {
       ...CORS_HEADERS,
       'Content-Type': 'application/json',

@@ -541,29 +541,65 @@ function renderGithubRow(i, isClosed) {
 function renderSentryRow(i) {
   const lvl = (i.level || 'error').toLowerCase()
   const seen = i.lastSeen ? timeAgo(i.lastSeen) : ''
+  const sel = selected.has(i.shortId)
   const badges = [
     `<span class="badge lvl-${lvl}">${lvl.toUpperCase()}</span>`,
     `<span class="badge nature">${esc(i.nature)}</span>`,
     seen ? `<span class="badge effort">${seen}</span>` : '',
   ].filter(Boolean).join('')
   const eventsLabel = i.count > 0 ? (i.count > 999 ? `${Math.round(i.count/1000)}k` : i.count) : ''
-  // pas de checkbox — click direct → ouvre Sentry
-  return `<div class="issue-row sentry-row" onclick="openSentryIssue('${esc(i.permalink)}')">${ICON_SENTRY}<div class="issue-content"><div class="issue-title">${esc(i.title)}</div><div class="issue-meta">${badges}</div></div><span class="sentry-events" title="${i.count} events · ${i.userCount} users">${ICON_BOLT}${eventsLabel}</span></div>`
+  const permalink = esc(i.permalink || '')
+  const shortId = esc(i.shortId)
+  // Checkbox = toggle de sélection (passe à sprint-planner via shortId).
+  // Click sur l'icône Sentry à droite = ouvre le permalink dans un nouvel onglet.
+  return `<div class="issue-row sentry-row ${sel?'selected':''}" data-sentry-id="${shortId}" onclick="toggleSentryIssue('${shortId}', event)">
+    <div class="issue-checkbox" onclick="toggleSentryIssue('${shortId}', event)"></div>
+    ${ICON_SENTRY}
+    <div class="issue-content">
+      <div class="issue-title">${esc(i.title)}</div>
+      <div class="issue-meta">${badges}</div>
+    </div>
+    <a class="sentry-events" href="${permalink}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${i.count} events · ${i.userCount} users · open in Sentry">${ICON_BOLT}${eventsLabel}</a>
+  </div>`
 }
 
-function openSentryIssue(url) {
-  if (url) window.open(url, '_blank', 'noopener')
+// ── Selection (gère un mix d'IDs : numéros GitHub "12" + shortIds Sentry "RUST-1") ──
+// Les IDs sont stockés en strings : sprint-planner.js détecte la source via regex.
+function toggleIssue(n, el) {
+  const id = String(n)
+  if (selected.has(id)) { selected.delete(id); el.classList.remove('selected') }
+  else                  { selected.add(id);    el.classList.add('selected') }
+  updateSelectionUI()
 }
-
-// ── Selection ──
-function toggleIssue(n, el) { selected.has(n) ? (selected.delete(n), el.classList.remove('selected')) : (selected.add(n), el.classList.add('selected')); updateSelectionUI() }
-function clearSelection() { selected.clear(); document.querySelectorAll('.issue-row.selected').forEach(el => el.classList.remove('selected')); updateSelectionUI() }
+/** Toggle d'une issue Sentry depuis sa checkbox (event handler isolé pour éviter
+ *  d'ouvrir le permalink quand on click la checkbox). */
+function toggleSentryIssue(shortId, ev) {
+  if (ev) ev.stopPropagation()
+  const row = document.querySelector(`.issue-row.sentry-row[data-sentry-id="${shortId}"]`)
+  if (selected.has(shortId)) { selected.delete(shortId); row?.classList.remove('selected') }
+  else                       { selected.add(shortId);    row?.classList.add('selected') }
+  updateSelectionUI()
+}
+function clearSelection() {
+  selected.clear()
+  document.querySelectorAll('.issue-row.selected').forEach(el => el.classList.remove('selected'))
+  updateSelectionUI()
+}
+/** Tri "intelligent" : numéros GH triés numériquement, shortIds Sentry après par ordre alpha. */
+function sortSelectedIds(ids) {
+  const gh = ids.filter(i => /^\d+$/.test(i)).map(Number).sort((a,b)=>a-b).map(String)
+  const st = ids.filter(i => !/^\d+$/.test(i)).sort()
+  return [...gh, ...st]
+}
 function updateSelectionUI() {
-  const nums = [...selected].sort((a,b)=>a-b)
-  document.getElementById('selectionDisplay').textContent = nums.length ? nums.map(n=>`#${n}`).join(', ') : '—'
-  document.getElementById('planPreview').innerHTML = nums.length ? `<span class="hl">--plan</span> ${nums.join(',')}` : `<span class="dim">← Coche des issues</span>`
-  document.getElementById('planBtn').disabled = !nums.length
-  document.getElementById('runPlanBtn').disabled = !nums.length
+  const ids = sortSelectedIds([...selected])
+  const display = ids.map(i => /^\d+$/.test(i) ? `#${i}` : i).join(', ')
+  document.getElementById('selectionDisplay').textContent = ids.length ? display : '—'
+  document.getElementById('planPreview').innerHTML = ids.length
+    ? `<span class="hl">--plan</span> ${ids.join(',')}`
+    : `<span class="dim">← Coche des issues</span>`
+  document.getElementById('planBtn').disabled = !ids.length
+  document.getElementById('runPlanBtn').disabled = !ids.length
 }
 
 // ── Reports ──

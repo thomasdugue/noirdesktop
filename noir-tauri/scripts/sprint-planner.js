@@ -24,6 +24,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY
 const FEEDBACK_REPO = process.env.NOIR_FEEDBACK_REPO || 'tdugue/noir-feedback'
+// Worker proxy pour Sentry — tient le token côté serveur, pas besoin de secret côté script.
+const SENTRY_WORKER = process.env.NOIR_WORKER_URL || 'https://noir-feedback.thomas-dugue.workers.dev'
 
 if (!GITHUB_TOKEN)  { console.error('❌ Missing GITHUB_TOKEN');      process.exit(1) }
 if (!ANTHROPIC_KEY) { console.error('❌ Missing ANTHROPIC_API_KEY'); process.exit(1) }
@@ -32,13 +34,22 @@ const [REPO_OWNER, REPO_NAME] = FEEDBACK_REPO.split('/')
 const octokit   = new Octokit({ auth: GITHUB_TOKEN })
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_KEY })
 
-// Lire les args CLI
-const args       = process.argv.slice(2)
-const planFlag   = args.indexOf('--plan')
-const planMode   = planFlag !== -1
-const planIssues = planMode
-  ? args[planFlag + 1]?.split(',').map(n => parseInt(n.trim())).filter(Boolean) ?? []
-  : []
+// Lire les args CLI : --plan accepte un mix de numéros GitHub (`12`) et de Sentry
+// shortIds (`RUST-1`). Format en sortie : [{ source, number|shortId }, ...]
+const args     = process.argv.slice(2)
+const planFlag = args.indexOf('--plan')
+const planMode = planFlag !== -1
+
+function parsePlanIds(raw) {
+  if (!raw) return []
+  return raw.split(',').map(s => s.trim()).filter(Boolean).map(token => {
+    if (/^\d+$/.test(token))                     return { source: 'github', number: parseInt(token, 10) }
+    if (/^[A-Z][A-Z0-9]*-\d+$/i.test(token))     return { source: 'sentry', shortId: token.toUpperCase() }
+    console.warn(`⚠️  ignoré (format non reconnu) : ${token}`)
+    return null
+  }).filter(Boolean)
+}
+const planIssues = planMode ? parsePlanIds(args[planFlag + 1]) : []
 
 // ── Contexte codebase ─────────────────────────────────────────────────────────
 
@@ -88,6 +99,35 @@ function getLabel(issue, prefix) {
   return issue.labels.find(l => l.name.startsWith(prefix))?.name.replace(prefix, '') ?? '?'
 }
 
+// ── Utilitaires Sentry (via worker proxy, le token est côté serveur) ─────────
+
+async function fetchSentryIssue(shortId) {
+  const url = `${SENTRY_WORKER}/sentry/issue/${shortId}`
+  const res = await fetch(url)
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`Sentry ${shortId} fetch failed (${res.status}): ${detail.slice(0, 200)}`)
+  }
+  return res.json()
+}
+
+/** Normalise une issue Sentry au même format qu'une issue GitHub pour le prompt
+ *  (fields: number, title, body, _agentComment, _isSentry). */
+function sentryToIssueLike(s) {
+  const stack = s.stackTrace ? `\n\nStack trace (10 dernières frames) :\n\`\`\`\n${s.stackTrace}\n\`\`\`` : ''
+  const tags = (s.eventTags || []).slice(0, 8).map(t => `${t.key}=${t.value}`).join(', ')
+  const meta = `\n\n— Source: Sentry · Level: ${s.level} · Type: ${s.type} · Affected: ${s.userCount} user(s), ${s.count} event(s) · Last seen: ${s.lastSeen}`
+  return {
+    number:        s.shortId,                                    // utilisé comme identifiant
+    title:         s.title,
+    body:          (s.eventMessage || s.culprit || '') + meta + (tags ? `\nTags: ${tags}` : '') + stack,
+    _agentComment: null,
+    _isSentry:     true,
+    _permalink:    s.permalink,
+    labels:        [],                                           // pas de labels GitHub côté Sentry
+  }
+}
+
 // ── MODE 1 : Analyse rapide (coût / impact / risques) ────────────────────────
 
 async function quickAnalysis(issue) {
@@ -129,12 +169,19 @@ Réponds UNIQUEMENT en JSON strict (sans markdown) :
 // ── MODE 2 : Plan d'implémentation détaillé ───────────────────────────────────
 
 async function detailedPlan(issue) {
+  const idLine = issue._isSentry
+    ? `Crash Sentry [${issue.number}] : ${issue.title}`
+    : `Issue #${issue.number} : ${issue.title}`
+  const sourceHint = issue._isSentry
+    ? `\nNB : C'est un crash réel remonté par Sentry (avec stack trace ci-dessous). Concentre-toi sur le diagnostic à partir de la pile d'appels et propose un fix défensif.`
+    : ''
+
   const prompt = `Tu es ingénieur senior du codebase Noir Desktop.
 
 ${CODEBASE_CONTEXT}
 
 ---
-Issue #${issue.number} : ${issue.title}
+${idLine}${sourceHint}
 ${issue.body ? `\nDescription :\n${issue.body}` : ''}
 ${issue._agentComment ? `\nClassification :\n${issue._agentComment.slice(0, 800)}` : ''}
 
@@ -208,7 +255,12 @@ function formatSummaryDetail(issue, a) {
 }
 
 function formatDetailedPlan(issue, plan) {
-  if (!plan) return `### #${issue.number} — ${issue.title}\n\n> ❌ Plan non généré.\n\n---\n`
+  const idLabel = issue._isSentry ? `\`${issue.number}\`` : `#${issue.number}`
+  const sourceLink = issue._isSentry
+    ? `🔗 [Sentry](${issue._permalink || '#'})`
+    : `🔗 [GitHub](https://github.com/${FEEDBACK_REPO}/issues/${issue.number})`
+
+  if (!plan) return `### ${idLabel} — ${issue.title}\n\n> ❌ Plan non généré.\n\n---\n`
 
   const steps = plan.steps.map(s => `
 #### Étape ${s.n} — \`${s.file}\`
@@ -220,9 +272,9 @@ ${s.what}
 ${s.hint}
 \`\`\``).join('\n')
 
-  return `### #${issue.number} — ${issue.title}
+  return `### ${idLabel} — ${issue.title}
 
-🔗 [GitHub](https://github.com/${FEEDBACK_REPO}/issues/${issue.number}) · modules : ${plan.modules.map(m=>`\`${m}\``).join(', ')}${plan.rust_involved ? ' · 🦀 Rust' : ''}
+${sourceLink} · modules : ${plan.modules.map(m=>`\`${m}\``).join(', ')}${plan.rust_involved ? ' · 🦀 Rust' : ''}
 
 **Cause racine :** ${plan.root_cause}
 
@@ -333,22 +385,44 @@ ${plansContent}
 
 async function main() {
   if (planMode) {
-    // ── MODE 2 : Plans détaillés pour issues spécifiques ──
-    console.log(`🛠  Mode plan détaillé — issues : #${planIssues.join(', #')}`)
+    // ── MODE 2 : Plans détaillés pour issues spécifiques (GitHub + Sentry) ──
+    const ghIds     = planIssues.filter(p => p.source === 'github').map(p => p.number)
+    const sentryIds = planIssues.filter(p => p.source === 'sentry').map(p => p.shortId)
+    console.log(`🛠  Mode plan détaillé — GitHub : ${ghIds.length}, Sentry : ${sentryIds.length}`)
 
-    // En mode plan, récupérer TOUTES les issues (pas seulement sprint-candidate)
-    const allIssues = await fetchIssues()
-    const targets   = allIssues.filter(i => planIssues.includes(i.number))
+    const targets = []
+
+    // Fetch les issues GitHub demandées
+    if (ghIds.length > 0) {
+      const allIssues = await fetchIssues()
+      for (const id of ghIds) {
+        const found = allIssues.find(i => i.number === id)
+        if (found) targets.push(found)
+        else console.warn(`⚠️  GitHub #${id} introuvable`)
+      }
+    }
+
+    // Fetch les Sentry issues demandées via le worker proxy
+    for (const shortId of sentryIds) {
+      try {
+        console.log(`  ⏳ Fetch Sentry ${shortId} via worker…`)
+        const sentry = await fetchSentryIssue(shortId)
+        targets.push(sentryToIssueLike(sentry))
+      } catch (err) {
+        console.error(`⚠️  Sentry ${shortId} :`, err.message)
+      }
+    }
 
     if (targets.length === 0) {
-      console.error('❌ Aucune issue trouvée parmi les sprint candidates avec ces numéros.')
+      console.error('❌ Aucune issue (GitHub ou Sentry) récupérée.')
       process.exit(1)
     }
 
     console.log(`\n🧠 Plans détaillés (claude-sonnet) pour ${targets.length} issues...`)
     const planResults = []
     for (const issue of targets) {
-      console.log(`  → #${issue.number} : ${issue.title.slice(0,60)}`)
+      const tag = issue._isSentry ? `[Sentry ${issue.number}]` : `#${issue.number}`
+      console.log(`  → ${tag} : ${issue.title.slice(0,60)}`)
       const plan = await detailedPlan(issue)
       planResults.push({ issue, plan })
       if (plan) console.log(`    ✅ ${plan.steps.length} étapes`)
