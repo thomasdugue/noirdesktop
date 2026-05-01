@@ -389,7 +389,12 @@ async function loadGithubIssues() {
       ghFetch(`/repos/${REPO_OWNER}/${FEEDBACK_REPO}/issues?state=open&per_page=100`),
       ghFetch(`/repos/${REPO_OWNER}/${FEEDBACK_REPO}/issues?state=closed&per_page=100`)
     ])
-    if (!openRes.ok) throw new Error(`GH ${openRes.status}`)
+    if (!openRes.ok) {
+      let detail = ''
+      try { detail = await openRes.text() } catch {}
+      console.error('[GitHub] Response body:', detail)
+      throw new Error(`GH ${openRes.status}: ${detail.slice(0, 200) || '(empty body)'}`)
+    }
     allIssues = (await openRes.json()).filter(i => !i.pull_request).map(i => ({ ...i, _source: 'github' }))
     closedIssues = closedRes.ok ? (await closedRes.json()).filter(i => !i.pull_request).map(i => ({ ...i, _source: 'github' })) : []
     setDot(true)
@@ -412,7 +417,12 @@ async function loadSentryIssues() {
     })
     const url = `${SENTRY_API}/projects/${SENTRY_ORG}/${SENTRY_PROJECT}/issues/?${params}`
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } })
-    if (!res.ok) throw new Error(`Sentry ${res.status}`)
+    if (!res.ok) {
+      let detail = ''
+      try { detail = await res.text() } catch {}
+      console.error('[Sentry] Response body:', detail)
+      throw new Error(`Sentry ${res.status}: ${detail.slice(0, 200) || '(empty body)'}`)
+    }
     const data = await res.json()
     sentryIssues = data.map(s => ({
       _source: 'sentry',
