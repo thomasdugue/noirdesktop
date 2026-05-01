@@ -31,6 +31,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -42,9 +45,9 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/tdugue/noir-desktop/releases/latest/download/latest.json"
+        "https://github.com/thomasdugue/noirdesktop/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3M0I1ODJBNjQ1QTEwMzIKUldReUVGcGtLbGc3cDhiK0N6Wmo5NGNKYlhBSGY0bjAyeGZEUFRGMVAydmtPcG5DU2d1Q0FRWDIK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdCOTVDN0IwNTc5QTEyNUEKUldSYUVwcFhzTWVWZTcxcmt2QmxMMUJrZjBSTDN4cHN2MjhwbTMzT1REdUxNRDRBMGVqVmJhTTQK"
     }
   }
 }

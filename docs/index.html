@@ -79,6 +79,9 @@
 
     /* Token dot variant for Sentry */
     .token-dot.sentry.ok { background: #b8a4ff; box-shadow: 0 0 8px rgba(184,164,255,0.4); }
+
+    /* Sentry status pill (no input — token lives in worker) */
+    .status-pill { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--bg2); border: 1px solid var(--border2); border-radius: 5px; font-size: 11px; letter-spacing: 0.06em; color: var(--sub); text-transform: uppercase; }
     .issue-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
     .issue-tab { flex: 1; text-align: center; font-size: 10px; letter-spacing: 0.08em; padding: 5px 6px; border-radius: 4px; background: var(--bg2); border: 1px solid var(--border2); color: var(--muted); cursor: pointer; text-transform: uppercase; transition: all 0.12s; }
     .issue-tab:hover { color: var(--sub); border-color: var(--muted); }
@@ -221,10 +224,10 @@
         <svg class="token-icon github" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         <input class="token-input" id="tokenInput" type="password" placeholder="GitHub PAT" autocomplete="off" spellcheck="false">
       </div>
-      <div class="token-wrap" title="Sentry User Auth Token (event:read scope)">
+      <div class="status-pill" id="sentryStatus" title="Sentry feed (via worker proxy)">
         <div class="token-dot sentry" id="sentryTokenStatus"></div>
-        <svg class="token-icon sentry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 L21 18 L17 18 L12 9 L7 18 L3 18 Z"/></svg>
-        <input class="token-input" id="sentryTokenInput" type="password" placeholder="Sentry Token" autocomplete="off" spellcheck="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="11" height="11" style="color:#b8a4ff;"><path d="M12 3 L21 18 L17 18 L12 9 L7 18 L3 18 Z"/></svg>
+        <span>Sentry</span>
       </div>
       <button class="btn-sm" onclick="saveTokens()">Save</button>
       <button class="btn-sm" onclick="loadIssues(); loadReportTab(activeReportTab)">↻</button>
@@ -339,27 +342,25 @@ const REPO_OWNER = 'thomasdugue', FEEDBACK_REPO = 'noir-feedback', MAIN_REPO = '
 const PROJECT_DIR = '~/Documents/Thomas/noirdesktop/noir-tauri'
 const ENV_CMD = 'export $(cat scripts/.env.local | xargs)'
 
-// Sentry — région EU/Frankfurt, project hean-app/rust
-const SENTRY_ORG = 'hean-app', SENTRY_PROJECT = 'rust', SENTRY_API = 'https://de.sentry.io/api/0'
+// Sentry — proxy via Cloudflare Worker (le browser ne peut pas appeler de.sentry.io
+// directement à cause de "Invalid origin"). Le worker tient le SENTRY_AUTH_TOKEN
+// côté serveur — pas de token Sentry à coller dans le browser.
+const SENTRY_PROXY_URL = 'https://noir-feedback.thomas-dugue.workers.dev/sentry/issues'
 
 let allIssues = [], closedIssues = [], sentryIssues = []
 let selected = new Set(), activeFilter = 'all', activeSourceFilter = 'all', activeIssueTab = 'open'
 let activeReportTab = 'feedback-report'
 let artifactCache = {} // { name: [{id, created_at, size_in_bytes, run_id}] }
 
-// ── Tokens (GitHub PAT + Sentry user auth token) ──
+// ── Tokens (GitHub PAT seulement — Sentry token vit dans le worker) ──
 function saveTokens() {
   const gh = document.getElementById('tokenInput').value.trim()
-  const sentry = document.getElementById('sentryTokenInput').value.trim()
   if (gh) { localStorage.setItem('noir_gh_token', gh); setDot(true) }
-  if (sentry) { localStorage.setItem('noir_sentry_token', sentry); setSentryDot(true) }
   loadIssues(); loadReportTab(activeReportTab)
-  showToast('Tokens sauvegardés ✓')
+  showToast('Token sauvegardé ✓')
 }
-// Backwards-compat alias (au cas où un onclick=saveToken() survit dans une vieille version cachée)
-function saveToken() { saveTokens() }
+function saveToken() { saveTokens() } // alias rétro-compat
 function getToken() { return localStorage.getItem('noir_gh_token') || '' }
-function getSentryToken() { return localStorage.getItem('noir_sentry_token') || '' }
 function setDot(ok) { document.getElementById('tokenStatus').className = 'token-dot' + (ok ? ' ok' : '') }
 function setSentryDot(ok) { document.getElementById('sentryTokenStatus').className = 'token-dot sentry' + (ok ? ' ok' : '') }
 
@@ -373,12 +374,10 @@ function ghFetch(path, opts = {}) {
 
 // ── Issues ──
 async function loadIssues() {
-  if (!getToken() && !getSentryToken()) return
+  // Toujours tenter Sentry (le worker a son propre token, pas besoin de check côté browser).
+  // GitHub n'est tenté que si un PAT est saisi (sinon 401 inutile).
   document.getElementById('issuesList').innerHTML = `<div class="loading"><div class="spinner"></div> Chargement…</div>`
-
-  // Fetch GitHub + Sentry en parallèle. Chacun gère ses erreurs sans bloquer l'autre.
   await Promise.all([loadGithubIssues(), loadSentryIssues()])
-
   renderIssues(); updateIssueTabCounts()
 }
 
@@ -405,18 +404,14 @@ async function loadGithubIssues() {
 }
 
 async function loadSentryIssues() {
-  const token = getSentryToken()
-  if (!token) { sentryIssues = []; setSentryDot(false); return }
+  // Aucun token côté browser — c'est le worker qui tient le SENTRY_AUTH_TOKEN.
   try {
-    // Issues non résolues, derniers 14 jours. L'endpoint project-level ne supporte
-    // pas ?sort=freq → on garde le sort par défaut (lastSeen) et on prend les 50 plus récentes.
     const params = new URLSearchParams({
       statsPeriod: '14d',
       query: 'is:unresolved',
       limit: '50',
     })
-    const url = `${SENTRY_API}/projects/${SENTRY_ORG}/${SENTRY_PROJECT}/issues/?${params}`
-    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } })
+    const res = await fetch(`${SENTRY_PROXY_URL}?${params}`)
     if (!res.ok) {
       let detail = ''
       try { detail = await res.text() } catch {}
@@ -520,7 +515,7 @@ function renderIssues() {
   document.getElementById('issueCount').textContent = `${issues.length}`
   if (!issues.length) {
     const msg = isClosed ? 'Aucune issue fermée.'
-      : (activeSourceFilter === 'sentry' && !getSentryToken() ? 'Entre ton Sentry Token<br>pour voir les erreurs.' : 'Aucune issue.')
+      : (activeSourceFilter === 'sentry' ? 'Aucune erreur Sentry<br>(ou worker proxy non déployé).' : 'Aucune issue.')
     el.innerHTML = `<div class="empty-state"><p>${msg}</p></div>`
     return
   }
@@ -744,10 +739,11 @@ function showToast(m) { const e = document.getElementById('toast'); e.textConten
 
 // ── Init ──
 ;(function() {
-  const gh = getToken(), st = getSentryToken()
-  if (gh) { document.getElementById('tokenInput').value = gh; setDot(true) }
-  if (st) { document.getElementById('sentryTokenInput').value = st; setSentryDot(true) }
-  if (gh || st) { loadIssues(); loadReportTab('feedback-report') }
+  const gh = getToken()
+  if (gh) document.getElementById('tokenInput').value = gh
+  if (gh) setDot(true)
+  // Toujours loader (Sentry via proxy ne nécessite pas de token browser-side)
+  loadIssues(); loadReportTab('feedback-report')
 })()
 </script>
 </body>
