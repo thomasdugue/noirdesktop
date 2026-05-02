@@ -15,10 +15,10 @@ APP_PATH   = os.path.expanduser(
     "~/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/target/release/bundle/macos/Hean.app"
 )
 ICON_PATH  = os.path.expanduser(
-    "~/Documents/Thomas/noir logo/Mac/256.png"
+    "~/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/icons/icon.png"
 )
 OUT_DMG    = os.path.expanduser(
-    "~/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/target/release/bundle/dmg/Hean_0.1.0_aarch64.dmg"
+    "~/Documents/Thomas/noirdesktop/noir-tauri/src-tauri/target/release/bundle/dmg/Hean_0.2.0-beta.1_aarch64.dmg"
 )
 
 # Taille de la fenêtre DMG en points (1x — corrige la troncature)
@@ -44,73 +44,88 @@ def generate_background():
     # 1x — Finder affiche le PNG à la taille réelle en points
     W, H = WIN_W, WIN_H  # 700 × 390
 
-    # ── Base noire + glow via numpy (rapide) ──
+    # ── Base noire + dual glow (profondeur 2026) ──
     arr = np.zeros((H, W, 3), dtype=np.uint8)
-
-    # Glow elliptique centré
     y_c, x_c = np.mgrid[0:H, 0:W]
-    dist = np.sqrt(((x_c - W/2) / (W / 1.6))**2 + ((y_c - H/2) / (H / 1.2))**2)
-    glow_val = (np.exp(-dist * 2.2) * 12).astype(np.uint8)
-    arr[:, :, 0] = glow_val
-    arr[:, :, 1] = glow_val
-    arr[:, :, 2] = glow_val
 
-    # Grain rapide avec numpy
+    # Glow 1 — large, très subtil (ambiance)
+    dist1 = np.sqrt(((x_c - W/2) / (W / 1.6))**2 + ((y_c - H/2) / (H / 1.2))**2)
+    glow1 = (np.exp(-dist1 * 2.0) * 10).astype(np.uint8)
+
+    # Glow 2 — concentré, légèrement plus fort (focus central)
+    dist2 = np.sqrt(((x_c - W/2) / (W / 3.0))**2 + ((y_c - H*0.45) / (H / 2.0))**2)
+    glow2 = (np.exp(-dist2 * 1.8) * 8).astype(np.uint8)
+
+    combined = np.clip(glow1.astype(np.int16) + glow2.astype(np.int16), 0, 255).astype(np.uint8)
+    arr[:, :, 0] = combined
+    arr[:, :, 1] = combined
+    arr[:, :, 2] = combined
+
+    # Grain texturé (plus prononcé pour le côté tactile 2026)
     rng = np.random.default_rng(42)
-    noise = rng.integers(-4, 5, (H, W, 3), dtype=np.int16)
+    noise = rng.integers(-6, 7, (H, W, 3), dtype=np.int16)
     arr = np.clip(arr.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
     img = Image.fromarray(arr, "RGB")
     draw = ImageDraw.Draw(img)
 
-    # ── Arrow entre les icônes ──
-    # Icônes à x=185 et x=515 → espace utile : 250 à 450
+    # ── Flèche pointillée entre les icônes ──
     ax0, ax1, ay = 258, 445, APP_ICON_Y
-    ARROW_COL = (150, 150, 150)
-    # Ligne principale
-    draw.line([(ax0, ay), (ax1, ay)], fill=ARROW_COL, width=1)
-    # Pointe de flèche
+    ARROW_COL = (100, 100, 100)
+    dash_len, gap_len = 6, 4
+    x = ax0
+    while x < ax1 - 15:
+        draw.line([(x, ay), (min(x + dash_len, ax1 - 15), ay)], fill=ARROW_COL, width=1)
+        x += dash_len + gap_len
     tip = ax1
-    draw.line([(tip - 12, ay - 7), (tip, ay)], fill=ARROW_COL, width=1)
-    draw.line([(tip - 12, ay + 7), (tip, ay)], fill=ARROW_COL, width=1)
+    draw.line([(tip - 10, ay - 5), (tip, ay)], fill=ARROW_COL, width=1)
+    draw.line([(tip - 10, ay + 5), (tip, ay)], fill=ARROW_COL, width=1)
 
     # ── Textes ──
     try:
         from PIL import ImageFont
-        fonts_to_try = [
-            "/System/Library/Fonts/Menlo.ttc",
-            "/System/Library/Fonts/Monaco.ttf",
-            "/Library/Fonts/Courier New.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-        ]
-        font_small = None
-        font_title = None
-        for fpath in fonts_to_try:
+        fonts_mono = ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"]
+        fonts_sans = ["/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/SFNSText.ttf"]
+        font_small = font_title = font_badge = None
+        for fpath in fonts_mono:
             if os.path.exists(fpath):
                 font_small = ImageFont.truetype(fpath, 9)
+                font_badge = ImageFont.truetype(fpath, 7)
+                break
+        for fpath in fonts_sans:
+            if os.path.exists(fpath):
                 font_title = ImageFont.truetype(fpath, 11)
                 break
-        if font_small is None:
+        if not font_small:
             font_small = ImageFont.load_default()
+        if not font_title:
             font_title = font_small
+        if not font_badge:
+            font_badge = font_small
 
-        # "DRAG TO APPLICATIONS TO INSTALL" sous la flèche
-        TEXT_COL  = (130, 130, 130)   # bien lisible sur fond noir
-        for i, txt in enumerate(["DRAG TO APPLICATIONS", "TO INSTALL"]):
-            bbox = draw.textbbox((0, 0), txt, font=font_small)
+        # Instruction sous la flèche
+        TEXT_COL = (110, 110, 110)
+        for i, txt in enumerate(["D R A G   T O   A P P L I C A T I O N S", "T O   I N S T A L L"]):
+            bbox = draw.textbbox((0, 0), txt, font=font_badge)
             tw = bbox[2] - bbox[0]
-            tx = (W - tw) // 2
-            draw.text((tx, ay + 14 + i * 13), txt, fill=TEXT_COL, font=font_small)
+            draw.text(((W - tw) // 2, ay + 16 + i * 12), txt, fill=TEXT_COL, font=font_badge)
 
-        # "H E A N" watermark en haut centré
-        MARK_COL = (55, 55, 55)
-        bbox = draw.textbbox((0, 0), "H E A N", font=font_title)
+        # "H E A N" watermark haut centré
+        MARK_COL = (40, 40, 40)
+        bbox = draw.textbbox((0, 0), "H  E  A  N", font=font_title)
         tw = bbox[2] - bbox[0]
-        tx = (W - tw) // 2
-        draw.text((tx, 22), "H E A N", fill=MARK_COL, font=font_title)
+        draw.text(((W - tw) // 2, 20), "H  E  A  N", fill=MARK_COL, font=font_title)
 
-        # "v0.1.0 beta" coin bas droit
-        draw.text((W - 80, H - 20), "v0.1.0 beta", fill=(55, 55, 55), font=font_small)
+        # Badges formats en bas à gauche
+        BADGE_COL = (35, 35, 35)
+        badges = "F L A C    A L A C    W A V    A I F F    2 4 - B I T"
+        draw.text((20, H - 18), badges, fill=BADGE_COL, font=font_badge)
+
+        # Version bas à droite
+        ver = "v 0 . 2 . 0 - b e t a . 1"
+        bbox = draw.textbbox((0, 0), ver, font=font_badge)
+        tw = bbox[2] - bbox[0]
+        draw.text((W - tw - 20, H - 18), ver, fill=BADGE_COL, font=font_badge)
 
     except Exception as e:
         print(f"   (texte PIL non disponible : {e})")
@@ -118,55 +133,6 @@ def generate_background():
     out = "/tmp/hean_dmg_background.png"
     img.save(out, "PNG")
     print(f"✅ Background généré : {out}  ({W}×{H}px 1x)")
-    return out
-
-    # Wordmark "NOIR" ultra-discret en haut
-    try:
-        from PIL import ImageFont
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 22)
-        except:
-            font = ImageFont.load_default()
-        draw = ImageDraw.Draw(img)
-        text = "H E A N"
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        tx = (W - tw) // 2
-        draw.text((tx, 44), text, fill=(255, 255, 255, 14), font=font)
-    except Exception as e:
-        pass  # Sans texte si font indispo
-
-    # Instruction "Dépose Hean dans Applications" en bas
-    try:
-        draw = ImageDraw.Draw(img)
-        inst = "Dépose Hean dans Applications pour l'installer"
-        try:
-            font_inst = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 24)
-        except:
-            font_inst = ImageFont.load_default()
-        bbox = draw.textbbox((0, 0), inst, font=font_inst)
-        tw = bbox[2] - bbox[0]
-        tx = (W - tw) // 2
-        draw.text((tx, H - 88), inst, fill=(255, 255, 255, 46), font=font_inst)
-    except:
-        pass
-
-    # Version
-    try:
-        draw = ImageDraw.Draw(img)
-        try:
-            font_v = ImageFont.truetype("/System/Library/Fonts/Courier.ttc", 18)
-        except:
-            font_v = ImageFont.load_default()
-        draw.text((W - 108, H - 48), "v0.1.0 beta", fill=(255, 255, 255, 26), font=font_v)
-    except:
-        pass
-
-    # Convertir en RGB pour PNG final
-    bg = img.convert("RGB")
-    out = "/tmp/hean_dmg_background.png"
-    bg.save(out, "PNG")
-    print(f"✅ Background généré : {out}  ({W}×{H}px @2x)")
     return out
 
 
