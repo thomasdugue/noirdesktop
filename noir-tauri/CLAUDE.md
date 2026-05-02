@@ -37,13 +37,13 @@ src/           Vanilla JS (ES6 modules) + CSS + HTML — no bundler
 src-tauri/     Rust backend (Tauri commands + audio engine)
 ```
 
-### Frontend — 17 JS modules
+### Frontend — 18 JS modules
 
 The JS was refactored (Feb 2026) from a 9 600-line monolith into:
 
 | Module | Lines | Role |
 |--------|-------|------|
-| `renderer.js` | ~830 | Orchestrator: registers all module functions on `app`, settings panel, sidebar resize, `init()` |
+| `renderer.js` | ~890 | Orchestrator: registers all module functions on `app`, settings panel, sidebar resize, `init()` ; init `error-tracking.js` AVANT tout autre module pour capturer les erreurs d'init |
 | `app.js` | ~109 | **Mediator**: ~95 `null` slots filled at init — the only way modules call each other |
 | `state.js` | ~205 | **Centralized mutable state** (see below) |
 | `views.js` | ~3 100 | All view rendering: home, albums/artists grids, album/artist/mix pages, virtual scroll (60-node pool). `transitionView` is async (supports `await renderFn()`) |
@@ -56,11 +56,12 @@ The JS was refactored (Feb 2026) from a 9 600-line monolith into:
 | `shortcuts.js` | ~555 | Configurable local shortcuts + global media keys (Cmd+Shift+P/Right/Left fallbacks), persisted to localStorage. F7/F8/F9 intentionnellement absents (conflictent avec Apple Music) |
 | `eq.js` | ~392 | EQ panel UI (8-band parametric), connects to `set_eq_bands` Tauri command |
 | `search.js` | ~337 | Inverted index, multi-word scoring, 200ms debounce, result panel |
-| `feedback.js` | ~222 | Floating feedback button + modal (bug/feature/other), saves to local JSON via Tauri `submit_feedback` |
+| `feedback.js` | ~245 | Floating feedback button + modal (bug/feature/other), checkbox "Attach recent logs" → invoke `get_recent_logs` et préfixe la description, envoie via Tauri `submit_feedback` |
+| `error-tracking.js` | ~85 | **Forwarder Sentry JS** : `window.error` + `unhandledrejection` → `invoke('report_js_error')`. Anti-spam dédup 5s. Pas de SDK `@sentry/browser` (1 seul DSN côté Rust) |
 | `drag.js` | ~182 | Custom drag (mousedown/move/up) — HTML5 drag is broken in Tauri WebView |
 | `utils.js` | ~350 | Pure utilities: `showToast`, `escapeHtml`, `formatTime`, `setManagedTimeout`, `createParticleCanvas` |
 | `lyrics.js` | ~220 | Lyrics panel (lrclib.net, lyrics.ovh fallback) |
-| `onboarding.js` | ~1 100 | Onboarding flow (6 steps): library path selection, NAS discovery, SMB auth/browse, scan progress. Shown when `savedPaths.length === 0 && networkSources.length === 0` |
+| `onboarding.js` | ~1 110 | Onboarding flow (6 steps): library path selection, NAS discovery (avec hint permission Local Network macOS), SMB auth/browse, scan progress. Shown when `savedPaths.length === 0 && networkSources.length === 0` |
 | `auto-update.js` | ~103 | Auto-update check via Tauri updater plugin |
 
 ### State objects (`state.js`)
@@ -174,7 +175,7 @@ await transitionView(async () => {
 
 | File | Role |
 |------|------|
-| `lib.rs` | 75+ `#[tauri::command]` functions + app setup + global cache statics |
+| `lib.rs` | 75+ `#[tauri::command]` functions + app setup + global cache statics. `pub fn run()` initialise Sentry et tracing AVANT le builder Tauri (les guards doivent vivre toute la durée de l'app) |
 | `audio_engine.rs` | Playback state, device switching, hog mode (bit-perfect via CoreAudio exclusive) |
 | `audio_decoder.rs` | Symphonia-based decoding (FLAC/WAV/MP3/AAC/ALAC/Vorbis) + `SmbProgressiveFile` |
 | `audio/coreaudio_backend.rs` | macOS CoreAudio HAL, sample rate negotiation, system default device sync |
@@ -182,6 +183,8 @@ await transitionView(async () => {
 | `media_controls.rs` | souvlaki wrapper — enregistre Noir dans `MPRemoteCommandCenter` pour intercepter les media keys même quand Apple Music tourne. Expose `init_media_controls`, `update_metadata`, `update_playback_state`. Émet `media-control` vers JS. |
 | `eq.rs` | 8-band parametric EQ (biquad filters) |
 | `resampler.rs` | Sample rate conversion (rubato FFT, 1024-sample chunks) |
+| `sentry_init.rs` | **Sentry init** + panic hook (auto-enregistré par feature `panic`) + anonymisation paths utilisateur (`/Users/<x>` → `<HOME>`) dans `before_send`. Toggle runtime via `SENTRY_ENABLED: AtomicBool` (Settings → Privacy). Capture aussi les erreurs JS forwardées via `capture_js_error()`. DSN injecté au compile-time via `option_env!("HEAN_SENTRY_DSN")`. |
+| `logging.rs` | **Logs persistés** via `tracing` + `tracing-appender`. Rotation journalière dans `~/Library/Application Support/noir/logs/noir.log`. Garde 7 jours, cleanup auto. `read_recent_logs(max_bytes)` lit les 1-2 derniers fichiers (concaténés, tronqués au tail). Utilisé par le bouton "Joindre les logs" du modal feedback. |
 | `network/smb_utils.rs` | Parse `mount` output → map `smb://host/share` to local `/Volumes/...` — used as fallback by `audio_play` and `audio_preload_next` for local SMB mounts |
 | `audio/types.rs` | Shared types: `AudioInfo`, `PlaybackCommand`, standard sample rates |
 | `audio/backend.rs` | `AudioBackend` trait (abstraction for future WASAPI port) |
@@ -249,15 +252,98 @@ network/
 
 MusicBrainz + CoverArtArchive (album art), Deezer (artist images + genre enrichment), WikiMedia.
 
-### Feedback → GitHub Issues
+### Feedback → Cloudflare Worker → GitHub Issues
 
-- `submit_feedback` (Tauri command) : sauvegarde locale + POST `https://api.github.com/repos/thomasdugue/noir-feedback/issues`
-- Token injecté au **compile time** via `option_env!("NOIR_GITHUB_FEEDBACK_TOKEN")` dans `lib.rs`
-- La variable d'env `NOIR_GITHUB_FEEDBACK_TOKEN` doit être définie **avant `cargo build`** (pas au runtime)
-- Le launch config parent (`Documents/Thomas/.claude/launch.json`) la définit dans `env: {}`
-- Sans token → le feedback est sauvé en local seulement (`~/.local/share/noir/feedback/`)
-- **Piège** : le nom de l'env var doit être **exactement** `NOIR_GITHUB_FEEDBACK_TOKEN` — tout autre nom (`NOIR_GITHUB_TOKEN`, etc.) fait que `option_env!` retourne `None`
-- **NE JAMAIS** committer, logger ou documenter la valeur du token
+Architecture mise en place 2026-04 → l'app NE contient PLUS le token GitHub. Tout passe par un worker Cloudflare proxy qui détient le secret côté serveur.
+
+```
+Hean app → POST $NOIR_WORKER_URL → Cloudflare Worker → GitHub Issues API
+                                  ↑                    ↑
+                                  vit côté Cloudflare  GITHUB_TOKEN secret côté CF
+```
+
+- `submit_feedback` (Tauri command, [lib.rs:4084](src-tauri/src/lib.rs)) : sauvegarde locale **toujours** dans `~/Library/Application Support/noir/feedback/` (backup) + POST vers le worker si `NOIR_WORKER_URL` + `NOIR_WORKER_SECRET` sont injectés au compile-time
+- Worker : [scripts/cloudflare-worker.js](scripts/cloudflare-worker.js) — 2 routes :
+  - `POST /feedback` (ou racine, legacy) : valide `X-Noir-Secret`, forward à GitHub Issues avec `GITHUB_TOKEN` (secret CF)
+  - `GET /sentry/issues` + `/sentry/issue/{shortId}` : proxy Sentry pour le dashboard (contourne CORS browser-side, voir Dashboard ci-dessous)
+- Déploiement : `cd noir-tauri/scripts && wrangler deploy` (1 fois) puis `wrangler secret put GITHUB_TOKEN` + `NOIR_SECRET` + `SENTRY_AUTH_TOKEN`
+- Sans worker configuré (env vars absents au build) → feedback sauvé en local seulement
+- **Piège** : env vars sont `NOIR_WORKER_URL` + `NOIR_WORKER_SECRET` (pas `FEEDBACK_*`). `option_env!` retourne `None` sinon, et le code fait fallback "local-only" silencieusement.
+
+### Observabilité — Sentry + logs persistés
+
+**Stack** :
+- Sentry pour les **panics Rust** (panic hook auto via feature `panic`) + **erreurs JS** (`window.error` + `unhandledrejection` → `report_js_error` Tauri command → `sentry::capture_event` côté Rust)
+- Tracing pour les **logs persistés** (`tracing-appender`, rotation journalière, `~/Library/Application Support/noir/logs/`)
+
+**Anonymisation** : `before_send` dans `sentry_init::scrub_event` remplace `/Users/<name>/...` → `<HOME>/...` dans message + breadcrumbs + exception values. `send_default_pii: false` pour ne pas stocker les IPs côté Sentry.
+
+**RGPD opt-out** : Settings → Privacy → "Send error reports" toggle.
+- Persisté dans `Config.sentry_enabled: Option<bool>` (config.json)
+- Lu au boot par `pub fn run()` AVANT init Sentry
+- Toggle runtime via `AtomicBool` SENTRY_ENABLED checké dans `before_send` → désactivation immédiate sans redémarrage si Sentry était init au boot
+- Si toggle activé alors que Sentry n'a pas été init au boot (`enabled=false` au démarrage) → message "Restart Hean to enable error reporting" affiché dans le hint
+
+**Bouton "Attach recent logs" du modal feedback** : appelle `get_recent_logs(maxKb: 200)` qui retourne les 1-2 derniers fichiers de log concaténés et tronqués au tail. Préfixé à la description avant POST au worker.
+
+**DSN compile-time** : injecté via `option_env!("HEAN_SENTRY_DSN")` (project Sentry `hean-app/rust`, région EU `https://de.sentry.io`). Sans DSN → `sentry_init::init()` retourne `None`, no-op total.
+
+### Release pipeline — Apple signing + notarisation + updater
+
+**Scripts wrappers** :
+- `scripts/dev.sh` : source `.env.local`, vérifie le DSN chargé, relance `npm install` si `node_modules` absent, lance `npm run tauri dev`. Évite le piège `option_env!` silencieux en mode dev.
+- `scripts/release.sh` : source `.env.local`, valide les **6 vars requises** (`HEAN_SENTRY_DSN`, `APPLE_*`, `TAURI_SIGNING_PRIVATE_KEY`), vérifie le certificat Apple dans Keychain, run cargo + JS tests, build release. Vérifie codesign + spctl à la fin.
+
+**Pipeline complet (dans l'ordre, 6 étapes)** :
+1. `cargo build --release` (LTO, ~5 min) → produit `Hean.app`
+2. **Bundle dylibs externes** via `dylibbundler -b -x <bin> -d <Frameworks/> -p @executable_path/../Frameworks/ -cd`. Embarque ~92 dylibs Samba dépendances de `libsmbclient` (sinon l'app crash sur les Macs sans Homebrew).
+3. **Fix doublons LC_RPATH** : `dylibbundler` ajoute un rpath à chaque dylib mais certaines en avaient déjà un de Homebrew → doublons → macOS dyld refuse (depuis Big Sur). Boucle `install_name_tool -delete_rpath @executable_path/../Frameworks/` sur les ~66 dylibs concernées.
+4. Re-sign chaque dylib + l'app entière avec `--force --sign $APPLE_SIGNING_IDENTITY --options runtime --timestamp`
+5. **Notariser l'app** via `xcrun notarytool submit ... --wait` (~2-5 min) puis `xcrun stapler staple`
+6. Créer DMG via `hdiutil create -volname "Hean" -format UDZO`, signer le DMG, **notariser le DMG aussi** (sinon Gatekeeper refuse même si l'app à l'intérieur est notarisée), stapler
+7. Tarball updater : `tar -czf Hean.app.tar.gz Hean.app` + `tauri signer sign --private-key $TAURI_SIGNING_PRIVATE_KEY --password $TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+8. Publier sur GitHub Releases : DMG, `.app.tar.gz`, `.app.tar.gz.sig`, `latest.json` (le fichier consulté par l'updater)
+
+**Tauri updater** :
+- Endpoint : `https://github.com/thomasdugue/noirdesktop/releases/latest/download/latest.json` (typo `tdugue/noir-desktop` corrigée 2026-05-01)
+- Pubkey minisign dans `tauri.conf.json` doit matcher la clé privée dans `~/.tauri/hean.key` (regénérée 2026-05-01 sans password — l'ancienne avait un password inconnu)
+- Si on régénère la clé : il faut **rebuilder l'app** pour que la nouvelle pubkey soit embarquée, sinon les futurs updates signés seront rejetés par les apps déjà installées
+
+**`.env.local` requis** (`scripts/.env.local`, gitignored) :
+```
+HEAN_SENTRY_DSN=...
+NOIR_WORKER_URL=https://noir-feedback.<sub>.workers.dev
+NOIR_WORKER_SECRET=...
+APPLE_SIGNING_IDENTITY="Developer ID Application: Thomas Dugué (XXXXXXXXXX)"
+APPLE_TEAM_ID=...
+APPLE_ID=thomas.dugue@gmail.com
+APPLE_PASSWORD=xxxx-xxxx-xxxx-xxxx          # App-Specific Password Apple, pas le mdp Apple ID
+TAURI_SIGNING_PRIVATE_KEY=...               # contenu du fichier ~/.tauri/hean.key
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD=...      # password de la clé minisign si chiffrée
+```
+
+⚠️ **NE JAMAIS commit `.env.local`** (gitignored par `.env*` racine + `*.local` dans `noir-tauri/.gitignore`). Permissions `chmod 600` recommandé.
+
+### Dev dashboard (`docs/index.html` → GitHub Pages)
+
+[`thomasdugue.github.io/noirdesktop/`](https://thomasdugue.github.io/noirdesktop/) — cockpit du dev qui affiche :
+- **Issues GitHub** (de `noir-feedback`) avec checkbox de sélection
+- **Crashs Sentry** (via worker proxy `/sentry/issues`) **dans la même liste**, avec icône éclair violette + checkbox
+- Filtres 2D : Source (All/GitHub/Sentry) × Type (All/Bugs/UX/Sprint/High)
+- 4 actions : Feedback Agent, Synthèse Sprint, Plan détaillé, Debug
+
+**Plan détaillé** ([`scripts/sprint-planner.js --plan <ids>`](scripts/sprint-planner.js)) :
+- Accepte mix de numéros GitHub (`12`) et Sentry shortIds (`RUST-1`)
+- Sentry shortIds → fetch via worker `/sentry/issue/{shortId}` (qui résout le shortId → groupId puis fetch issue + last event avec stack trace)
+- Modèle : **`claude-opus-4-7`** (pas 4-5 ni 4-6)
+- Adaptive thinking + effort `xhigh` (recommandé Anthropic pour coding/agentic)
+- **Charge 583 KB de codebase main** dans le prompt (16 fichiers JS + 13 fichiers Rust prioritaires, cap 60KB par fichier, total 600KB)
+- **Prompt caching** : `cache_control: ephemeral` sur le bloc codebase → ~90% économie sur les appels 2/N dans la même fenêtre 5min
+- Génère `SPRINT.md` qui est **upload comme artifact** GitHub Actions (pas commit dans le repo — l'ancien commit a été supprimé pour ne plus polluer les nouveaux runs)
+
+**Tokens GitHub côté repo** :
+- Secret repo `NOIR_GITHUB_TOKEN` : utilisé par les workflows CI (`feedback-agent.yml`, `sprint-plan.yml`, `sprint-synthesis.yml`) pour fetch les issues. Doit avoir `Issues:Read` sur `thomasdugue/noir-feedback`.
+- PAT du dashboard browser (localStorage) : pour fetch issues + déclencher les workflows. Doit avoir `Issues:RW` + `Actions:RW` sur `noirdesktop` ET `noir-feedback`.
 
 ### Audio pipeline (end-to-end)
 
@@ -343,6 +429,12 @@ All persisted to `~/.local/share/noir/` (via `dirs::data_dir()`):
 - **SMB réseau :** connexion native gérée par Noir (pas par Finder). Cache local des metadata. Buffering : copie locale avant lecture pour éviter la latence réseau.
 - **Media keys macOS :** souvlaki (`MPRemoteCommandCenter`) utilisé pour que Noir prenne le contrôle des touches multimédia même quand Apple Music tourne. Les global shortcuts Tauri `MediaPlayPause/MediaTrackNext/MediaTrackPrevious` ne suffisent pas — Apple Music les intercepte en priorité. **Ne jamais réajouter F7/F8/F9 comme global shortcuts Tauri.**
 - **Navigation séquentielle en vue tracks :** toujours utiliser `ui.tracksViewOrder` (paths dans l'ordre visuel trié/filtré), jamais `library.tracks[currentTrackIndex ± 1]`. L'ordre de `library.tracks` est l'ordre de scan, qui diffère du tri visuel.
+- **Sentry = un seul DSN côté Rust.** Pas de SDK `@sentry/browser` JS (1.5MB minifié, lourd, pas de bundler). Les erreurs JS sont forwardées via `invoke('report_js_error')` → `sentry::capture_event()` côté Rust. Économie + 1 seul projet Sentry à monitorer + pas de double-comptage.
+- **Tokens secrets compile-time only.** `option_env!()` lit les env vars à la compilation, pas au runtime. **Ne JAMAIS** stocker un token (Sentry DSN, GitHub feedback, Tauri signing key) dans le runtime — toujours via `option_env!`. Wrapper `release.sh` valide les vars AVANT le build pour éviter les builds release silencieusement sans secrets.
+- **Cloudflare Worker pour le feedback** (au lieu d'un GitHub PAT compile-time dans le binaire). Le binaire ne contient plus de credentials GitHub — uniquement l'URL du worker + un secret partagé. Le worker tient le `GITHUB_TOKEN` côté serveur. Si le binaire fuit, le pire qui arrive c'est qu'on doit révoquer le `NOIR_SECRET` (pas un token GitHub avec des droits étendus).
+- **Dylib bundling pour libsmbclient.** Sur macOS, `pavao` linke contre `libsmbclient.0.8.1.dylib` qui dépend transitivement de ~92 dylibs Samba (Homebrew). Sans bundling, l'app crash au lancement chez tous les Macs sans Homebrew. Pipeline release.sh : `dylibbundler` → fix LC_RPATH dupliqués (`install_name_tool -delete_rpath`) → re-sign chaque dylib + l'app entière → notariser. **Ne JAMAIS skipper le bundling**, sous peine de DMG inutilisables chez les testeurs.
+- **DMG ET app sont notarisés séparément.** Tauri notarise l'app mais pas le DMG. Sans notarisation explicite du DMG (`xcrun notarytool submit Hean_*.dmg`), Gatekeeper refuse le DMG même si l'app à l'intérieur est OK. Toujours notariser les deux + stapler les deux.
+- **Privacy toggle = `AtomicBool` runtime + persistence config.json.** Le toggle dans Settings → Privacy ne nécessite pas de redémarrage SI Sentry était init au boot (le `before_send` callback check l'AtomicBool à chaque event). Si Sentry n'a pas été init au boot (`enabled=false` au démarrage), le toggle persiste mais ne prend effet qu'au prochain reboot. UI affiche un hint "Restart Hean to enable error reporting" dans ce cas.
 - **AirPlay / Bluetooth device handling** :
   - `kAudioDevicePropertyTransportType` identifie les devices : AirPlay (`0x61697270`), Bluetooth (`0x626C7565`), Built-in (`0x626C746E`), USB (`0x75736220`).
   - `DeviceInfo` porte `transport_type: u32` + `is_airplay: bool`. Le champ `is_airplay` est utilisé côté JS pour le badge UI, toast dédié, et blocage automatique du hog mode (incompatible AirPlay).
@@ -379,6 +471,9 @@ All persisted to `~/.local/share/noir/` (via `dirs::data_dir()`):
 - **Playlist mosaic covers : déduplication par album seul.** `getPlaylistAlbumCovers()` déduplique par `album.trim().normalize('NFC')` (nom d'album seul), identique à la clé de `library.albums`. **Ne JAMAIS dédupliquer par `artist+album`** — les variations "feat." dans les noms d'artistes créent de faux albums distincts (même pochette dupliquée × N dans la mosaïque). Régression constatée 2026-03-16.
 - **Playlist mosaic covers : fallback internet OBLIGATOIRE.** `loadPlaylistThumbs()` DOIT avoir 4 niveaux de fallback : (1) `thumbnailCache`/`coverCache` → (2) `get_cover_thumbnail` → (3) `get_cover` → (4) `fetch_internet_cover(artist, album)`. Sans le niveau 4, les albums sans cover embarquée (cover récupérée uniquement via MusicBrainz/Deezer) affichent une cellule noire. Les attributs `data-cover-artist` et `data-cover-album` DOIVENT être injectés par `buildPlaylistThumbHtml` pour que le fallback fonctionne.
 - **Boutons 'Add to Queue' et 'Add to Playlist' au survol des tracks.** Les règles CSS `.track-add-queue` et `.track-add-playlist` (opacity 0 → 1 au hover de `.playlist-track-item`) ne doivent PAS être supprimées. Régression constatée si ces règles sont absentes.
+- **Sentry `before_send` doit drop les events si `SENTRY_ENABLED.load(Relaxed) == false`.** Sans ce check, désactiver le toggle dans Settings ne stoppe pas l'envoi des events qui sont déjà dans le hub Sentry. Le test unitaire `scrubs_*` couvre l'anonymisation des paths mais pas le toggle — vérifier visuellement après chaque modif de `sentry_init.rs`.
+- **`option_env!()` doit être utilisé pour TOUS les secrets compile-time** (`HEAN_SENTRY_DSN`, `NOIR_WORKER_URL`, `NOIR_WORKER_SECRET`). Sans ça, le binaire release est silencieusement privé du secret (pas d'erreur runtime, juste un fallback "save locally" / "no Sentry"). `scripts/release.sh` valide la présence des vars AVANT le build pour éviter ce piège — ne JAMAIS bypass ce script en lançant `npm run tauri build` à nu.
+- **`dylibbundler` doit être suivi du fix LC_RPATH dupliqués.** dylibbundler ajoute systématiquement un `LC_RPATH @executable_path/../Frameworks/` à chaque dylib mais certaines dylibs Samba en avaient déjà un (Homebrew). 66/92 dylibs ont des doublons → macOS dyld refuse depuis Big Sur. Le pipeline doit : (1) `dylibbundler` → (2) boucle sur Frameworks/ qui détecte les doublons et fait `install_name_tool -delete_rpath` une seule fois → (3) re-sign chaque dylib touchée. Ne JAMAIS oublier l'étape 2.
 
 ## Règles de travail
 
@@ -429,3 +524,4 @@ Lire la spec correspondante AVANT de travailler sur une feature :
 - **2026-03-15** : Home page carousels — (1) Rename "New Releases" → "Recently Added" + NAS albums inclus (fix ADDED_DATES_CACHE dans `scan_network_source_cmd` pour tracks NAS), (2) Session-level caching pour Discover/Audiophile/Long Albums/Random Mix/Discovery Mix (sélection stable par session, invalidée sur `scan_complete` ou `genre_enrichment_complete`), (3) Fix covers Recently Played — cause racine : lookup album avec clé composite `"artist — album"` alors que `library.albums` utilise `normalizeKey(albumName)` seul. Fix : lookup 4 niveaux (normalizedKey → compositeKey → linear scan → track path), (4) Fix covers Discovery Mix — cause racine : `tryLoadCover()` vérifiait `!img.isConnected` AVANT d'appeler `loadThumbnailAsync`, mais l'élément n'était pas encore dans le DOM (homeContainer attaché plus tard). Résultat : retour immédiat pour TOUS les mixes, aucune cover chargée. Fix : remplacé par le même pattern `.then()` que `createCarouselAlbumItem` (pushes to queue, processed after DOM built). (5) Ajout `coverCandidates` multi-album dans `generateDiscoveryMixes` avec fallback chain + reconstruction pour ancien format localStorage.
 - **2026-03-16** : Fix playlist mosaic covers — 2 bugs corrigés dans `playlists.js`. **(1) Déduplication incohérente** : `getPlaylistAlbumCovers` dédupliquait par `artist::album` (artist+album combinés) alors que `library.albums` déduplique par album seul (`normalizeKey(album)`). Conséquence : les variations "feat." dans les noms d'artistes créaient de faux albums distincts → même pochette affichée 2, 3 ou 4 fois dans la mosaïque, ou cellules fantômes noires. Fix : renommé en `getPlaylistAlbumCovers`, retourne des objets `{ path, artist, album }`, déduplique par `album.trim().normalize('NFC')` seul. **(2) Fallback internet manquant** : `loadPlaylistThumbs` n'avait que 3 niveaux de fallback (cache → thumbnail → get_cover). Les albums sans cover embarquée (récupérée via MusicBrainz/Deezer) restaient noirs. Fix : ajout étape 4 `fetch_internet_cover(artist, album)` + injection `data-cover-artist`/`data-cover-album` dans `buildPlaylistThumbHtml`. Invariants ajoutés dans CLAUDE.md pour prévenir les régressions.
 - **2026-04-22** : Retrait de la feature DAP Sync (Mass Storage / MTP / SMB) avant le lancement de la beta — instabilité non résolue sur MTP (Transaction ID mismatch, timeouts, InvalidObjectHandle). Code archivé sur branche `archive/dap-sync-v1` + tag `dap-sync-archive-2026-04`. Rapport complet dans [`docs/archive/dap-sync/`](../docs/archive/dap-sync/). `smb_utils.rs` déplacé vers `network/` (partagé avec le streaming audio). Les tables SQLite `dap_destinations` / `dap_sync_selection` sont laissées en place dans la DB utilisateur pour préserver les configurations des beta-testers en vue d'une future réintégration. Les sprints DAP Sync (2026-03-14, 03-15, 03-17, 03-23, 03-24) sont résumés dans l'archive (voir DECISIONS.md et KNOWN_ISSUES.md).
+- **2026-05-01 / 02** : **Préparation launch beta v0.2.0-beta.1** — session intensive (~10h) qui a câblé tout ce qui manquait avant la distribution aux 50 testeurs. (1) **Sentry** : nouveaux modules `sentry_init.rs` + `error-tracking.js`, panic hook auto, anonymisation paths (`/Users/<x>` → `<HOME>`), forwarder JS via `report_js_error` Tauri command, toggle privacy RGPD dans Settings (AtomicBool runtime + persisté config.json). (2) **Logs persistés** : nouveau module `logging.rs` avec tracing-appender (rotation journalière, 7 jours, `~/Library/Application Support/noir/logs/`), bouton "Joindre les logs" dans le modal feedback. (3) **Cloudflare Worker** : refactor du worker pour ajouter route `/sentry/issues` + `/sentry/issue/{shortId}` (proxy Sentry pour contourner CORS browser). (4) **Apple signing E2E** : `scripts/release.sh` automatisé (validation env vars, certificate keychain, codesign, notarisation app + DMG), bug Notarisation 403 résolu (acceptation des nouveaux Apple Developer agreements), bug `dylibbundler` (92 dylibs Samba bundlées dans Frameworks/) et fix doublons LC_RPATH (66 dylibs corrigées via `install_name_tool -delete_rpath`) — sans ces 2 étapes l'app crash au lancement. (5) **Tauri updater** : fix endpoint typo (`tdugue/noir-desktop` → `thomasdugue/noirdesktop`), regénération clé minisign sans password (l'ancienne avait un password inconnu), ajout `bundle.macOS.minimumSystemVersion: "11.0"`. (6) **Release v0.2.0-beta.1 publiée sur GitHub** avec DMG signé+notarisé (~35 MB), tarball updater + signature, latest.json. (7) **Dashboard dev** ([thomasdugue.github.io/noirdesktop](https://thomasdugue.github.io/noirdesktop/)) : ajout des crashs Sentry dans la même liste que les issues GitHub avec checkbox + filtre Source 2D, refonte `sprint-planner.js` pour Opus 4.7 + adaptive thinking + effort xhigh + chargement de 583 KB de codebase main + prompt caching ~90% économie sur appels 2/N. (8) **Bug fix** : suppression de `SPRINT.md` du repo (était commit, créait des synthèses parasites en concaténant l'historique avec les nouveaux runs). (9) **Onboarding** : hint permission Local Network macOS sur l'étape NAS discovery. (10) **Docs testeurs** : `BETA_TESTERS_GUIDE.md`, `BETA_KNOWN_ISSUES.md`, `RELEASE_NOTES_v0.2.0-beta.1.md`, template GitHub `beta-bug-report.md`. Vars `.env.local` mappées : `HEAN_SENTRY_DSN`, `NOIR_WORKER_URL`/`SECRET`, `APPLE_*`, `TAURI_SIGNING_PRIVATE_KEY`/`PASSWORD`. Worker re-déployé avec secret `SENTRY_AUTH_TOKEN`. À faire pour beta.2 : ajouter `NSAppleEventsUsageDescription` + `NSDocumentsFolderUsageDescription` dans `tauri.conf.json` pour clarifier les popups système.
