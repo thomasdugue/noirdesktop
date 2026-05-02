@@ -177,6 +177,8 @@ function applyAmbientColor(colors) {
   root.style.setProperty('--color-ambient-r', r)
   root.style.setProperty('--color-ambient-g', g)
   root.style.setProperty('--color-ambient-b', b)
+  const luminosity = (r * 0.299 + g * 0.587 + b * 0.114) / 255
+  root.style.setProperty('--ambient-intensity', (0.02 + luminosity * 0.04).toFixed(3))
 }
 let fsIsPlaying = false
 let fsRmsEnergy = 0       // Current RMS from Rust (0.0 - ~0.5)
