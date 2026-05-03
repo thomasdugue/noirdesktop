@@ -917,6 +917,11 @@ export async function showTrackInfoPanel(track) {
     </div>
     ` : ''}
 
+    <div class="track-info-playcount" id="track-info-playcount" style="display:none;">
+      <span class="track-info-metadata-label">Plays</span>
+      <span class="play-count-dots" id="track-info-playcount-dots"></span>
+    </div>
+
     <div class="track-info-file">
       <span class="track-info-metadata-label">File</span>
       <div class="track-info-file-path">${escapeHtml(track.path || '')}</div>
@@ -941,6 +946,23 @@ export async function showTrackInfoPanel(track) {
   `
 
   content.innerHTML = html
+
+  // Async play count fetch — non blocking
+  invoke('get_listening_history').then(history => {
+    const entries = history?.entries || []
+    const count = entries.filter(e => e.path === track.path).length
+    if (count > 0) {
+      const dotsEl = document.getElementById('track-info-playcount-dots')
+      const wrapEl = document.getElementById('track-info-playcount')
+      if (dotsEl && wrapEl) {
+        const visible = Math.min(count, 12)
+        let dotsHtml = ''
+        for (let i = 0; i < visible; i++) dotsHtml += '<span class="play-dot"></span>'
+        dotsEl.innerHTML = dotsHtml + (count > 0 ? `<span class="play-count-num">${count}×</span>` : '')
+        wrapEl.style.display = ''
+      }
+    }
+  }).catch(() => {})
 
   // Event listener for edit button
   const editBtn = document.getElementById('track-info-edit-btn')

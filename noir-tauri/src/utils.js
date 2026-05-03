@@ -365,3 +365,110 @@ export function formatQuality(metadata, filePath = null) {
 
   return { label: label || '-', class: qualityClass }
 }
+
+// === METADATA ORNAMENTS ===
+
+/**
+ * Build a Geist Mono ornament line for the player bar / track info.
+ * Example: "FLAC · 24-BIT / 192 KHZ · 6:42 · TRACK 7 / 12"
+ * Returns null if there's nothing meaningful to show.
+ */
+export function formatTrackOrnament(track) {
+  if (!track) return null
+  const parts = []
+  const meta = track.metadata || {}
+
+  // Format from extension
+  const ext = (track.path || '').match(/\.([a-z0-9]+)$/i)
+  const fmt = ext ? ext[1].toUpperCase() : null
+  if (fmt) parts.push(fmt)
+
+  // Quality (24-bit / 192kHz or 320 kbps)
+  const q = formatQuality(meta, track.path)
+  if (q.label && q.label !== '-') parts.push(q.label.toUpperCase())
+
+  // Duration
+  if (meta.duration) parts.push(formatTime(meta.duration))
+
+  // Track position
+  const trackNum = meta.track || meta.trackNumber || meta.track_number
+  if (trackNum) {
+    parts.push(`TRACK ${String(trackNum).padStart(2, '0')}`)
+  }
+
+  return parts.length ? parts.join(' · ') : null
+}
+
+/**
+ * Build the editorial banner for an album page.
+ * Example: "PINK FLOYD · 1973 · 10 TRACKS · 42:49 · ROCK"
+ */
+export function formatAlbumOrnament(album) {
+  if (!album) return null
+  const parts = []
+  if (album.artist) parts.push(String(album.artist).toUpperCase())
+  const firstTrack = album.tracks?.[0]
+  const year = firstTrack?.metadata?.year
+  if (year) parts.push(String(year))
+  if (album.tracks?.length) parts.push(`${album.tracks.length} TRACKS`)
+  const totalDuration = (album.tracks || []).reduce((acc, t) => acc + (t.metadata?.duration || 0), 0)
+  if (totalDuration) parts.push(formatTime(totalDuration))
+  const genre = firstTrack?.metadata?.genre
+  if (genre) parts.push(String(genre).toUpperCase())
+  return parts.length ? parts.join(' · ') : null
+}
+
+/**
+ * Build the editorial banner for a playlist.
+ * Example: "47 TRACKS · 3:12:45 · 18 ARTISTS · 1.4 GB"
+ */
+export function formatPlaylistOrnament(tracks) {
+  if (!tracks || tracks.length === 0) return null
+  const parts = []
+  parts.push(`${tracks.length} TRACK${tracks.length > 1 ? 'S' : ''}`)
+  const totalDuration = tracks.reduce((acc, t) => acc + (t.metadata?.duration || 0), 0)
+  if (totalDuration) parts.push(formatTime(totalDuration))
+  const artists = new Set()
+  tracks.forEach(t => {
+    const a = t.metadata?.artist
+    if (a) artists.add(a)
+  })
+  if (artists.size > 0) parts.push(`${artists.size} ARTIST${artists.size > 1 ? 'S' : ''}`)
+  const totalBytes = tracks.reduce((acc, t) => acc + (t.fileSize || t.file_size || 0), 0)
+  if (totalBytes > 0) {
+    const gb = totalBytes / (1024 ** 3)
+    if (gb >= 1) parts.push(`${gb.toFixed(1)} GB`)
+    else parts.push(`${(totalBytes / (1024 ** 2)).toFixed(0)} MB`)
+  }
+  return parts.join(' · ')
+}
+
+/**
+ * Number of dots representing bit-depth. Lossy fallback uses bitrate ratio (max 320).
+ * Returns { count, total } so we can render filled/empty dots.
+ */
+export function getBitDepthMeter(metadata, filePath) {
+  if (!metadata) return null
+  const bitDepth = metadata.bitDepth
+  const isLossy = filePath ? /\.(mp3|aac|ogg|m4a|wma|opus)$/i.test(filePath) : !bitDepth
+  if (isLossy && metadata.bitrate) {
+    const ratio = Math.min(1, metadata.bitrate / 320)
+    return { count: Math.max(1, Math.round(ratio * 8)), total: 8, lossy: true }
+  }
+  if (bitDepth >= 32) return { count: 8, total: 8, lossy: false }
+  if (bitDepth >= 24) return { count: 6, total: 8, lossy: false }
+  if (bitDepth >= 16) return { count: 4, total: 8, lossy: false }
+  return null
+}
+
+/**
+ * Number of dots representing sample-rate. 44.1k=3, 48k=4, 96k=6, 192k=8.
+ */
+export function getSampleRateMeter(sampleRate) {
+  if (!sampleRate) return null
+  if (sampleRate >= 192000) return { count: 8, total: 8 }
+  if (sampleRate >= 96000) return { count: 6, total: 8 }
+  if (sampleRate >= 48000) return { count: 4, total: 8 }
+  if (sampleRate >= 44100) return { count: 3, total: 8 }
+  return { count: 2, total: 8 }
+}

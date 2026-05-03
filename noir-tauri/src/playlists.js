@@ -4,7 +4,7 @@
 import { library, favorites, ui, contextMenu, dom, caches, queue, playback } from './state.js'
 import { invoke } from './state.js'
 import { app } from './app.js'
-import { formatTime, escapeHtml, showToast } from './utils.js'
+import { formatTime, escapeHtml, showToast, formatPlaylistOrnament } from './utils.js'
 
 // === MODULE STATE ===
 
@@ -582,6 +582,7 @@ export function displayPlaylistView(playlist) {
       <div class="playlist-header-info">
         <h2>${playlist.name}</h2>
         <p>${playlist.id === 'favorites' ? getValidFavoritesCount() : trackCount} track${(playlist.id === 'favorites' ? getValidFavoritesCount() : trackCount) > 1 ? 's' : ''} • ${formatTime(totalDuration)}</p>
+        <p class="playlist-detail-ornament" aria-hidden="true">${formatPlaylistOrnament(playlistTracks) || ''}</p>
       </div>
     </div>
     <div class="playlist-header-buttons">

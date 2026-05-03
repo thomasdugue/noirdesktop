@@ -18,17 +18,42 @@ import { extractColorsFromBase64, extractColorsFromImg, pickAmbientColor } from 
  * Call this after the cover image has loaded on the page.
  * Falls back to get_cover_base64 if direct extraction fails (CORS/tainted canvas).
  */
+// Push primary + secondary color + adaptive opacity to CSS custom properties.
+function pushAmbientVars(colors) {
+  const root = document.documentElement
+  const [r, g, b] = pickAmbientColor(colors)
+  // Secondary color = pick from remaining colors (excluding the primary)
+  const remaining = colors.filter(c => !(c[0] === r && c[1] === g && c[2] === b))
+  let r2 = r, g2 = g, b2 = b
+  if (remaining.length > 0) {
+    const sec = pickAmbientColor(remaining)
+    r2 = sec[0]; g2 = sec[1]; b2 = sec[2]
+  }
+  // Luminosity (rec601) of primary, normalized 0..1
+  const lum = (r * 0.299 + g * 0.587 + b * 0.114) / 255
+  // Adaptive gradient opacity: light covers → low opacity (10%), dark covers → higher (28%)
+  const gradOpacity = (0.28 - (lum * 0.18)).toFixed(3)
+  // Watermark text gradient opacity: a touch higher so the text reads as colored, but still subtle
+  const watermarkOpacity = (0.18 - (lum * 0.10)).toFixed(3)
+  root.style.setProperty('--color-ambient-r', r)
+  root.style.setProperty('--color-ambient-g', g)
+  root.style.setProperty('--color-ambient-b', b)
+  root.style.setProperty('--color-ambient-2-r', r2)
+  root.style.setProperty('--color-ambient-2-g', g2)
+  root.style.setProperty('--color-ambient-2-b', b2)
+  root.style.setProperty('--ambient-luminosity', lum.toFixed(3))
+  root.style.setProperty('--ambient-gradient-opacity', gradOpacity)
+  root.style.setProperty('--ambient-watermark-opacity', watermarkOpacity)
+}
+
 function applyAmbientFromImage(imgElement, fallbackPath, label) {
   // Try direct extraction from the displayed image first
   const colors = extractColorsFromImg(imgElement)
   const isDefault = colors[0][0] === 255 && colors[0][1] === 255 && colors[0][2] === 255
 
   if (!isDefault) {
-    const [r, g, b] = pickAmbientColor(colors)
-    console.log('[AMBIENT]', label, '— direct extraction:', r, g, b)
-    document.documentElement.style.setProperty('--color-ambient-r', r)
-    document.documentElement.style.setProperty('--color-ambient-g', g)
-    document.documentElement.style.setProperty('--color-ambient-b', b)
+    pushAmbientVars(colors)
+    console.log('[AMBIENT]', label, '— direct extraction OK')
     document.querySelector('.albums-view')?.classList.add('ambient-active')
     return
   }
@@ -40,11 +65,8 @@ function applyAmbientFromImage(imgElement, fallbackPath, label) {
       if (!dataUri) { console.log('[AMBIENT]', label, '— no base64 data'); return }
       extractColorsFromBase64(dataUri).then(colors2 => {
         if (colors2 && colors2.length > 0) {
-          const [r, g, b] = pickAmbientColor(colors2)
-          console.log('[AMBIENT]', label, '— base64 fallback color:', r, g, b)
-          document.documentElement.style.setProperty('--color-ambient-r', r)
-          document.documentElement.style.setProperty('--color-ambient-g', g)
-          document.documentElement.style.setProperty('--color-ambient-b', b)
+          pushAmbientVars(colors2)
+          console.log('[AMBIENT]', label, '— base64 fallback OK')
           document.querySelector('.albums-view')?.classList.add('ambient-active')
         }
       })
@@ -1114,7 +1136,11 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
     ? `<span class="quality-tag ${albumQuality.class}">${albumQuality.label}</span>`
     : ''
 
+  const albumWatermarkText = (album.album || '').toUpperCase()
+
   ui.albumDetailDiv.innerHTML = `
+    <div class="album-detail-bandeau" aria-hidden="true"></div>
+    <div class="album-detail-watermark" aria-hidden="true"><span class="album-detail-watermark-text">${escapeHtml(albumWatermarkText)}</span></div>
     <div class="album-detail-header">
       <div class="album-detail-cover">
         ${isValidImageSrc(cover)
@@ -1181,6 +1207,7 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
 
     const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
     const trackArtist = track.metadata?.artist || 'Unknown Artist'
+    const trackNumDisplay = String(track.metadata?.track || index + 1).padStart(2, '0')
 
     const isInQueue = queue.items.some(q => q.path === track.path)
     const inQueueClass = isInQueue ? 'in-queue' : ''
@@ -1200,7 +1227,7 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
     if (album.isVariousArtists) {
       trackItem.innerHTML = `
         ${app.getFavoriteButtonHtml(track.path)}
-        <span class="track-number">${track.metadata?.track || index + 1}</span>
+        <span class="track-number">${trackNumDisplay}</span>
         <div class="track-info">
           <span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>
           <span class="track-artist">${escapeHtml(trackArtist)}</span>
@@ -1211,7 +1238,7 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
     } else {
       trackItem.innerHTML = `
         ${app.getFavoriteButtonHtml(track.path)}
-        <span class="track-number">${track.metadata?.track || index + 1}</span>
+        <span class="track-number">${trackNumDisplay}</span>
         <span class="track-title">${escapeHtml(track.metadata?.title || track.name || track.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown')}</span>
         <span class="track-duration">${duration}</span>
         ${buttonsHtml}
@@ -2759,6 +2786,9 @@ export function displayArtistPage(artistKey) {
   const totalTracks = artist.tracks.length
   const totalDuration = artist.tracks.reduce((acc, t) => acc + (t.metadata?.duration || 0), 0)
 
+  // Watermark : nom artiste en très grand, gradient extrait de la photo de l'artiste
+  const watermarkText = (artist.name || '').toUpperCase()
+
   // Build smart meta line: skip "0 album" when artist has no full albums
   const fullAlbumsCount = Object.keys(library.albums)
     .filter(key => library.albums[key].artist === artistKey && library.albums[key].tracks.length > 1).length
@@ -2772,6 +2802,7 @@ export function displayArtistPage(artistKey) {
   pageContainer.dataset.artistName = artist.name
 
   pageContainer.innerHTML = `
+    <div class="artist-watermark" aria-hidden="true"><span class="artist-watermark-text">${escapeHtml(watermarkText)}</span></div>
     <div class="album-page-header">
       <button class="btn-back-nav" title="Back">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
