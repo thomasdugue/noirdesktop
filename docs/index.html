@@ -306,7 +306,7 @@
         <div class="action-desc">Coût / impact / risques → SPRINT.md</div>
         <div class="action-btns">
           <button class="btn-copy" onclick="copyCmd('synth')">⎘ Copier</button>
-          <button class="btn-run" id="runSynthBtn" onclick="runWorkflow('sprint-synthesis.yml','runSynthBtn','synthStatus','sprint-report')"><span class="run-dot"></span> Lancer</button>
+          <button class="btn-run" id="runSynthBtn" onclick="runSynth()"><span class="run-dot"></span> Lancer</button>
         </div>
         <div class="run-status" id="synthStatus"></div>
       </div>
@@ -755,11 +755,24 @@ function runPlan() {
   if (!nums) { showToast('Sélectionne des issues'); return }
   runWorkflow('sprint-plan.yml', 'runPlanBtn', 'planStatus', 'sprint-plan', { issues: nums })
 }
+// Synthèse sprint — si des issues sont cochées, on synthétise UNIQUEMENT celles-là
+// (sinon comportement historique : toutes les issues taggées sprint-candidate du repo).
+// Filtre les Sentry shortIds (la synthèse Haiku ne fetch que GitHub pour l'instant).
+function runSynth() {
+  const nums = [...selected].filter(id => /^\d+$/.test(String(id))).sort((a,b)=>a-b).join(',')
+  const inputs = nums ? { issues: nums } : {}
+  runWorkflow('sprint-synthesis.yml', 'runSynthBtn', 'synthStatus', 'sprint-report', inputs)
+}
 
 // ── Copy ──
 const CMDS = {
   agent: `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/feedback-agent.js`,
-  synth: `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/sprint-planner.js`,
+  synth: () => {
+    const nums = [...selected].filter(id => /^\d+$/.test(String(id))).sort((a,b)=>a-b).join(',')
+    return nums
+      ? `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/sprint-planner.js --synth ${nums}`
+      : `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/sprint-planner.js`
+  },
   debug: `cd ${PROJECT_DIR} && npm run tauri dev`,
   plan: () => `cd ${PROJECT_DIR} && ${ENV_CMD} && node scripts/sprint-planner.js --plan ${[...selected].sort((a,b)=>a-b).join(',')}`,
 }

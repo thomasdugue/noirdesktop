@@ -34,11 +34,16 @@ const [REPO_OWNER, REPO_NAME] = FEEDBACK_REPO.split('/')
 const octokit   = new Octokit({ auth: GITHUB_TOKEN })
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_KEY })
 
-// Lire les args CLI : --plan accepte un mix de numéros GitHub (`12`) et de Sentry
-// shortIds (`RUST-1`). Format en sortie : [{ source, number|shortId }, ...]
-const args     = process.argv.slice(2)
-const planFlag = args.indexOf('--plan')
-const planMode = planFlag !== -1
+// Lire les args CLI :
+//   --plan 12,38,RUST-1   → mode plan détaillé (Opus 4.7) sur les IDs spécifiés
+//   --synth 12,38         → mode synthèse (Haiku) sur les IDs spécifiés (au lieu du label sprint-candidate)
+//   (rien)                → mode synthèse historique : fetch toutes les issues taggées sprint-candidate
+// Format en sortie : [{ source, number|shortId }, ...]
+const args      = process.argv.slice(2)
+const planFlag  = args.indexOf('--plan')
+const synthFlag = args.indexOf('--synth')
+const planMode  = planFlag !== -1
+const synthMode = synthFlag !== -1
 
 function parsePlanIds(raw) {
   if (!raw) return []
@@ -49,7 +54,8 @@ function parsePlanIds(raw) {
     return null
   }).filter(Boolean)
 }
-const planIssues = planMode ? parsePlanIds(args[planFlag + 1]) : []
+const planIssues  = planMode  ? parsePlanIds(args[planFlag + 1])  : []
+const synthIssues = synthMode ? parsePlanIds(args[synthFlag + 1]) : []
 
 // ── Contexte codebase ─────────────────────────────────────────────────────────
 
@@ -108,8 +114,13 @@ function getLabel(issue, prefix) {
 const REPO_ROOT    = join(__dirname, '..')              // = noir-tauri/
 const FRONTEND_DIR = join(REPO_ROOT, 'src')              // src/*.js (frontend)
 const BACKEND_DIR  = join(REPO_ROOT, 'src-tauri/src')    // *.rs (backend)
-const PER_FILE_CAP = 60_000                              // octets max par fichier (~15k tokens)
-const TOTAL_CAP    = 600_000                             // budget total (~150k tokens, laisse marge pour Opus 200k)
+// Caps réduits pour rester sous le rate limit Anthropic Opus 4.7
+// (30k input tokens/min sur tier 1). 583 KB ≈ 146k tokens dépassait largement,
+// faisait crasher le 1er call avec 429 rate_limit_error.
+// Cible : ≤ 120 KB total ≈ 30k tokens → premier call sous la limite, appels
+// suivants quasi-gratuits via prompt caching (cache_control: ephemeral).
+const PER_FILE_CAP = 12_000                              // octets max par fichier (~3k tokens)
+const TOTAL_CAP    = 120_000                             // budget total (~30k tokens — sous le rate limit Opus 4.7)
 
 // Whitelist des fichiers Rust prioritaires (les plus structurants pour comprendre
 // l'architecture). On évite de walker récursivement tout src-tauri/src/ qui dépasserait
@@ -234,7 +245,10 @@ Réponds UNIQUEMENT en JSON strict (sans markdown) :
       max_tokens: 512,
       messages: [{ role: 'user', content: prompt }],
     })
-    let raw = msg.content[0].text.trim()
+    // Avec adaptive thinking activé, msg.content peut contenir [{type:'thinking',...}, {type:'text',...}].
+    // Chercher explicitement le bloc texte au lieu de supposer que c'est le bloc 0.
+    const textBlock = msg.content.find(b => b.type === 'text')
+    let raw = (textBlock?.text ?? '').trim()
     // Extraire uniquement le bloc JSON (ignore tout texte avant/après)
     const match = raw.match(/\{[\s\S]*\}/)
     if (!match) throw new Error('No JSON object found')
@@ -321,7 +335,11 @@ Réponds UNIQUEMENT en JSON strict (pas de markdown, pas de texte avant/après).
         ],
       }],
     })
-    let raw = msg.content[0].text.trim()
+    // Avec adaptive thinking activé sur Opus 4.7, msg.content contient
+    // [{type:'thinking',...}, {type:'text', text:'...'}] — chercher explicitement
+    // le bloc text au lieu de supposer que c'est le bloc 0 (sinon undefined.trim() plante).
+    const textBlock = msg.content.find(b => b.type === 'text')
+    let raw = (textBlock?.text ?? '').trim()
     raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
     try {
       return JSON.parse(raw)
@@ -528,7 +546,7 @@ async function main() {
       process.exit(1)
     }
 
-    console.log(`\n🧠 Plans détaillés (claude-sonnet) pour ${targets.length} issues...`)
+    console.log(`\n🧠 Plans détaillés (claude-opus-4-7 + adaptive thinking) pour ${targets.length} issues...`)
     const planResults = []
     for (const issue of targets) {
       const tag = issue._isSentry ? `[Sentry ${issue.number}]` : `#${issue.number}`
@@ -548,12 +566,36 @@ async function main() {
     console.log('📊 Mode synthèse — analyse coût / impact / risques')
     console.log(`   Repo : ${FEEDBACK_REPO}`)
 
-    const issues = await fetchIssues('sprint-candidate')
-    if (issues.length === 0) {
-      console.log('⚠️  Aucune sprint candidate. Lance d\'abord feedback-agent.js')
-      return
+    let issues
+    if (synthMode) {
+      // Synthèse ciblée — uniquement les IDs passés via --synth (envoi du dashboard)
+      const ghIds = synthIssues.filter(p => p.source === 'github').map(p => p.number)
+      if (ghIds.length === 0) {
+        console.log('⚠️  Aucune issue GitHub valide dans --synth (Sentry non supporté en synthèse).')
+        return
+      }
+      console.log(`   Synthèse ciblée sur ${ghIds.length} issue(s) sélectionnée(s) : ${ghIds.join(', ')}`)
+      const allIssues = await fetchIssues()
+      issues = ghIds
+        .map(id => {
+          const found = allIssues.find(i => i.number === id)
+          if (!found) console.warn(`⚠️  Issue #${id} introuvable dans ${FEEDBACK_REPO}`)
+          return found
+        })
+        .filter(Boolean)
+      if (issues.length === 0) {
+        console.error('❌ Aucune issue récupérée — vérifie les IDs.')
+        return
+      }
+    } else {
+      // Comportement historique : toutes les issues taggées sprint-candidate
+      issues = await fetchIssues('sprint-candidate')
+      if (issues.length === 0) {
+        console.log('⚠️  Aucune sprint candidate. Lance d\'abord feedback-agent.js')
+        return
+      }
+      console.log(`   ${issues.length} sprint candidates trouvées\n`)
     }
-    console.log(`   ${issues.length} sprint candidates trouvées\n`)
 
     console.log('🧠 Analyse rapide (claude-haiku)...')
     const analyses = []

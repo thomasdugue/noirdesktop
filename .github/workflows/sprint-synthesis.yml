@@ -2,6 +2,11 @@ name: Sprint Synthesis
 
 on:
   workflow_dispatch:
+    inputs:
+      issues:
+        description: "Issue numbers (comma-separated, e.g. 36,38). Vide = toutes les issues taggées sprint-candidate."
+        required: false
+        default: ""
 
 jobs:
   synthesis:
@@ -27,7 +32,15 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.NOIR_GITHUB_TOKEN }}
           NOIR_FEEDBACK_REPO: thomasdugue/noir-feedback
-        run: node sprint-planner.js
+          ISSUES_INPUT: ${{ github.event.inputs.issues }}
+        run: |
+          if [ -n "$ISSUES_INPUT" ]; then
+            echo "→ Synthèse ciblée sur : $ISSUES_INPUT"
+            node sprint-planner.js --synth "$ISSUES_INPUT"
+          else
+            echo "→ Synthèse globale (toutes les sprint-candidate)"
+            node sprint-planner.js
+          fi
         working-directory: noir-tauri/scripts
 
       - name: Upload SPRINT.md
