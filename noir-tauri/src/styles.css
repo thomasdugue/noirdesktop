@@ -10358,3 +10358,196 @@ body:not(.player-visible) .track-info-panel {
     height: 8px;
   }
 }
+
+/* ============================================================
+   METADATA ORNAMENTS — wave 2026 v2
+   Watermarks dynamiques + gradient extrait artwork, monochrome-safe
+   ============================================================ */
+
+/* --- Tabular nums + mono pour les numéros / durées --- */
+.track-number,
+.track-duration,
+.queue-track-duration,
+.playlist-track-duration,
+.playlist-track-number {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.album-track-item .track-number {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  min-width: 24px;
+  text-align: right;
+}
+
+/* --- Playlist detail : ornement bandeau (kept) --- */
+.playlist-detail-ornament {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text);
+  opacity: 0.38;
+  font-variant-numeric: tabular-nums;
+  margin-top: 4px;
+}
+.playlist-detail-ornament:empty { display: none; }
+
+/* --- Play count dots dans le track info panel --- */
+.track-info-playcount {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--color-border);
+}
+.play-count-dots {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.play-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  display: inline-block;
+}
+.play-count-num {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 6px;
+}
+
+/* ============================================================
+   ARTIST WATERMARK — nom artiste massif, gradient extrait photo
+   ============================================================ */
+.artist-page-container {
+  position: relative;
+  overflow: hidden;
+}
+.artist-watermark {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 16px 0 0 24px;
+  overflow: hidden;
+}
+.artist-watermark-text {
+  font-family: var(--font-mono);
+  font-size: clamp(140px, 22vw, 260px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 0.78;
+  white-space: nowrap;
+  text-align: left;
+  /* Gradient inherited from extracted photo colors */
+  background: linear-gradient(
+    135deg,
+    rgba(var(--color-ambient-r, 255), var(--color-ambient-g, 255), var(--color-ambient-b, 255), calc(var(--ambient-watermark-opacity, 0.06) * 0.45)) 0%,
+    rgba(var(--color-ambient-2-r, 200), var(--color-ambient-2-g, 200), var(--color-ambient-2-b, 200), calc(var(--ambient-watermark-opacity, 0.06) * 0.36)) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  transition: opacity 0.6s var(--ease-out-expo);
+}
+.artist-page-container > *:not(.artist-watermark) {
+  position: relative;
+  z-index: 1;
+}
+
+/* ============================================================
+   ALBUM WATERMARK + BANDEAU GRADIENT
+   Watermark = nom album sur toute la page (comme artist).
+   Bandeau = gradient vertical couleur dominante, sur header seulement.
+   ============================================================ */
+.album-detail {
+  position: relative;
+  overflow: hidden;
+}
+.album-detail-watermark {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 16px 0 0 24px;
+  overflow: hidden;
+}
+.album-detail-watermark-text {
+  font-family: var(--font-mono);
+  font-size: clamp(120px, 18vw, 220px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 0.78;
+  white-space: nowrap;
+  text-align: left;
+  background: linear-gradient(
+    135deg,
+    rgba(var(--color-ambient-r, 255), var(--color-ambient-g, 255), var(--color-ambient-b, 255), calc(var(--ambient-watermark-opacity, 0.06) * 0.45)) 0%,
+    rgba(var(--color-ambient-2-r, 200), var(--color-ambient-2-g, 200), var(--color-ambient-2-b, 200), calc(var(--ambient-watermark-opacity, 0.06) * 0.36)) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+.album-detail-header {
+  position: relative;
+  overflow: hidden;
+}
+.album-detail-bandeau {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  /* Vertical band: takes full container height, soft fade top + bottom */
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(var(--color-ambient-r, 255), var(--color-ambient-g, 255), var(--color-ambient-b, 255), calc(var(--ambient-gradient-opacity, 0.16) * 0.15)) 12%,
+    rgba(var(--color-ambient-r, 255), var(--color-ambient-g, 255), var(--color-ambient-b, 255), calc(var(--ambient-gradient-opacity, 0.16) * 0.55)) 30%,
+    rgba(var(--color-ambient-r, 255), var(--color-ambient-g, 255), var(--color-ambient-b, 255), var(--ambient-gradient-opacity, 0.16)) 50%,
+    rgba(var(--color-ambient-r, 255), var(--color-ambient-g, 255), var(--color-ambient-b, 255), calc(var(--ambient-gradient-opacity, 0.16) * 0.55)) 70%,
+    rgba(var(--color-ambient-r, 255), var(--color-ambient-g, 255), var(--color-ambient-b, 255), calc(var(--ambient-gradient-opacity, 0.16) * 0.15)) 88%,
+    transparent 100%
+  );
+  transition: opacity 0.6s var(--ease-out-expo);
+}
+/* Foreground always above watermark + bandeau */
+.album-detail > .album-detail-header,
+.album-detail > .album-tracks {
+  position: relative;
+  z-index: 1;
+}
+.album-detail-header > .album-detail-cover,
+.album-detail-header > .album-detail-info,
+.album-detail-header > .btn-close {
+  position: relative;
+  z-index: 1;
+}
+
+/* --- Responsive --- */
+@media (max-width: 900px) {
+  .artist-watermark-text {
+    font-size: clamp(120px, 24vw, 200px);
+  }
+  .album-detail-watermark-text {
+    font-size: clamp(120px, 22vw, 200px);
+  }
+}

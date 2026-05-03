@@ -113,10 +113,67 @@ Le player bar affiche un halo blanc subtil dont l'intensité varie avec la lumin
 - `box-shadow: 0 -15px 50px rgba(255, 255, 255, var(--ambient-intensity))`
 - 100% monochrome, aucune couleur ajoutée au thème principal
 
+## Watermarks dynamiques
+
+Les pages **artiste** et **album** affichent le nom (artiste ou album) en très grand watermark dans le background. Le texte hérite d'un gradient extrait de l'artwork (cover album ou photo artiste). Le thème reste monochrome dans son identité, mais ces écrans gagnent une signature visuelle dérivée de la musique en cours.
+
+### Extraction couleur
+
+Pipeline (réutilise `fullscreen-player.js`) :
+1. Canvas 64×64 → `getImageData` → k-means 5 couleurs
+2. `pickAmbientColor()` score chaque couleur (saturation × brightness, pénalités sur near-black/near-white/grays)
+3. Couleur primaire = la plus vibrante. Couleur secondaire = next vibrante (excluant la primaire)
+4. Luminosité = `(R*0.299 + G*0.587 + B*0.114) / 255`
+
+### CSS variables exposées
+
+```css
+--color-ambient-r/g/b      /* couleur primaire extraite */
+--color-ambient-2-r/g/b    /* couleur secondaire pour gradient 2-stops */
+--ambient-luminosity       /* 0..1, luminosité primaire rec601 */
+--ambient-gradient-opacity /* opacité bandeau (cover claire = 10%, sombre = 28%) */
+--ambient-watermark-opacity /* opacité watermark, calc adaptative */
+```
+
+### Lisibilité adaptative
+
+L'opacité des gradients est **calculée dynamiquement** depuis la luminosité :
+- Cover **claire** (luminosité haute) → opacité basse (10%) pour pas écraser le texte
+- Cover **sombre** (luminosité basse) → opacité plus haute (28%) pour se voir
+
+Le texte foreground reste sur fond noir dominant. Aucune text-shadow nécessaire grâce au calibrage.
+
+### Watermarks
+
+| Page | Texte | Taille | Position | Source couleur |
+|------|-------|--------|----------|----------------|
+| Artiste | Nom artiste UPPERCASE | clamp(140px, 22vw, 260px) | Top-left, padding 16px/24px | Photo artiste (Deezer fallback cover) |
+| Album | Nom album UPPERCASE | clamp(120px, 18vw, 220px) | Top-left, padding 16px/24px | Cover album |
+
+Texte rendu via `background-clip: text` + `-webkit-text-fill-color: transparent` pour que le gradient teinte les glyphes. Pas un overlay, pas une border — c'est la couleur du texte qui est le gradient.
+
+### Bandeau gradient (page album)
+
+Sur la page album, en plus du watermark, un gradient vertical traverse le container :
+```css
+linear-gradient(to bottom,
+  transparent 0%,
+  ambient 12%,  /* fade-in */
+  ambient 30%,  /* montée */
+  ambient 50%,  /* peak */
+  ambient 70%,  /* descente */
+  ambient 88%,  /* fade-out */
+  transparent 100%)
+```
+
+6 stops pour un dégradé ultra-doux haut/bas, full container height. La page respire la couleur de l'album sans jamais la saturer.
+
 ## Règles d'usage
 
-1. **Jamais de couleur d'accent** hors vert (success) et rouge (erreur). L'identité est monochrome.
+1. **Jamais de couleur d'accent statique** hors vert (success) et rouge (erreur). L'identité est monochrome. La couleur dynamique extraite de l'artwork est la seule exception, et elle reste à opacité < 30%.
 2. **Glassmorphism sélectif** — uniquement sur les overlays et surfaces flottantes, jamais sur le contenu principal.
 3. **Animations fonctionnelles** — chaque animation doit communiquer un changement d'état. Pas de décoration gratuite.
 4. **Profondeur par luminosité** — 3 niveaux max. La hiérarchie se lit dans les gris.
 5. **Typographie lisible** — minimum 10px (caption). Le body est à 12px pour le confort sur Retina.
+6. **Watermarks = signature, pas décoration** — le texte affiché doit être pertinent (nom artiste sur page artiste, nom album sur page album). Pas de watermark "Hean" ou texte gratuit.
+7. **Gradient bandeau = albums uniquement** — pas sur la page artiste (qui a déjà sa signature couleur via le watermark text-clip), pas sur les listes/grilles.
