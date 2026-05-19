@@ -16,6 +16,13 @@ let trackToAddToPlaylist = null     // Track a ajouter depuis le sous-menu
 let tracksToAddToPlaylist = null    // Tracks multiples a ajouter apres creation
 let playlistSortMode = 'manual'    // 'manual', 'recent', 'az', 'za'
 
+// Guard anti-boucle pour le rebuild sidebar après chargement async des covers.
+// Quand loadPlaylistThumbs() charge de NOUVELLES covers (pas en cache mémoire),
+// il schedule UN rebuild de la sidebar pour que buildPlaylistThumbHtml() trouve
+// les covers dans le cache et les injecte en inline. Le guard empêche la boucle
+// infinie : rebuild → loadPlaylistThumbs → rebuild → ...
+let _thumbsRefreshScheduled = false
+
 // === CONFIRM MODAL STATE ===
 
 let confirmModalResolve = null
@@ -181,12 +188,19 @@ function buildPlaylistThumbHtml(covers, size = 'small') {
   const sizeClass = size === 'large' ? 'playlist-cover-grid-lg' : 'playlist-cover-grid-sm'
   const count = covers.length
 
-  // Génère les attributs data-* d'une cellule (path + artist/album pour fallback internet)
-  const cellAttrs = (c) => {
+  // Génère le HTML complet d'une cellule cover.
+  // Si la cover est déjà en cache mémoire, l'injecte en inline style pour affichage
+  // SYNCHRONE — évite le problème de cellules déconnectées quand updatePlaylistsSidebar()
+  // est appelé plusieurs fois au démarrage (les appels async de loadPlaylistThumbs
+  // s'exécutent sur des cellules qui ont été remplacées entre-temps).
+  const cellHtml = (c) => {
+    const cachedUrl = caches.thumbnailCache.get(c.path) || caches.coverCache.get(c.path)
+    const cls = cachedUrl ? 'playlist-cover-cell has-cover' : 'playlist-cover-cell'
+    const style = cachedUrl ? ` style="background-image:url('${cachedUrl}')"` : ''
     let attrs = `data-cover-path="${escapeHtml(c.path)}"`
     if (c.artist) attrs += ` data-cover-artist="${escapeHtml(c.artist)}"`
     if (c.album) attrs += ` data-cover-album="${escapeHtml(c.album)}"`
-    return attrs
+    return `<div class="${cls}" ${attrs}${style}></div>`
   }
 
   // 0 covers : placeholder musical
@@ -196,19 +210,19 @@ function buildPlaylistThumbHtml(covers, size = 'small') {
 
   // 1 cover : image pleine (une seule colonne)
   if (count === 1) {
-    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-single"><div class="playlist-cover-cell" ${cellAttrs(covers[0])}></div></div>`
+    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-single">${cellHtml(covers[0])}</div>`
   }
 
   // 2 covers : côte à côte (2 colonnes, 1 rangée pleine hauteur)
   if (count === 2) {
-    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-duo"><div class="playlist-cover-cell" ${cellAttrs(covers[0])}></div><div class="playlist-cover-cell" ${cellAttrs(covers[1])}></div></div>`
+    return `<div class="${sizeClass} playlist-cover-grid playlist-cover-duo">${cellHtml(covers[0])}${cellHtml(covers[1])}</div>`
   }
 
   // 3-4 covers : grille 2×2 ; répète le 1er pour le 4e slot si nécessaire
   const cells = []
   for (let i = 0; i < 4; i++) {
     const c = covers[i] || covers[0] // le 4e slot répète le 1er si seulement 3 covers
-    cells.push(`<div class="playlist-cover-cell" ${cellAttrs(c)}></div>`)
+    cells.push(cellHtml(c))
   }
   return `<div class="${sizeClass} playlist-cover-grid">${cells.join('')}</div>`
 }
@@ -224,9 +238,14 @@ function buildPlaylistThumbHtml(covers, size = 'small') {
  */
 async function loadPlaylistThumbs(containerEl) {
   const cells = containerEl.querySelectorAll('[data-cover-path]')
+  let newCoversLoaded = 0
+
   for (const cell of cells) {
     const path = cell.dataset.coverPath
     if (!path || !cell.isConnected) continue
+
+    // Skip si la cellule a déjà une cover (injectée par cellHtml() depuis le cache)
+    if (cell.classList.contains('has-cover')) continue
 
     // 1. Cache mémoire (thumbnailCache ou coverCache)
     let url = caches.thumbnailCache.get(path) || caches.coverCache.get(path)
@@ -254,6 +273,7 @@ async function loadPlaylistThumbs(containerEl) {
         if (url) {
           caches.thumbnailCache.set(path, url)
           caches.coverCache.set(path, url)
+          newCoversLoaded++
         }
       } catch (_) { /* cover non disponible, garder placeholder */ }
     }
@@ -267,6 +287,19 @@ async function loadPlaylistThumbs(containerEl) {
       }
       cell.classList.add('has-cover')
     }
+  }
+
+  // Si de nouvelles covers ont été chargées dans le cache, schedule UN rebuild
+  // de la sidebar pour que buildPlaylistThumbHtml() les injecte en inline style.
+  // Le guard _thumbsRefreshScheduled empêche la boucle infinie :
+  // Au 2e passage, cellHtml() trouve les covers dans le cache → les injecte en inline →
+  // les cellules ont déjà `has-cover` → loadPlaylistThumbs skip tout → newCoversLoaded = 0 → pas de 3e rebuild.
+  if (newCoversLoaded > 0 && !_thumbsRefreshScheduled) {
+    _thumbsRefreshScheduled = true
+    requestAnimationFrame(() => {
+      _thumbsRefreshScheduled = false
+      updatePlaylistsSidebar()
+    })
   }
 }
 

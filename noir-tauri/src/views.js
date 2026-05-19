@@ -1568,7 +1568,54 @@ export async function displayHomeView() {
     homeContainer.appendChild(resumeSection)
   }
 
-  // === 2. Recently Played grid ===
+  // === 2. Recently Added carousel ===
+  const albumKeys = Object.keys(library.albums)
+  if (albumKeys.length > 0 && Object.keys(library.trackAddedDates).length > 0) {
+    const sortedByRecent = albumKeys
+      .map(key => {
+        const album = library.albums[key]
+        let mostRecentDate = 0
+        for (const track of album.tracks) {
+          const addedDate = library.trackAddedDates[track.path] || 0
+          if (addedDate > mostRecentDate) {
+            mostRecentDate = addedDate
+          }
+        }
+        return { key, album, addedDate: mostRecentDate }
+      })
+      .filter(item => item.addedDate > 0 && item.album.tracks.length >= 5)
+      .sort((a, b) => b.addedDate - a.addedDate)
+      .slice(0, 25)
+
+    if (sortedByRecent.length > 0) {
+      const newSection = document.createElement('section')
+      newSection.className = 'home-section'
+      newSection.id = 'home-nouveautes-section'
+
+      const newHeader = document.createElement('h2')
+      newHeader.className = 'home-section-title'
+      newHeader.textContent = 'Recently Added'
+      newSection.appendChild(newHeader)
+
+      const newCarousel = document.createElement('div')
+      newCarousel.className = 'home-carousel'
+      newCarousel.id = 'nouveautes-carousel'
+
+      const { carousel: maxCarousel } = getResponsiveItemCount()
+      const selection = sortedByRecent.slice(0, maxCarousel)
+
+      for (const { key: aKey, album } of selection) {
+        if (!album) continue
+        const item = createCarouselAlbumItem(aKey, album)
+        newCarousel.appendChild(item)
+      }
+
+      newSection.appendChild(newCarousel)
+      homeContainer.appendChild(newSection)
+    }
+  }
+
+  // === 3. Recently Played grid ===
   if (recentTracks.length > 0) {
     const recentSection = document.createElement('section')
     recentSection.className = 'home-section'
@@ -1673,60 +1720,15 @@ export async function displayHomeView() {
     homeContainer.appendChild(recentSection)
   }
 
-  // === 3. New Releases carousel ===
-  const albumKeys = Object.keys(library.albums)
-  if (albumKeys.length > 0 && Object.keys(library.trackAddedDates).length > 0) {
-    const sortedByRecent = albumKeys
-      .map(key => {
-        const album = library.albums[key]
-        let mostRecentDate = 0
-        for (const track of album.tracks) {
-          const addedDate = library.trackAddedDates[track.path] || 0
-          if (addedDate > mostRecentDate) {
-            mostRecentDate = addedDate
-          }
-        }
-        return { key, album, addedDate: mostRecentDate }
-      })
-      .filter(item => item.addedDate > 0 && item.album.tracks.length >= 5)
-      .sort((a, b) => b.addedDate - a.addedDate)
-      .slice(0, 25)
-
-    if (sortedByRecent.length > 0) {
-      const newSection = document.createElement('section')
-      newSection.className = 'home-section'
-      newSection.id = 'home-nouveautes-section'
-
-      const newHeader = document.createElement('h2')
-      newHeader.className = 'home-section-title'
-      newHeader.textContent = 'Recently Added'
-      newSection.appendChild(newHeader)
-
-      const newCarousel = document.createElement('div')
-      newCarousel.className = 'home-carousel'
-      newCarousel.id = 'nouveautes-carousel'
-
-      const { carousel: maxCarousel } = getResponsiveItemCount()
-      const selection = sortedByRecent.slice(0, maxCarousel)
-
-      for (const { key: aKey, album } of selection) {
-        if (!album) continue
-        const item = createCarouselAlbumItem(aKey, album)
-        newCarousel.appendChild(item)
-      }
-
-      newSection.appendChild(newCarousel)
-      homeContainer.appendChild(newSection)
-    }
-  }
-
   // === 4. Discover carousel (unplayed albums) ===
   // Compare by album name (from listening history) against each album's .album property
   // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
+  const albumHasCover = (album) => album.coverPath && (caches.coverCache.has(album.coverPath) || caches.thumbnailCache.has(album.coverPath))
+
   const playedAlbumNames = new Set(allPlayedAlbums.map(e => e?.album || ''))
   const unplayedAlbums = Object.keys(library.albums).filter(key => {
     const album = library.albums[key]
-    return album && album.tracks.length >= 5 && !playedAlbumNames.has(album.album)
+    return album && albumHasCover(album) && album.tracks.length >= 5 && !playedAlbumNames.has(album.album)
   })
 
   if (unplayedAlbums.length > 0) {
@@ -1811,7 +1813,7 @@ export async function displayHomeView() {
   // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
   const hiResAlbumKeys = Object.keys(library.albums).filter(key => {
     const album = library.albums[key]
-    return album.tracks.length >= 5 && album.tracks.some(track => {
+    return albumHasCover(album) && album.tracks.length >= 5 && album.tracks.some(track => {
       const bd = track.metadata?.bitDepth
       const sr = track.metadata?.sampleRate
       return (bd && bd >= 24) || (sr && sr >= 88200)
@@ -1884,7 +1886,7 @@ export async function displayHomeView() {
   // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
   const longAlbumKeys = Object.keys(library.albums).filter(key => {
     const album = library.albums[key]
-    if (album.tracks.length < 5) return false
+    if (!albumHasCover(album) || album.tracks.length < 5) return false
     const totalDuration = album.tracks.reduce((sum, track) => {
       return sum + (track.metadata?.duration || 0)
     }, 0)
@@ -1969,7 +1971,7 @@ export async function displayHomeView() {
       }
       return { key, album, addedDate: mostRecentDate }
     })
-    .filter(item => item.addedDate >= oneWeekAgo && item.album.tracks.length >= 5)
+    .filter(item => item.addedDate >= oneWeekAgo && albumHasCover(item.album) && item.album.tracks.length >= 5)
     .sort((a, b) => b.addedDate - a.addedDate)
     .slice(0, 15)
 
@@ -2027,7 +2029,7 @@ export async function displayHomeView() {
 
   // === 9. Random Mix ===
   // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
-  const allAlbumKeys = Object.keys(library.albums).filter(key => library.albums[key].tracks.length >= 5)
+  const allAlbumKeys = Object.keys(library.albums).filter(key => albumHasCover(library.albums[key]) && library.albums[key].tracks.length >= 5)
   if (allAlbumKeys.length >= 10) {
     // Use session cache if available, otherwise shuffle and cache
     if (!_sessionRandomMixSelection || _sessionRandomMixSelection.every(k => !library.albums[k])) {
@@ -2177,8 +2179,22 @@ export async function displayHomeView() {
     if (recentItem) {
       const trackPath = recentItem.dataset.trackPath
       if (trackPath) {
-        const trackIndex = library.tracks.findIndex(t => t.path === trackPath)
-        if (trackIndex !== -1) app.playTrack(trackIndex)
+        const entry = library.tracksByPath?.get(trackPath)
+        const trackIndex = entry?.index ?? library.tracks.findIndex(t => t.path === trackPath)
+        if (trackIndex === -1) {
+          showToast('Track not found in library')
+          return
+        }
+        const track = library.tracks[trackIndex]
+        const albumName = track?.metadata?.album
+        const albumKey = albumName ? albumName.trim().normalize('NFC') : null
+        const album = albumKey ? library.albums[albumKey] : null
+        if (album) {
+          const albumTrackPaths = album.tracks.map(t => t.path)
+          app.playTrack(trackIndex, { type: 'album', id: albumKey, tracks: albumTrackPaths })
+        } else {
+          app.playTrack(trackIndex)
+        }
       }
       return
     }
