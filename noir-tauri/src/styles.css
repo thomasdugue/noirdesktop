@@ -126,6 +126,7 @@
 .album-page-artist,
 .album-page-meta,
 .artist-page-meta,
+.carousel-title,
 .carousel-artist,
 .artist-carousel-item .carousel-artist {
   font-family: var(--font-sans);
@@ -2967,7 +2968,7 @@ body.sidebar-resizing * {
 }
 
 .recent-track-title {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--color-text);
   white-space: nowrap;
@@ -2976,7 +2977,7 @@ body.sidebar-resizing * {
 }
 
 .recent-track-artist {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -6581,33 +6582,91 @@ body:not(.player-visible) .track-info-panel {
   opacity: 1;
 }
 
-/* Thumbnail playlist — base commune */
+/* ═══════════════════════════════════════════════════════════════════════════
+   Thumbnail playlist mosaic — ROOT CAUSE FIX (2026-05-16)
+   ═══════════════════════════════════════════════════════════════════════════
+   Bug récurrent : les divs vides dans un CSS Grid 28×28 (sidebar) ne se
+   dimensionnent pas correctement dans WebKit/WKWebView — ni `1fr`, ni
+   `minmax(0,1fr)`, ni `width:100%/height:100%`, ni `place-items:stretch`
+   ne produisent un layout fiable à cette taille.
+
+   FIX DÉFINITIF : positionnement absolu pour le petit mosaïque (28px).
+   Chaque cellule est positionnée avec top/left/right/bottom + calc().
+   CSS Grid conservé uniquement pour le grand mosaïque (96px, header)
+   qui fonctionne correctement.
+
+   INVARIANT : ne JAMAIS revenir à un layout CSS Grid pour le petit
+   mosaïque sidebar. Voir CLAUDE.md.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* --- Base commune (propriétés visuelles partagées) --- */
 .playlist-cover-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  gap: 1px;
   border-radius: var(--radius-sm);
   overflow: hidden;
   flex-shrink: 0;
   background: var(--color-bg-surface);
 }
+
+/* --- PETIT mosaïque sidebar (28×28) — positionnement absolu --- */
 .playlist-cover-grid-sm {
+  position: relative;
   width: 28px;
   height: 28px;
 }
-/* Thumbnail grille 2×2 — vue détail playlist (large) */
+/* 2×2 default : 4 quadrants via absolute */
+.playlist-cover-grid-sm > .playlist-cover-cell:nth-child(1) {
+  position: absolute; top: 0; left: 0;
+  width: calc(50% - 0.5px); height: calc(50% - 0.5px);
+}
+.playlist-cover-grid-sm > .playlist-cover-cell:nth-child(2) {
+  position: absolute; top: 0; right: 0;
+  width: calc(50% - 0.5px); height: calc(50% - 0.5px);
+}
+.playlist-cover-grid-sm > .playlist-cover-cell:nth-child(3) {
+  position: absolute; bottom: 0; left: 0;
+  width: calc(50% - 0.5px); height: calc(50% - 0.5px);
+}
+.playlist-cover-grid-sm > .playlist-cover-cell:nth-child(4) {
+  position: absolute; bottom: 0; right: 0;
+  width: calc(50% - 0.5px); height: calc(50% - 0.5px);
+}
+/* 1 cover : pleine taille */
+.playlist-cover-grid-sm.playlist-cover-single > .playlist-cover-cell {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+}
+/* 2 covers : côte à côte (split vertical) */
+.playlist-cover-grid-sm.playlist-cover-duo > .playlist-cover-cell:nth-child(1) {
+  position: absolute; top: 0; left: 0;
+  width: calc(50% - 0.5px); height: 100%;
+}
+.playlist-cover-grid-sm.playlist-cover-duo > .playlist-cover-cell:nth-child(2) {
+  position: absolute; top: 0; right: 0;
+  width: calc(50% - 0.5px); height: 100%;
+}
+
+/* --- GRAND mosaïque header (96×96) — CSS Grid (fonctionne à cette taille) --- */
 .playlist-cover-grid-lg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1px;
   width: 96px;
   height: 96px;
   border-radius: var(--radius-md);
 }
+.playlist-cover-grid-lg.playlist-cover-single {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+.playlist-cover-grid-lg.playlist-cover-duo {
+  grid-template-rows: 1fr;
+}
+
 /* 0 covers : icône musicale centrée */
 .playlist-cover-empty {
   display: flex;
   align-items: center;
   justify-content: center;
-  grid-template-columns: unset;
 }
 .playlist-cover-note-icon {
   font-size: 10px;
@@ -6616,23 +6675,9 @@ body:not(.player-visible) .track-info-panel {
 .playlist-cover-grid-lg .playlist-cover-note-icon {
   font-size: 28px;
 }
-/* 1 cover : image pleine résolution (une seule colonne, une seule rangée) */
-.playlist-cover-single {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
-}
-/* 2 covers : côte à côte (1 seule rangée, pleine hauteur) */
-.playlist-cover-duo {
-  grid-template-rows: 1fr;
-}
-/* 3-4 covers : grille 2×2 standard — grid-template-rows: 1fr 1fr sur .playlist-cover-grid */
 
-/* Cellule cover — div avec background-image (plus de <img>, élimine le white outline) */
+/* Cellule cover — div avec background-image */
 .playlist-cover-cell {
-  width: 100%;
-  height: 100%;
-  display: block;
-  position: relative;
   overflow: hidden;
   background-color: #111;
   background-size: cover;
@@ -6675,8 +6720,8 @@ body:not(.player-visible) .track-info-panel {
 .playlist-cover-placeholder-cell {
   background: var(--color-bg-light);
   display: block;
-  width: 100%;
-  height: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 /* Cas favoris : coeur centré dans le grand carré */
 .playlist-cover-favorites {
