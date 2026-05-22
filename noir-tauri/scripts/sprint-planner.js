@@ -15,8 +15,8 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { Octokit } from '@octokit/rest'
-import { writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'fs'
-import { join, dirname, relative } from 'path'
+import { writeFileSync, readFileSync, existsSync } from 'fs'
+import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -33,6 +33,11 @@ if (!ANTHROPIC_KEY) { console.error('❌ Missing ANTHROPIC_API_KEY'); process.ex
 const [REPO_OWNER, REPO_NAME] = FEEDBACK_REPO.split('/')
 const octokit   = new Octokit({ auth: GITHUB_TOKEN })
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_KEY })
+
+// Repo source pour la codebase de référence (branche main, toujours à jour)
+const SOURCE_REPO_OWNER = 'thomasdugue'
+const SOURCE_REPO_NAME  = 'noirdesktop'
+const SOURCE_BRANCH     = 'main'
 
 // Lire les args CLI :
 //   --plan 12,38,RUST-1   → mode plan détaillé (Opus 4.7) sur les IDs spécifiés
@@ -105,22 +110,21 @@ function getLabel(issue, prefix) {
   return issue.labels.find(l => l.name.startsWith(prefix))?.name.replace(prefix, '') ?? '?'
 }
 
-// ── Chargement de la codebase (utilisé pour les plans détaillés) ────────────
+// ── Chargement de la codebase depuis GitHub (branche main) ────────────────
 //
-// Le mode --plan injecte les fichiers source dans le prompt pour qu'Opus
-// raisonne sur du vrai code (pas juste une description). Cap à 200 KB par
-// fichier pour rester sous la limite de contexte d'Opus 4.5 (200k tokens).
+// Le mode --plan charge les fichiers source ET le CLAUDE.md depuis le repo
+// GitHub (thomasdugue/noirdesktop, branche main) pour garantir que le plan
+// est toujours basé sur la dernière version pushée — jamais sur des fichiers
+// locaux potentiellement désynchronisés.
+//
+// CLAUDE.md est injecté dans le prompt pour qu'Opus respecte les invariants,
+// patterns critiques et décisions techniques actées du projet.
 
-const REPO_ROOT    = join(__dirname, '..')              // = noir-tauri/
-const FRONTEND_DIR = join(REPO_ROOT, 'src')              // src/*.js (frontend)
-const BACKEND_DIR  = join(REPO_ROOT, 'src-tauri/src')    // *.rs (backend)
-// Caps réduits pour rester sous le rate limit Anthropic Opus 4.7
-// (30k input tokens/min sur tier 1). 583 KB ≈ 146k tokens dépassait largement,
-// faisait crasher le 1er call avec 429 rate_limit_error.
-// Cible : ≤ 120 KB total ≈ 30k tokens → premier call sous la limite, appels
-// suivants quasi-gratuits via prompt caching (cache_control: ephemeral).
-const PER_FILE_CAP = 12_000                              // octets max par fichier (~3k tokens)
-const TOTAL_CAP    = 120_000                             // budget total (~30k tokens — sous le rate limit Opus 4.7)
+// Caps pour rester sous le rate limit Anthropic Opus 4.7
+// (30k input tokens/min sur tier 1). Prompt caching réduit ~90% après le 1er call.
+const PER_FILE_CAP  = 12_000                             // octets max par fichier (~3k tokens)
+const TOTAL_CAP     = 120_000                            // budget code total (~30k tokens)
+const CLAUDE_MD_CAP = 30_000                             // budget CLAUDE.md (~7.5k tokens)
 
 // Whitelist des fichiers Rust prioritaires (les plus structurants pour comprendre
 // l'architecture). On évite de walker récursivement tout src-tauri/src/ qui dépasserait
@@ -141,36 +145,104 @@ const RUST_PRIORITY = [
   'logging.rs',                      // logs persistés
 ]
 
-function loadCodebase() {
+// ── Utilitaires GitHub (fetch fichiers depuis le repo source) ────────────────
+
+async function fetchGitHubFile(filePath) {
+  try {
+    const { data } = await octokit.rest.repos.getContent({
+      owner: SOURCE_REPO_OWNER,
+      repo: SOURCE_REPO_NAME,
+      path: filePath,
+      ref: SOURCE_BRANCH,
+    })
+    if (data.type !== 'file') return null
+    return Buffer.from(data.content, 'base64').toString('utf-8')
+  } catch (err) {
+    if (err.status === 404) return null
+    throw err
+  }
+}
+
+async function listGitHubDir(dirPath, extension) {
+  try {
+    const { data } = await octokit.rest.repos.getContent({
+      owner: SOURCE_REPO_OWNER,
+      repo: SOURCE_REPO_NAME,
+      path: dirPath,
+      ref: SOURCE_BRANCH,
+    })
+    if (!Array.isArray(data)) return []
+    return data
+      .filter(f => f.type === 'file' && f.name.endsWith(extension))
+      .map(f => f.name)
+      .sort()
+  } catch {
+    return []
+  }
+}
+
+// ── Chargement codebase + CLAUDE.md ──────────────────────────────────────────
+
+async function loadCodebase() {
+  console.log(`📡 Fetching codebase from GitHub ${SOURCE_REPO_OWNER}/${SOURCE_REPO_NAME}@${SOURCE_BRANCH}...`)
   const files = []
   let totalBytes = 0
 
-  function tryAdd(fullPath, lang) {
-    if (!existsSync(fullPath)) return
-    if (!statSync(fullPath).isFile()) return
-    const content = readFileSync(fullPath, 'utf-8')
+  // Lister les fichiers JS frontend
+  const jsFileNames = await listGitHubDir('noir-tauri/src', '.js')
+
+  // Préparer les tâches de fetch (JS + Rust whitelist)
+  const fetchTasks = [
+    ...jsFileNames.map(name => ({
+      path: `noir-tauri/src/${name}`,
+      displayPath: `src/${name}`,
+      lang: 'js',
+      priority: 0,
+    })),
+    ...RUST_PRIORITY.map(rel => ({
+      path: `noir-tauri/src-tauri/src/${rel}`,
+      displayPath: `src-tauri/src/${rel}`,
+      lang: 'rust',
+      priority: 1,
+    })),
+  ]
+  fetchTasks.sort((a, b) => a.priority - b.priority)
+
+  // Fetch tous les fichiers en parallèle
+  const results = await Promise.all(
+    fetchTasks.map(async task => {
+      const content = await fetchGitHubFile(task.path)
+      return { ...task, content }
+    })
+  )
+
+  for (const { displayPath, lang, content } of results) {
+    if (!content) continue
     const truncated = content.length > PER_FILE_CAP
     const usable = truncated ? content.slice(0, PER_FILE_CAP) + '\n// [...truncated]' : content
-    if (totalBytes + usable.length > TOTAL_CAP) return false
-    files.push({ path: relative(REPO_ROOT, fullPath), lang, content: usable, truncated })
+    if (totalBytes + usable.length > TOTAL_CAP) break
+    files.push({ path: displayPath, lang, content: usable, truncated })
     totalBytes += usable.length
-    return true
-  }
-
-  // Frontend JS — on prend tout (16 fichiers ~ 400 KB après cap)
-  if (existsSync(FRONTEND_DIR)) {
-    for (const entry of readdirSync(FRONTEND_DIR).sort()) {
-      if (!entry.endsWith('.js')) continue
-      tryAdd(join(FRONTEND_DIR, entry), 'js')
-    }
-  }
-
-  // Backend Rust — whitelist priorisée (les plus structurants en premier)
-  for (const rel of RUST_PRIORITY) {
-    tryAdd(join(BACKEND_DIR, rel), 'rust')
   }
 
   return { files, totalBytes }
+}
+
+async function loadClaudeMd() {
+  console.log(`📖 Fetching CLAUDE.md from GitHub ${SOURCE_REPO_OWNER}/${SOURCE_REPO_NAME}@${SOURCE_BRANCH}...`)
+  const [root, detailed] = await Promise.all([
+    fetchGitHubFile('CLAUDE.md'),
+    fetchGitHubFile('noir-tauri/CLAUDE.md'),
+  ])
+  const parts = []
+  if (root) parts.push(`### CLAUDE.md (racine)\n${root}`)
+  if (detailed) parts.push(`### noir-tauri/CLAUDE.md (architecture détaillée)\n${detailed}`)
+  let combined = parts.join('\n\n---\n\n')
+  if (combined.length > CLAUDE_MD_CAP) {
+    combined = combined.slice(0, CLAUDE_MD_CAP) + '\n\n[...truncated — voir le fichier complet sur GitHub]'
+  }
+  console.log(`   CLAUDE.md: ${(combined.length / 1024).toFixed(0)} KB`)
+  return combined
 }
 
 function formatCodebaseForPrompt(files) {
@@ -179,14 +251,23 @@ function formatCodebaseForPrompt(files) {
   ).join('\n\n')
 }
 
-// Cache : on charge la codebase une seule fois par run
+// Cache : on charge la codebase + CLAUDE.md une seule fois par run
 let _codebaseCache = null
-function getCodebase() {
+let _claudeMdCache = null
+
+async function getCodebase() {
   if (!_codebaseCache) {
-    _codebaseCache = loadCodebase()
+    _codebaseCache = await loadCodebase()
     console.log(`📚 Codebase loaded: ${_codebaseCache.files.length} files, ${(_codebaseCache.totalBytes / 1024).toFixed(0)} KB`)
   }
   return _codebaseCache
+}
+
+async function getClaudeMd() {
+  if (!_claudeMdCache) {
+    _claudeMdCache = await loadClaudeMd()
+  }
+  return _claudeMdCache
 }
 
 // ── Utilitaires Sentry (via worker proxy, le token est côté serveur) ─────────
@@ -271,20 +352,25 @@ async function detailedPlan(issue) {
     ? `\nNB : C'est un crash réel remonté par Sentry (avec stack trace ci-dessous). Concentre-toi sur le diagnostic à partir de la pile d'appels et propose un fix défensif.`
     : ''
 
-  const codebase = getCodebase()
+  const codebase = await getCodebase()
   const codebaseSection = formatCodebaseForPrompt(codebase.files)
+  const claudeMdContent = await getClaudeMd()
 
   // Le prompt est découpé en 2 blocs :
   //   1. Le bloc CODEBASE (gros, identique entre toutes les issues du run) → caché via prompt caching.
   //      Premier appel = full price. Appels suivants dans la même fenêtre 5min = 90% moins cher.
   //   2. Le bloc ISSUE (petit, spécifique à chaque issue) → pas de cache.
   const codebaseBlock = `Tu es ingénieur senior du codebase Noir Desktop.
-Tu vas recevoir l'INTÉGRALITÉ du code source ci-dessous, puis une issue à analyser. Ton plan doit être ancré dans le code RÉEL — cite les fonctions, lignes, patterns existants. N'invente rien.
+Tu vas recevoir le guide d'architecture (CLAUDE.md) et le code source ci-dessous, puis une issue à analyser. Ton plan doit être ancré dans le code RÉEL — cite les fonctions, lignes, patterns existants. N'invente rien.
+IMPORTANT : respecte les invariants protégés et les décisions techniques actées documentés dans CLAUDE.md. Ne propose JAMAIS une approche qui contredit ces décisions.
 
 ## Contexte général
 ${CODEBASE_CONTEXT}
 
-## Code source actuel (\`main\` branch)
+## Guide d'architecture (CLAUDE.md — branche main GitHub)
+${claudeMdContent}
+
+## Code source actuel (branche \`main\`, GitHub ${SOURCE_REPO_OWNER}/${SOURCE_REPO_NAME})
 ${codebaseSection}`
 
   const issueBlock = `## Issue à analyser
