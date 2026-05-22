@@ -339,7 +339,7 @@ export function updatePlaylistsSidebar() {
            data-is-system="${playlist.isSystem || false}"
            data-tooltip="${escapeHtml(playlist.name)}">
         ${icon}
-        <span class="playlist-item-name">${playlist.name}</span>
+        <span class="playlist-item-name">${escapeHtml(playlist.name)}</span>
       </div>
     `
   }).join('')
@@ -613,7 +613,7 @@ export function displayPlaylistView(playlist) {
     <div class="playlist-header-left">
       ${coverHtml}
       <div class="playlist-header-info">
-        <h2>${playlist.name}</h2>
+        <h2>${escapeHtml(playlist.name)}</h2>
         <p>${playlist.id === 'favorites' ? getValidFavoritesCount() : trackCount} track${(playlist.id === 'favorites' ? getValidFavoritesCount() : trackCount) > 1 ? 's' : ''} • ${formatTime(totalDuration)}</p>
         <p class="playlist-detail-ornament" aria-hidden="true">${formatPlaylistOrnament(playlistTracks) || ''}</p>
       </div>
@@ -1172,7 +1172,7 @@ export function showAddToPlaylistMenu(e, track) {
           <svg viewBox="0 0 24 24" fill="currentColor" style="width: 14px; height: 14px;">
             <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
           </svg>
-          <span>${playlist.name}</span>
+          <span>${escapeHtml(playlist.name)}</span>
         </button>
       `
     })
@@ -1344,7 +1344,7 @@ export function showPlaylistSubmenu() {
         <svg viewBox="0 0 24 24" fill="currentColor" style="width: 14px; height: 14px;">
           <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
         </svg>
-        <span>${playlist.name}</span>
+        <span>${escapeHtml(playlist.name)}</span>
       `
       item.addEventListener('click', async (e) => {
         e.stopPropagation()

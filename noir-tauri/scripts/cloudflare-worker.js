@@ -72,6 +72,11 @@ export default {
 // stocké côté serveur. Évite le CORS "Invalid origin" depuis le browser.
 // ────────────────────────────────────────────────────────────────────
 async function handleSentryIssues(request, env) {
+  const secret = request.headers.get('X-Noir-Secret')
+  if (!secret || secret !== env.NOIR_SECRET) {
+    return new Response('Unauthorized', { status: 401, headers: CORS_HEADERS })
+  }
+
   if (!env.SENTRY_AUTH_TOKEN) {
     return jsonError(500, 'SENTRY_AUTH_TOKEN secret not configured on worker')
   }
@@ -121,6 +126,11 @@ async function handleSentryIssues(request, env) {
 // d'implémentation à partir de crashes Sentry.
 // ────────────────────────────────────────────────────────────────────
 async function handleSentryIssueDetail(request, env, shortId) {
+  const secret = request.headers.get('X-Noir-Secret')
+  if (!secret || secret !== env.NOIR_SECRET) {
+    return new Response('Unauthorized', { status: 401, headers: CORS_HEADERS })
+  }
+
   if (!env.SENTRY_AUTH_TOKEN) {
     return jsonError(500, 'SENTRY_AUTH_TOKEN secret not configured on worker')
   }

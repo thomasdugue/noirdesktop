@@ -24,8 +24,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const GITHUB_TOKEN  = process.env.GITHUB_TOKEN
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY
 const FEEDBACK_REPO = process.env.NOIR_FEEDBACK_REPO || 'tdugue/noir-feedback'
-// Worker proxy pour Sentry — tient le token côté serveur, pas besoin de secret côté script.
 const SENTRY_WORKER = process.env.NOIR_WORKER_URL || 'https://noir-feedback.thomas-dugue.workers.dev'
+const WORKER_SECRET = process.env.NOIR_WORKER_SECRET || ''
 
 if (!GITHUB_TOKEN)  { console.error('❌ Missing GITHUB_TOKEN');      process.exit(1) }
 if (!ANTHROPIC_KEY) { console.error('❌ Missing ANTHROPIC_API_KEY'); process.exit(1) }
@@ -193,7 +193,9 @@ function getCodebase() {
 
 async function fetchSentryIssue(shortId) {
   const url = `${SENTRY_WORKER}/sentry/issue/${shortId}`
-  const res = await fetch(url)
+  const res = await fetch(url, {
+    headers: WORKER_SECRET ? { 'X-Noir-Secret': WORKER_SECRET } : {}
+  })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     throw new Error(`Sentry ${shortId} fetch failed (${res.status}): ${detail.slice(0, 200)}`)

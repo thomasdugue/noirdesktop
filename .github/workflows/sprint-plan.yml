@@ -26,12 +26,14 @@ jobs:
         run: npm ci
         working-directory: noir-tauri/scripts
 
-      - name: Generate plans for issues ${{ github.event.inputs.issues }}
+      - name: Generate plans for selected issues
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.NOIR_GITHUB_TOKEN }}
           NOIR_FEEDBACK_REPO: thomasdugue/noir-feedback
-        run: node sprint-planner.js --plan ${{ github.event.inputs.issues }}
+          NOIR_WORKER_SECRET: ${{ secrets.NOIR_WORKER_SECRET }}
+          ISSUES_INPUT: ${{ github.event.inputs.issues }}
+        run: node sprint-planner.js --plan "$ISSUES_INPUT"
         working-directory: noir-tauri/scripts
 
       - name: Upload SPRINT.md
