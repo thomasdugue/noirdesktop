@@ -4693,6 +4693,22 @@ pub fn run() {
             //   même quand Apple Music tourne en arrière-plan.
             media_controls::init_media_controls(app_handle);
 
+            // Cleanup smb_buffer : supprime les fichiers temporaires > 24h
+            let smb_buffer = get_data_dir().join("smb_buffer");
+            if smb_buffer.is_dir() {
+                let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(86400);
+                if let Ok(entries) = fs::read_dir(&smb_buffer) {
+                    for entry in entries.flatten() {
+                        if let Ok(meta) = entry.metadata() {
+                            let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                            if modified < cutoff {
+                                let _ = fs::remove_file(entry.path());
+                            }
+                        }
+                    }
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
