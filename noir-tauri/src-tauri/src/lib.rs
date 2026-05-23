@@ -2374,7 +2374,8 @@ fn write_metadata(
 
     // Pour SMB : ré-uploader le fichier modifié vers le NAS
     if is_smb {
-        let (source_id, share, remote_path) = parse_smb_uri(&path).unwrap();
+        let (source_id, share, remote_path) = parse_smb_uri(&path)
+            .ok_or_else(|| format!("Invalid SMB path: {}", path))?;
         let source = {
             let sources = NETWORK_SOURCES.lock().map_err(|e| e.to_string())?;
             sources.iter().find(|s| s.id == source_id).cloned()

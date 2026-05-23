@@ -1689,14 +1689,19 @@ body.sidebar-resizing * {
   transition: filter var(--transition-normal), opacity var(--transition-normal);
 }
 
-/* Cover art fade-in on load */
-.album-cover img[src] {
-  animation: coverFadeIn 0.2s ease;
+/* Cover art reveal — émergence depuis le noir, homogène sur TOUS les conteneurs */
+.album-cover img[src],
+.carousel-cover-img[src],
+.resume-cover-img[src],
+.recent-track-img[src],
+.discovery-mix-bg-img[src],
+.artist-cover-img[src] {
+  animation: coverReveal 0.28s ease-out both;
 }
 
-@keyframes coverFadeIn {
-  from { opacity: 0; transform: scale(0.97); }
-  to { opacity: 1; transform: scale(1); }
+@keyframes coverReveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .album-cover-placeholder {
@@ -1706,7 +1711,8 @@ body.sidebar-resizing * {
   align-items: center;
   justify-content: center;
   font-size: 48px;
-  color: var(--color-bg-elevated);
+  color: #1a1a1a;
+  background: #111;
 }
 
 .album-title {
@@ -2773,7 +2779,8 @@ body.sidebar-resizing * {
   align-items: center;
   justify-content: center;
   font-size: 32px;
-  color: var(--color-text-faint);
+  color: #1a1a1a;
+  background: #111;
 }
 
 .resume-info {
@@ -3088,7 +3095,8 @@ body.sidebar-resizing * {
   align-items: center;
   justify-content: center;
   font-size: 40px;
-  color: var(--color-bg-elevated);
+  color: #1a1a1a;
+  background: #111;
 }
 
 .carousel-title {
@@ -8969,6 +8977,38 @@ body:not(.player-visible) .track-info-panel {
   color: var(--color-text-dimmed);
   font-weight: 500;
 }
+#onboarding-overlay .scan-live-counter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: var(--sp-sm);
+}
+#onboarding-overlay .scan-counter-number {
+  font-family: var(--font-mono, 'Geist Mono', monospace);
+  font-size: 32px;
+  font-weight: 400;
+  color: var(--color-text);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.3s ease;
+}
+#onboarding-overlay .scan-counter-label {
+  font-size: var(--fs-small);
+  color: var(--color-text-faint);
+  text-transform: lowercase;
+}
+#onboarding-overlay .scan-folder-path {
+  text-align: center;
+  font-family: var(--font-mono, 'Geist Mono', monospace);
+  font-size: 11px;
+  color: var(--color-text-faint);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.6;
+}
 
 #onboarding-overlay .scan-footer {
   padding: var(--sp-xl) var(--sp-3xl);
@@ -9018,10 +9058,12 @@ body:not(.player-visible) .track-info-panel {
   text-align: center;
 }
 #onboarding-overlay .done-stat-number {
-  font-size: var(--fs-heading);
-  font-weight: 600;
+  font-family: var(--font-mono, 'Geist Mono', monospace);
+  font-size: 28px;
+  font-weight: 400;
   color: var(--color-text);
-  letter-spacing: -0.5px;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 #onboarding-overlay .done-stat-label {
   font-size: var(--fs-small);

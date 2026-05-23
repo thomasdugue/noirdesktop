@@ -261,10 +261,11 @@ export function showOnboarding() {
             <div class="scan-progress-bar">
               <div class="scan-progress-fill" id="ob-scan-fill"></div>
             </div>
-            <div class="scan-stats">
-              <span><span class="scan-stat-value" id="ob-scan-count">0</span> tracks found</span>
-              <span id="ob-scan-folder" style="text-align:right; max-width: 140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">/music</span>
+            <div class="scan-live-counter">
+              <span class="scan-counter-number" id="ob-scan-count">0</span>
+              <span class="scan-counter-label">tracks discovered</span>
             </div>
+            <div class="scan-folder-path" id="ob-scan-folder">/music</div>
           </div>
         </div>
 
@@ -859,7 +860,11 @@ async function listenForScanEvents(scanType) {
       if (data.phase === 'scanning_network' && data.total > 0) {
         const percent = Math.min(Math.round((data.current / data.total) * 100), 100)
         if (fill) fill.style.width = percent + '%'
-        if (count) count.textContent = data.current.toLocaleString()
+      }
+
+      // Both scan types: update track count live
+      if (data.current > 0 && count) {
+        count.textContent = data.current.toLocaleString()
       }
 
       // Both scan types: show folder name

@@ -849,16 +849,19 @@ async function init() {
   console.log('[INIT] Library paths:', savedPaths)
 
   if (savedPaths.length === 0) {
-    console.log('[INIT] No library paths configured')
+    console.log('[INIT] No local library paths configured')
     updateIndexationStats({ artists_count: 0, albums_count: 0, mp3_count: 0, flac_16bit_count: 0, flac_24bit_count: 0 })
 
-    // Check if there are network sources — if none, show onboarding
+    // Check if there are network sources — if none, show onboarding and stop here
     let networkSources = []
     try { networkSources = await invoke('get_network_sources') } catch (_) {}
     if (networkSources.length === 0) {
       setTimeout(() => { if (app.showOnboarding) app.showOnboarding() }, 300)
+      return
     }
-    return
+    // Sinon (NAS-only setup) : NE PAS return — continuer vers load_tracks_from_cache
+    // pour que les tracks NAS du cache disque s'affichent au démarrage
+    console.log('[INIT] Network-only setup detected — continuing to load tracks from cache')
   }
 
   // Charge depuis le cache (démarrage instantané)

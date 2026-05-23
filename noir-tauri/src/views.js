@@ -1556,11 +1556,10 @@ export async function displayHomeView() {
     if (img && placeholder) {
       const cachedCover = caches.coverCache.get(coverPath) || caches.thumbnailCache.get(coverPath)
       if (!loadCachedImage(img, placeholder, cachedCover)) {
-        app.loadThumbnailAsync(coverPath, img, artist, albumName).then(() => {
-          if (img.isConnected && img.style.display === 'block') {
-            placeholder.style.display = 'none'
-          }
-        })
+        // Chargement différé via data-attributes (résolu après insertion DOM)
+        resumeTile.dataset.coverPath = coverPath
+        if (artist) resumeTile.dataset.coverArtist = artist
+        if (albumName) resumeTile.dataset.coverAlbum = albumName
       }
     }
 
@@ -1697,19 +1696,11 @@ export async function displayHomeView() {
         const cachedCover = caches.coverCache.get(coverPath) || caches.thumbnailCache.get(coverPath)
           || (coverPath !== entry.path && (caches.coverCache.get(entry.path) || caches.thumbnailCache.get(entry.path)))
         if (!loadCachedImage(img, placeholder, cachedCover)) {
-          // Load with fallback: try album coverPath first, then entry.path
-          app.loadThumbnailAsync(coverPath, img, entry.artist, entry.album).then(() => {
-            if (img.isConnected && img.style.display === 'block') {
-              placeholder.style.display = 'none'
-            } else if (coverPath !== entry.path && img.isConnected) {
-              // Album cover failed, try the track file directly
-              app.loadThumbnailAsync(entry.path, img, entry.artist, entry.album).then(() => {
-                if (img.isConnected && img.style.display === 'block') {
-                  placeholder.style.display = 'none'
-                }
-              })
-            }
-          })
+          // Chargement différé via data-attributes (résolu après insertion DOM)
+          item.dataset.coverPath = coverPath
+          if (coverPath !== entry.path) item.dataset.coverFallback = entry.path
+          if (entry.artist) item.dataset.coverArtist = entry.artist
+          if (entry.album) item.dataset.coverAlbum = entry.album
         }
       }
 
@@ -1723,7 +1714,9 @@ export async function displayHomeView() {
   // === 4. Discover carousel (unplayed albums) ===
   // Compare by album name (from listening history) against each album's .album property
   // Selection is cached per session (app launch) — only reshuffles on restart or library scan.
-  const albumHasCover = (album) => album.coverPath && (caches.coverCache.has(album.coverPath) || caches.thumbnailCache.has(album.coverPath))
+  // NOTE: ne PAS vérifier les caches JS in-memory (vides au cold start) — sinon la home apparaît vide
+  // tant qu'aucune cover n'a été chargée. Le coverPath suffit ; le loader async remplira plus tard.
+  const albumHasCover = (album) => !!album.coverPath
 
   const playedAlbumNames = new Set(allPlayedAlbums.map(e => e?.album || ''))
   const unplayedAlbums = Object.keys(library.albums).filter(key => {
@@ -1795,11 +1788,11 @@ export async function displayHomeView() {
       const placeholder = item.querySelector('.carousel-cover-placeholder')
 
       if (img && placeholder) {
-        app.loadArtistImageAsync(artist.name, img, artist.sample_album, artist.sample_path).then(() => {
-          if (img.isConnected && img.style.display === 'block') {
-            placeholder.style.display = 'none'
-          }
-        })
+        // Chargement différé via data-attributes (résolu après insertion DOM)
+        item.dataset.artistName2 = artist.name
+        item.dataset.artistSampleAlbum = artist.sample_album || ''
+        item.dataset.artistSamplePath = artist.sample_path || ''
+        item.dataset.deferArtist = '1'
       }
 
       artistsCarousel.appendChild(item)
@@ -1867,11 +1860,9 @@ export async function displayHomeView() {
       if (album.coverPath && img && placeholder) {
         const cachedCover = caches.coverCache.get(album.coverPath)
         if (!loadCachedImage(img, placeholder, cachedCover)) {
-          app.loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
-            if (img.isConnected && img.style.display === 'block') {
-              placeholder.style.display = 'none'
-            }
-          })
+          item.dataset.coverPath = album.coverPath
+          if (album.artist) item.dataset.coverArtist = album.artist
+          if (album.album) item.dataset.coverAlbum = album.album
         }
       }
 
@@ -1942,11 +1933,9 @@ export async function displayHomeView() {
       if (album.coverPath && img && placeholder) {
         const cachedCover = caches.coverCache.get(album.coverPath)
         if (!loadCachedImage(img, placeholder, cachedCover)) {
-          app.loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
-            if (img.isConnected && img.style.display === 'block') {
-              placeholder.style.display = 'none'
-            }
-          })
+          item.dataset.coverPath = album.coverPath
+          if (album.artist) item.dataset.coverArtist = album.artist
+          if (album.album) item.dataset.coverAlbum = album.album
         }
       }
 
@@ -2012,11 +2001,9 @@ export async function displayHomeView() {
       if (album.coverPath && img && placeholder) {
         const cachedCover = caches.coverCache.get(album.coverPath)
         if (!loadCachedImage(img, placeholder, cachedCover)) {
-          app.loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
-            if (img.isConnected && img.style.display === 'block') {
-              placeholder.style.display = 'none'
-            }
-          })
+          item.dataset.coverPath = album.coverPath
+          if (album.artist) item.dataset.coverArtist = album.artist
+          if (album.album) item.dataset.coverAlbum = album.album
         }
       }
 
@@ -2104,11 +2091,9 @@ export async function displayHomeView() {
 
         const cachedCover = caches.coverCache.get(coverPath)
         if (!loadCachedImage(img, placeholder, cachedCover)) {
-          app.loadThumbnailAsync(coverPath, img, mixArtist, mixAlbum).then(() => {
-            if (img.isConnected && img.style.display === 'block') {
-              placeholder.style.display = 'none'
-            }
-          })
+          item.dataset.coverPath = coverPath
+          if (mixArtist) item.dataset.coverArtist = mixArtist
+          if (mixAlbum) item.dataset.coverAlbum = mixAlbum
         }
       }
 
@@ -2279,6 +2264,50 @@ export async function displayHomeView() {
   })
 
   dom.albumsGridDiv.appendChild(homeContainer)
+
+  // Chargement différé des covers — APRÈS insertion DOM pour que isConnected === true
+  requestAnimationFrame(() => {
+    // 1. Covers albums/tracks (data-cover-path)
+    const pendingItems = homeContainer.querySelectorAll('[data-cover-path]')
+    for (const el of pendingItems) {
+      const img = el.querySelector('.carousel-cover-img, .resume-cover-img, .recent-track-img, .discovery-mix-bg-img')
+      const placeholder = el.querySelector('.carousel-cover-placeholder, .resume-cover-placeholder, .recent-track-placeholder')
+      if (!img || img.src) continue
+      const coverPath = el.dataset.coverPath
+      const artist = el.dataset.coverArtist || null
+      const album = el.dataset.coverAlbum || null
+      const fallbackPath = el.dataset.coverFallback || null
+      app.loadThumbnailAsync(coverPath, img, artist, album).then(() => {
+        if (img.isConnected && img.style.display === 'block' && placeholder) {
+          placeholder.style.display = 'none'
+        }
+      }).catch(() => {
+        // Double fallback pour Recently Played (coverPath = album cover, fallback = track path)
+        if (fallbackPath) {
+          app.loadThumbnailAsync(fallbackPath, img, artist, album).then(() => {
+            if (img.isConnected && img.style.display === 'block' && placeholder) {
+              placeholder.style.display = 'none'
+            }
+          })
+        }
+      })
+    }
+    // 2. Artist images (data-defer-artist)
+    const pendingArtists = homeContainer.querySelectorAll('[data-defer-artist]')
+    for (const el of pendingArtists) {
+      const img = el.querySelector('.carousel-cover-img')
+      const placeholder = el.querySelector('.carousel-cover-placeholder')
+      if (!img || img.src) continue
+      const name = el.dataset.artistName2
+      const sampleAlbum = el.dataset.artistSampleAlbum || null
+      const samplePath = el.dataset.artistSamplePath || null
+      app.loadArtistImageAsync(name, img, sampleAlbum, samplePath).then(() => {
+        if (img.isConnected && img.style.display === 'block' && placeholder) {
+          placeholder.style.display = 'none'
+        }
+      })
+    }
+  })
 }
 
 // Helper: create a standard carousel album item with cover loading
@@ -2301,11 +2330,10 @@ function createCarouselAlbumItem(albumKey, album) {
   if (album.coverPath && img && placeholder) {
     const cachedCover = caches.coverCache.get(album.coverPath)
     if (!loadCachedImage(img, placeholder, cachedCover)) {
-      app.loadThumbnailAsync(album.coverPath, img, album.artist, album.album).then(() => {
-        if (img.isConnected && img.style.display === 'block') {
-          placeholder.style.display = 'none'
-        }
-      })
+      // Stocker les infos pour chargement différé (après insertion DOM)
+      item.dataset.coverPath = album.coverPath
+      if (album.artist) item.dataset.coverArtist = album.artist
+      if (album.album) item.dataset.coverAlbum = album.album
     }
   }
 
