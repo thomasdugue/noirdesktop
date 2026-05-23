@@ -76,7 +76,9 @@
       "Bash(export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/versions/node/v22.14.0/bin:$PATH\")",
       "Bash(kill 47449)",
       "Bash(kill 4922)",
-      "Bash(kill 4894)"
+      "Bash(kill 4894)",
+      "mcp__Claude_in_Chrome__read_console_messages",
+      "Bash(cp /Users/tsunami25/Documents/Thomas/noirdesktop/noir-tauri/scripts/.env.local /Users/tsunami25/Documents/Thomas/noirdesktop/.claude/worktrees/elegant-khorana-be752a/noir-tauri/scripts/.env.local && echo \"Copied OK\")"
     ]
   }
 }
