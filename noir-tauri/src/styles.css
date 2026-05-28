@@ -10638,3 +10638,72 @@ body:not(.player-visible) .track-info-panel {
     font-size: clamp(120px, 22vw, 200px);
   }
 }
+
+/* ============================================================
+   REDESIGN — LOT A (foundation pass)
+   Visual-only re-skin. No JS, no markup changes (except the
+   DM Sans <link> weights in index.html). Fully reversible:
+   delete this block + revert the <link> weights.
+   Scope: 7 new design tokens + home type scale + now-playing hero.
+   Scoped under .home-container so it cannot leak to other views,
+   and NEVER targets player/queue/lyrics/settings/feedback/onboarding.
+   !important is used only where the existing "DESIGN UPGRADE v2"
+   layer also set !important on the same property.
+   NOTE: authored without a macOS render — validate visually on device.
+   ============================================================ */
+
+:root {
+  /* The 7 genuinely-new tokens (do NOT paste the prototype :root wholesale —
+     it would shrink every --fs-* by 1px app-wide). */
+  --fs-display-xl: clamp(36px, 5vw, 56px);
+  --fs-display-lg: clamp(28px, 3.5vw, 40px);
+  --fs-display-md: clamp(24px, 3vw, 36px);
+  --glass-hi: rgba(255, 255, 255, 0.10);
+  --glass-md: rgba(255, 255, 255, 0.06);
+  --glass-lo: rgba(255, 255, 255, 0.04);
+  --glass-xs: rgba(255, 255, 255, 0.025);
+}
+
+/* --- Section headers: oversized DM Sans 800 (design signature) --- */
+.home-container .home-section-title {
+  font-family: var(--font-sans) !important;
+  font-weight: 800 !important;
+  font-size: var(--fs-display-lg) !important;
+  letter-spacing: -0.03em !important;
+  line-height: 1.05 !important;
+}
+
+/* --- Now-playing strip → editorial hero (re-skins the existing
+   .home-resume-tile in place; markup + wiring untouched) --- */
+.home-container .home-resume-tile {
+  max-width: none;
+  gap: 28px;
+  padding: 24px clamp(20px, 3vw, 32px);
+  align-items: center;
+}
+.home-container .home-resume-tile .resume-cover {
+  width: clamp(120px, 13vw, 160px);
+  height: clamp(120px, 13vw, 160px);
+}
+.home-container .home-resume-tile .resume-label {
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+}
+.home-container .home-resume-tile .resume-title {
+  font-family: var(--font-sans);
+  font-weight: 800;
+  font-size: var(--fs-display-lg);
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+}
+.home-container .home-resume-tile .resume-artist {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+}
+.home-container .home-resume-tile .resume-play-btn {
+  width: 56px;
+  height: 56px;
+}
