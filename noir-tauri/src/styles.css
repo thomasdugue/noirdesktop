@@ -10707,3 +10707,87 @@ body:not(.player-visible) .track-info-panel {
   width: 56px;
   height: 56px;
 }
+
+/* ============================================================
+   REDESIGN — LOT B (detail pages: Album / Artist / Playlist)
+   CSS-only, scoped per page container. Builds on Lot A.
+   Preserved invariants:
+   - Watermark/ambient: no change to position/overflow/z-index
+     of .album-detail, .album-detail-header, .artist-page-container,
+     nor to --color-ambient-*/--ambient-* custom props.
+   - Shared components untouched: .quality-tag*, .context-menu*,
+     .toast, .track-add-queue/.track-add-playlist hover-reveal,
+     .playlist-cover-grid-sm absolute positioning, player/queue/
+     lyrics/settings/feedback/onboarding.
+   - !important matches the existing "DESIGN UPGRADE v2" layer
+     (which already sets !important on .album-page-title, etc.).
+   NOTE: authored without on-device render — validate visually.
+   ============================================================ */
+
+/* --- Album page + Artist page title (both reuse .album-page-title) --- */
+.album-page-container .album-page-title,
+.artist-page-container .album-page-title {
+  font-family: var(--font-sans) !important;
+  font-weight: 800 !important;
+  font-size: var(--fs-display-xl) !important;
+  letter-spacing: -0.04em !important;
+  line-height: 1.0 !important;
+}
+
+/* --- Album page: hero cover slightly larger (still shrinks on narrow) --- */
+.album-page-container .album-page-cover {
+  width: clamp(180px, 22vw, 280px);
+  height: clamp(180px, 22vw, 280px);
+}
+.album-page-container .album-page-content {
+  gap: 32px;
+  align-items: center;
+}
+.album-page-container .album-page-buttons {
+  gap: 16px;
+  margin-top: 20px;
+}
+
+/* --- Album detail panel: oversized title + bigger cover --- */
+.album-detail .album-detail-title {
+  font-family: var(--font-sans) !important;
+  font-weight: 800 !important;
+  font-size: var(--fs-display-lg) !important;
+  letter-spacing: -0.03em !important;
+  line-height: 1.05 !important;
+}
+.album-detail .album-detail-cover {
+  width: clamp(140px, 18vw, 200px);
+  height: clamp(140px, 18vw, 200px);
+}
+.album-detail .album-detail-header {
+  gap: 24px;
+  align-items: center;
+}
+
+/* --- Artist page: bigger circular portrait + content alignment --- */
+.artist-page-container .artist-page-photo {
+  width: clamp(200px, 24vw, 280px);
+  height: clamp(200px, 24vw, 280px);
+}
+.artist-page-container .artist-page-content {
+  gap: 32px;
+  align-items: center;
+}
+.artist-page-container .artist-page-buttons {
+  gap: 16px;
+  margin-top: 20px;
+}
+
+/* --- Playlist view header: oversized title (no v2 override here,
+       normal specificity wins against the base layer) --- */
+.playlist-view-header .playlist-header-info h2 {
+  font-family: var(--font-sans);
+  font-weight: 800;
+  font-size: var(--fs-display-lg);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+}
+.playlist-view-header {
+  gap: 24px;
+}
