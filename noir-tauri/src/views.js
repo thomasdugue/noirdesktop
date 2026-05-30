@@ -1508,41 +1508,38 @@ export async function displayHomeView() {
     // Label "Now Playing" dès qu'une track est chargée, "Resume Playback" seulement si rien de chargé
     const label = hasActiveTrack ? 'Now Playing' : 'Resume Playback'
 
-    let specsTagsHtml = ''
+    let hallmarkHtml = ''
     if (currentTrack?.metadata) {
       const meta = currentTrack.metadata
       const codec = meta.codec || getCodecFromPath(currentTrack.path)
       const bitDepth = meta.bitDepth ? `${meta.bitDepth}-bit` : ''
-      const sampleRate = meta.sampleRate ? `${(meta.sampleRate / 1000).toFixed(1).replace('.0', '')}kHz` : ''
+      const sampleRate = meta.sampleRate ? `${(meta.sampleRate / 1000).toFixed(1).replace('.0', '')} kHz` : ''
       const duration = meta.duration ? formatTime(meta.duration) : ''
-
-      const tags = []
-      if (bitDepth) tags.push(`<span class="resume-spec-tag bitdepth">${bitDepth}</span>`)
-      if (sampleRate) tags.push(`<span class="resume-spec-tag samplerate">${sampleRate}</span>`)
-
-      const textParts = []
-      if (codec) textParts.push(codec.toUpperCase())
-      if (duration) textParts.push(duration)
-      const textSpecs = textParts.length > 0 ? `<span class="resume-specs-text">${textParts.join(' \u2022 ')}</span>` : ''
-
-      if (tags.length > 0 || textSpecs) {
-        specsTagsHtml = `<div class="resume-specs-container">${tags.join('')}${textSpecs}</div>`
-      }
+      const cells = []
+      if (bitDepth) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Bit depth</span><span class="hallmark-value">${bitDepth}</span></div>`)
+      if (sampleRate) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Sample</span><span class="hallmark-value">${sampleRate}</span></div>`)
+      if (codec) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Format</span><span class="hallmark-value">${escapeHtml(codec.toUpperCase())}</span></div>`)
+      if (duration) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Duration</span><span class="hallmark-value">${duration}</span></div>`)
+      if (cells.length > 0) hallmarkHtml = `<div class="resume-hallmark">${cells.join('')}</div>`
     }
 
     resumeTile.innerHTML = `
+      <div class="resume-strip-halo" aria-hidden="true"></div>
       <div class="resume-cover">
         <img class="resume-cover-img" style="display: none;" alt="">
         <div class="resume-cover-placeholder">\u266A</div>
       </div>
       <div class="resume-info">
-        <span class="resume-label${hasActiveTrack ? ' resume-label-active' : ''}">${label}</span>
+        <div class="resume-eyebrow">
+          ${hasActiveTrack && isCurrentlyPlaying ? '<span class="resume-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' : '<span class="resume-live-dot" aria-hidden="true"></span>'}
+          <span class="resume-label${hasActiveTrack ? ' resume-label-active' : ''}">${label}</span>
+        </div>
         <span class="resume-title">${escapeHtml(title)}</span>
         <span class="resume-artist">${escapeHtml(artist)}</span>
         ${albumName ? `<span class="resume-album">${escapeHtml(albumName)}</span>` : ''}
-        ${specsTagsHtml}
+        ${hallmarkHtml}
       </div>
-      <button class="resume-play-btn">${isCurrentlyPlaying ? '\u23F8' : '\u25B6'}</button>
+      <button class="resume-play-btn" aria-label="${isCurrentlyPlaying ? 'Pause' : 'Play'}">${isCurrentlyPlaying ? '\u23F8' : '\u25B6'}</button>
     `
 
     // Particle animation si une track est chargée (lecture ou pause)
@@ -2364,26 +2361,19 @@ export function updateHomeNowPlayingSection() {
   const artist = currentTrack.metadata?.artist || 'Unknown Artist'
   const albumName = currentTrack.metadata?.album || ''
 
-  let specsTagsHtml = ''
+  let hallmarkHtml = ''
   if (currentTrack.metadata) {
     const meta = currentTrack.metadata
     const codec = meta.codec || getCodecFromPath(currentTrack.path)
     const bitDepth = meta.bitDepth ? `${meta.bitDepth}-bit` : ''
-    const sampleRate = meta.sampleRate ? `${(meta.sampleRate / 1000).toFixed(1).replace('.0', '')}kHz` : ''
+    const sampleRate = meta.sampleRate ? `${(meta.sampleRate / 1000).toFixed(1).replace('.0', '')} kHz` : ''
     const duration = meta.duration ? formatTime(meta.duration) : ''
-
-    const tags = []
-    if (bitDepth) tags.push(`<span class="resume-spec-tag bitdepth">${bitDepth}</span>`)
-    if (sampleRate) tags.push(`<span class="resume-spec-tag samplerate">${sampleRate}</span>`)
-
-    const textParts = []
-    if (codec) textParts.push(codec.toUpperCase())
-    if (duration) textParts.push(duration)
-    const textSpecs = textParts.length > 0 ? `<span class="resume-specs-text">${textParts.join(' \u2022 ')}</span>` : ''
-
-    if (tags.length > 0 || textSpecs) {
-      specsTagsHtml = `<div class="resume-specs-container">${tags.join('')}${textSpecs}</div>`
-    }
+    const cells = []
+    if (bitDepth) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Bit depth</span><span class="hallmark-value">${bitDepth}</span></div>`)
+    if (sampleRate) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Sample</span><span class="hallmark-value">${sampleRate}</span></div>`)
+    if (codec) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Format</span><span class="hallmark-value">${escapeHtml(codec.toUpperCase())}</span></div>`)
+    if (duration) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Duration</span><span class="hallmark-value">${duration}</span></div>`)
+    if (cells.length > 0) hallmarkHtml = `<div class="resume-hallmark">${cells.join('')}</div>`
   }
 
   // Destroy previous particle animation before replacing innerHTML
@@ -2391,19 +2381,25 @@ export function updateHomeNowPlayingSection() {
 
   resumeTile.dataset.trackPath = currentTrack.path
 
+  const isPlayingNow = playback.audioIsPlaying
+
   resumeTile.innerHTML = `
+    <div class="resume-strip-halo" aria-hidden="true"></div>
     <div class="resume-cover">
       <img class="resume-cover-img" style="display: none;" alt="">
       <div class="resume-cover-placeholder">\u266A</div>
     </div>
     <div class="resume-info">
-      <span class="resume-label resume-label-active">Now Playing</span>
+      <div class="resume-eyebrow">
+        ${isPlayingNow ? '<span class="resume-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' : '<span class="resume-live-dot" aria-hidden="true"></span>'}
+        <span class="resume-label resume-label-active">Now Playing</span>
+      </div>
       <span class="resume-title">${escapeHtml(title)}</span>
       <span class="resume-artist">${escapeHtml(artist)}</span>
       ${albumName ? `<span class="resume-album">${escapeHtml(albumName)}</span>` : ''}
-      ${specsTagsHtml}
+      ${hallmarkHtml}
     </div>
-    <button class="resume-play-btn">${playback.audioIsPlaying ? '\u23F8' : '\u25B6'}</button>
+    <button class="resume-play-btn" aria-label="${isPlayingNow ? 'Pause' : 'Play'}">${isPlayingNow ? '\u23F8' : '\u25B6'}</button>
   `
 
   // Start particle animation
