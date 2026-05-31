@@ -11149,3 +11149,175 @@ body:not(.player-visible) .track-info-panel {
 .playlist-view-header .playlist-cover-grid-lg:hover {
   transform: scale(1.015);
 }
+
+/* ============================================================
+   REDESIGN — LOT F (Library: Albums / Artists / Tracks grids)
+   CSS-only. Refines view titles, card typography, sort affordance.
+   ============================================================ */
+
+/* View titles — oversized in DM Sans 800 (battles v2 specificity via
+   compound selectors under .albums-view / .artists-view) */
+.albums-view .view-header h2,
+.albums-view .view-title {
+  font-family: var(--font-sans);
+  font-weight: 800;
+  font-size: var(--fs-display-md);
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+}
+
+/* Album / artist card titles — sharper hierarchy */
+.albums-grid .album-card .album-title {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+  margin-top: 12px;
+}
+.albums-grid .album-card .album-artist {
+  font-family: var(--font-body);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--color-text-faint);
+}
+.albums-grid .album-card.artist-card .album-title {
+  text-align: center;
+  margin-top: 14px;
+}
+.albums-grid .album-card.artist-card .album-artist {
+  text-align: center;
+}
+
+/* Sort select — glass refinement (hovers preserved) */
+.view-header-with-sort .sort-select {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-md);
+  font-family: var(--font-body);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.view-header-with-sort .sort-select:hover {
+  border-color: var(--glass-hi);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Grid gap — consistent across albums/artists */
+.albums-grid {
+  gap: clamp(16px, 1.8vw, 28px);
+}
+
+/* ============================================================
+   REDESIGN — LOT G (Settings drawer re-skin) — CSS only
+   Markup et JS de cablage intacts (audio device, exclusive mode, NAS,
+   Sentry/RGPD, auto-update). Re-skin visuel uniquement.
+   ============================================================ */
+
+.settings-panel {
+  width: clamp(380px, 28vw, 440px);
+  background: rgba(14, 14, 14, 0.96);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  border-left: 1px solid var(--glass-md);
+  transition: transform 0.4s var(--ease-out-expo);
+}
+.settings-panel .settings-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--glass-md);
+}
+.settings-panel .settings-header h3 {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  color: var(--color-text);
+}
+.settings-panel .settings-section {
+  padding: 24px;
+  border-bottom: 1px solid var(--glass-md);
+}
+.settings-panel .settings-section-title {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  color: var(--color-text-faint);
+  margin-bottom: 20px;
+}
+.settings-panel .settings-row {
+  min-height: 40px;
+  margin-bottom: 18px;
+}
+.settings-panel .settings-label {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--color-text);
+}
+.settings-panel .settings-description {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--color-text-faint);
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+/* ============================================================
+   REDESIGN — LOT H (Polish: context-menu, a11y focus, motion)
+   Toast laisse intact (v2 deja raffine). .quality-tag* non touche.
+   ============================================================ */
+
+/* Context menu — glass plus profond + padding plus tight */
+.context-menu {
+  background: rgba(20, 20, 20, 0.92);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--glass-md);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+}
+.context-menu .context-menu-item {
+  padding: 8px 12px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s ease;
+}
+.context-menu .context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+.context-menu .context-menu-separator {
+  margin: 4px 6px;
+  background: var(--glass-md);
+}
+
+/* A11y — focus visible rings (non-intrusifs, respectent prefers-reduced-motion) */
+.nav-item:focus-visible,
+.album-card:focus-visible,
+.resume-play-btn:focus-visible,
+.btn-primary-small:focus-visible,
+.btn-add-queue-album:focus-visible,
+.sort-select:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Reduced motion — couvre les animations introduites par les lots A-H */
+@media (prefers-reduced-motion: reduce) {
+  .home-container .home-resume-tile .resume-strip-halo,
+  .album-page-container .album-page-cover,
+  .playlist-view-header .playlist-cover-grid-lg {
+    transition: none !important;
+  }
+  .album-page-container .album-page-cover:hover,
+  .playlist-view-header .playlist-cover-grid-lg:hover {
+    transform: none !important;
+  }
+}
