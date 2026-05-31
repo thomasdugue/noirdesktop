@@ -918,6 +918,21 @@ export function displayAlbumPage(albumKey) {
     ? `<span class="quality-tag ${quality.class}">${quality.label}</span>`
     : ''
 
+  let hallmarkHtml = ''
+  if (firstTrack?.metadata) {
+    const m = firstTrack.metadata
+    const codec = m.codec || getCodecFromPath(firstTrack.path)
+    const bitDepth = m.bitDepth ? `${m.bitDepth}-bit` : ''
+    const sampleRate = m.sampleRate ? `${(m.sampleRate / 1000).toFixed(1).replace('.0', '')} kHz` : ''
+    const year = m.year ? `${m.year}` : ''
+    const cells = []
+    if (bitDepth) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Bit depth</span><span class="hallmark-value">${bitDepth}</span></div>`)
+    if (sampleRate) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Sample</span><span class="hallmark-value">${sampleRate}</span></div>`)
+    if (codec) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Format</span><span class="hallmark-value">${escapeHtml(codec.toUpperCase())}</span></div>`)
+    if (year) cells.push(`<div class="hallmark-cell"><span class="hallmark-label">Year</span><span class="hallmark-value">${year}</span></div>`)
+    if (cells.length > 0) hallmarkHtml = `<div class="album-page-hallmark">${cells.join('')}</div>`
+  }
+
   const pageContainer = document.createElement('div')
   pageContainer.className = 'album-page-container'
 
@@ -944,6 +959,7 @@ export function displayAlbumPage(albumKey) {
           ${album.tracks.length} tracks \u2022 ${formatTime(totalDuration)}${firstTrack?.metadata?.year ? ` \u2022 ${firstTrack.metadata.year}` : ''}
           ${qualityTag ? `<span class="album-page-tags">${qualityTag}</span>` : ''}
         </p>
+        ${hallmarkHtml}
         <div class="album-page-buttons">
           <button class="btn-primary-small play-album-btn">
             <svg viewBox="0 0 24 24" fill="currentColor">

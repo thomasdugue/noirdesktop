@@ -11052,3 +11052,100 @@ body:not(.player-visible) .track-info-panel {
 .search-bar .titlebar-settings-btn:hover {
   opacity: 1;
 }
+
+/* ============================================================
+   REDESIGN — LOT E (Album / Artist / Playlist detail enrichment)
+   Markup ajoute : .album-page-hallmark (cellules specs). CSS: hallmark
+   cells, action row spacing, playlist mosaic refinement, watermark glow.
+   Scoped sous .album-page-container / .artist-page-container /
+   .playlist-view-header. Pas de modif des protected ids.
+   ============================================================ */
+
+/* Album page hallmark cells (specs technique, glass) */
+.album-page-container .album-page-hallmark {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin-top: 12px;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--glass-md);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  overflow: hidden;
+}
+.album-page-container .album-page-hallmark .hallmark-cell {
+  padding: 10px 16px;
+  border-right: 1px solid var(--glass-md);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.album-page-container .album-page-hallmark .hallmark-cell:last-child {
+  border-right: none;
+}
+.album-page-container .album-page-hallmark .hallmark-label {
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.album-page-container .album-page-hallmark .hallmark-value {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Album page action row — espacement + cover hover lift */
+.album-page-container .album-page-buttons {
+  margin-top: 24px;
+}
+.album-page-container .album-page-cover {
+  transition: transform 0.5s var(--ease-out-expo), box-shadow 0.5s var(--ease-out-expo);
+}
+.album-page-container .album-page-cover:hover {
+  transform: scale(1.015);
+}
+
+/* Artist page — bump portrait circulaire + meta clean */
+.artist-page-container .artist-page-meta {
+  font-family: var(--font-body);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--color-text-dimmed);
+}
+.artist-page-container .artist-page-buttons {
+  margin-top: 20px;
+}
+
+/* Playlist view — header & cover-grid raffines */
+.playlist-view-header {
+  align-items: center;
+  padding: 0 0 8px;
+}
+.playlist-view-header .playlist-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.playlist-view-header .playlist-header-info p {
+  font-family: var(--font-body);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--color-text-dimmed);
+}
+.playlist-view-header .playlist-cover-grid-lg {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  transition: transform 0.5s var(--ease-out-expo);
+}
+.playlist-view-header .playlist-cover-grid-lg:hover {
+  transform: scale(1.015);
+}
