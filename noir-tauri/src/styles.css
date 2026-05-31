@@ -10938,3 +10938,117 @@ body:not(.player-visible) .track-info-panel {
 .playlist-view-header {
   gap: 24px;
 }
+
+/* ============================================================
+   REDESIGN — LOT D (Sidebar + Topbar chrome) — CSS only
+   Scoped to .sidebar / .search-bar. No protected ids touched.
+   ============================================================ */
+
+/* Sidebar header — add BETA pill next to logo via ::after */
+.sidebar .sidebar-header {
+  padding: 24px 20px 20px;
+  justify-content: space-between;
+}
+.sidebar .sidebar-header::after {
+  content: "BETA";
+  font-family: var(--font-body);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  padding: 3px 7px;
+  border-radius: var(--radius-sm);
+  background: rgba(200, 160, 60, 0.12);
+  color: rgba(220, 180, 80, 0.95);
+  border: 1px solid rgba(200, 160, 60, 0.32);
+  margin-left: 8px;
+}
+
+/* Sidebar nav — active state with subtle left accent bar */
+.sidebar .sidebar-nav {
+  padding: 12px 12px 8px;
+}
+.sidebar .nav-item {
+  position: relative;
+  font-size: 13px;
+  padding: 9px 12px 9px 14px;
+}
+.sidebar .nav-item.active {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 2px 0 0 var(--color-text);
+}
+.sidebar .nav-item .nav-item-label {
+  letter-spacing: -0.01em;
+}
+
+/* Playlists section — eyebrow refinement */
+.sidebar .sidebar-playlists .playlists-header {
+  padding: 14px 16px 6px;
+}
+.sidebar .sidebar-playlists .playlists-title {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+
+/* Indexation module — eyebrow harmonisé */
+.sidebar .indexation-module .indexation-title {
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  font-weight: 600;
+}
+
+/* --- Topbar / search bar — recentred & refined --- */
+.search-bar {
+  padding: 14px clamp(24px, 3vw, 40px);
+  gap: 16px;
+}
+.search-bar .search-bar-inner {
+  max-width: 480px;
+  margin: 0 auto;
+}
+.search-bar .search-input {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-md);
+  border-radius: var(--radius-md);
+  padding: 11px 44px 11px 18px;
+  font-size: 13px;
+  letter-spacing: -0.005em;
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+.search-bar .search-input:focus {
+  border-color: var(--glass-hi);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.04);
+}
+.search-bar .search-input::placeholder {
+  font-style: normal;
+  letter-spacing: 0.01em;
+}
+
+/* Feedback button — sharper amber accent */
+.search-bar .feedback-header-btn {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+}
+.search-bar .feedback-header-btn .beta-badge {
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  padding: 1px 5px;
+}
+
+/* Settings button in topbar — restraint */
+.search-bar .titlebar-settings-btn {
+  -webkit-app-region: no-drag;
+  opacity: 0.6;
+  transition: opacity var(--transition-fast), background var(--transition-fast);
+}
+.search-bar .titlebar-settings-btn:hover {
+  opacity: 1;
+}
