@@ -1480,7 +1480,16 @@ export async function displayHomeView() {
   await generateDiscoveryMixes()
 
   const homeContainer = document.createElement('div')
-  homeContainer.className = 'home-container'
+  homeContainer.className = 'home-container home-page'
+
+  // === 0. Page eyebrow (greeting) — REDESIGN v3 ===
+  const _eyebrow = document.createElement('div')
+  _eyebrow.className = 'page-eyebrow'
+  const _now = new Date()
+  const _dateLine = _now.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) +
+    ' · ' + _now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase()
+  _eyebrow.innerHTML = `<span class="live-dot"></span><span>Hean · ${_dateLine}</span><span class="hairline"></span>`
+  homeContainer.appendChild(_eyebrow)
 
   // === 1. Now Playing / Resume tile ===
   // hasActiveTrack = une track est chargée (en lecture OU en pause)
@@ -1495,12 +1504,11 @@ export async function displayHomeView() {
 
   if (displayTrack) {
     const resumeSection = document.createElement('section')
-    resumeSection.className = 'home-section home-resume-section'
+    resumeSection.className = `now-strip np-anim-eq${isCurrentlyPlaying ? ' is-playing' : ''}`
     resumeSection.id = 'home-now-playing-section'
-
-    const resumeTile = document.createElement('div')
-    resumeTile.className = 'home-resume-tile'
-    resumeTile.dataset.trackPath = displayTrack.path
+    resumeSection.dataset.trackPath = displayTrack.path
+    // Backward-compat alias for any legacy code that still queries .home-resume-tile
+    const resumeTile = resumeSection
 
     const title = currentTrack?.metadata?.title || currentTrack?.name || displayTrack.title || 'Titre inconnu'
     const artist = currentTrack?.metadata?.artist || displayTrack.artist || 'Unknown Artist'
@@ -1508,41 +1516,40 @@ export async function displayHomeView() {
     // Label "Now Playing" dès qu'une track est chargée, "Resume Playback" seulement si rien de chargé
     const label = hasActiveTrack ? 'Now Playing' : 'Resume Playback'
 
-    let specsTagsHtml = ''
+    let hallmarkHtml = ''
     if (currentTrack?.metadata) {
-      const meta = currentTrack.metadata
-      const codec = meta.codec || getCodecFromPath(currentTrack.path)
-      const bitDepth = meta.bitDepth ? `${meta.bitDepth}-bit` : ''
-      const sampleRate = meta.sampleRate ? `${(meta.sampleRate / 1000).toFixed(1).replace('.0', '')}kHz` : ''
-      const duration = meta.duration ? formatTime(meta.duration) : ''
-
-      const tags = []
-      if (bitDepth) tags.push(`<span class="resume-spec-tag bitdepth">${bitDepth}</span>`)
-      if (sampleRate) tags.push(`<span class="resume-spec-tag samplerate">${sampleRate}</span>`)
-
-      const textParts = []
-      if (codec) textParts.push(codec.toUpperCase())
-      if (duration) textParts.push(duration)
-      const textSpecs = textParts.length > 0 ? `<span class="resume-specs-text">${textParts.join(' \u2022 ')}</span>` : ''
-
-      if (tags.length > 0 || textSpecs) {
-        specsTagsHtml = `<div class="resume-specs-container">${tags.join('')}${textSpecs}</div>`
-      }
+      const m = currentTrack.metadata
+      const codec = m.codec || getCodecFromPath(currentTrack.path)
+      const bitDepth = m.bitDepth ? `${m.bitDepth}-bit` : ''
+      const sampleRate = m.sampleRate ? `${(m.sampleRate / 1000).toFixed(1).replace('.0', '')} kHz` : ''
+      const cells = []
+      if (bitDepth) cells.push(`<div class="cell"><span class="cell-label">Bit depth</span><span class="cell-val">${bitDepth}</span></div>`)
+      if (sampleRate) cells.push(`<div class="cell"><span class="cell-label">Sample</span><span class="cell-val">${sampleRate}</span></div>`)
+      if (codec) cells.push(`<div class="cell"><span class="cell-label">Format</span><span class="cell-val">${escapeHtml(codec.toUpperCase())}</span></div>`)
+      cells.push(`<div class="cell bp-cell"><span class="bp-mark" aria-hidden="true"></span><span class="cell-val">Bit perfect</span></div>`)
+      hallmarkHtml = `<div class="strip-hallmark">${cells.join('')}</div>`
     }
+    const eqOrDotHtml = (isCurrentlyPlaying
+      ? '<span class="eq-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>'
+      : '<span class="live-dot" aria-hidden="true"></span>')
 
     resumeTile.innerHTML = `
-      <div class="resume-cover">
+      <div class="strip-bg" aria-hidden="true"></div>
+      <div class="strip-halo" aria-hidden="true"></div>
+      <div class="cover-shell c-200 strip-cover" role="button" tabindex="0">
         <img class="resume-cover-img" style="display: none;" alt="">
         <div class="resume-cover-placeholder">\u266A</div>
       </div>
-      <div class="resume-info">
-        <span class="resume-label${hasActiveTrack ? ' resume-label-active' : ''}">${label}</span>
-        <span class="resume-title">${escapeHtml(title)}</span>
-        <span class="resume-artist">${escapeHtml(artist)}</span>
-        ${albumName ? `<span class="resume-album">${escapeHtml(albumName)}</span>` : ''}
-        ${specsTagsHtml}
+      <div class="strip-meta">
+        <div class="strip-eyebrow">${eqOrDotHtml}<span>${label}</span></div>
+        <div class="strip-track">${escapeHtml(title)}</div>
+        <h1 class="strip-title"><button class="strip-link" type="button">${escapeHtml(albumName || title)}</button></h1>
+        <div class="strip-artist"><button class="strip-link" type="button">${escapeHtml(artist)}</button></div>
+        ${hallmarkHtml}
       </div>
-      <button class="resume-play-btn">${isCurrentlyPlaying ? '\u23F8' : '\u25B6'}</button>
+      <div class="strip-controls">
+        <button class="btn-play-strip resume-play-btn" type="button" aria-label="${isCurrentlyPlaying ? 'Pause' : 'Play'}">${isCurrentlyPlaying ? '\u23F8' : '\u25B6'}</button>
+      </div>
     `
 
     // Particle animation si une track est chargée (lecture ou pause)
@@ -1563,7 +1570,6 @@ export async function displayHomeView() {
       }
     }
 
-    resumeSection.appendChild(resumeTile)
     homeContainer.appendChild(resumeSection)
   }
 
@@ -2140,7 +2146,7 @@ export async function displayHomeView() {
         }
       } else {
         // Aucune track chargée cette session — trouver la track affichée dans la tuile et la jouer
-        const tile = playBtn.closest('.home-resume-tile')
+        const tile = playBtn.closest('.now-strip, .home-resume-tile')
         const trackPath = tile?.dataset.trackPath
         if (trackPath) {
           const trackIndex = library.tracks.findIndex(t => t.path === trackPath)
@@ -2150,7 +2156,49 @@ export async function displayHomeView() {
       return
     }
 
-    const resumeTile = e.target.closest('.home-resume-tile')
+    // Strip cover click → navigate to album page
+    const stripCover = e.target.closest('.now-strip .strip-cover')
+    if (stripCover) {
+      const tile = stripCover.closest('.now-strip')
+      const trackPath = tile?.dataset.trackPath
+      const track = trackPath ? library.tracksByPath?.get(trackPath) : null
+      const albumName = track?.track?.metadata?.album
+      const albumKey = albumName ? albumName.trim().normalize('NFC') : null
+      if (albumKey && library.albums[albumKey]) {
+        openAlbumFromHome(albumKey, library.albums[albumKey])
+        return
+      }
+    }
+
+    // Strip artist link → navigate to artist page
+    const stripArtistLink = e.target.closest('.now-strip .strip-artist .strip-link')
+    if (stripArtistLink) {
+      const tile = stripArtistLink.closest('.now-strip')
+      const trackPath = tile?.dataset.trackPath
+      const track = trackPath ? library.tracksByPath?.get(trackPath) : null
+      const artistName = track?.track?.metadata?.artist
+      if (artistName && library.artists[artistName]) {
+        openArtistFromHome(artistName)
+        return
+      }
+    }
+
+    // Strip title link → navigate to album page
+    const stripTitleLink = e.target.closest('.now-strip .strip-title .strip-link')
+    if (stripTitleLink) {
+      const tile = stripTitleLink.closest('.now-strip')
+      const trackPath = tile?.dataset.trackPath
+      const track = trackPath ? library.tracksByPath?.get(trackPath) : null
+      const albumName = track?.track?.metadata?.album
+      const albumKey = albumName ? albumName.trim().normalize('NFC') : null
+      if (albumKey && library.albums[albumKey]) {
+        openAlbumFromHome(albumKey, library.albums[albumKey])
+        return
+      }
+    }
+
+    // Fallback: click anywhere else on the now-strip → play the displayed track
+    const resumeTile = e.target.closest('.now-strip, .home-resume-tile')
     if (resumeTile) {
       const trackPath = resumeTile.dataset.trackPath
       if (trackPath) {
@@ -2353,60 +2401,59 @@ export function updateHomeNowPlayingSection() {
   const currentTrack = playback.currentTrackIndex >= 0 ? library.tracks[playback.currentTrackIndex] : null
   if (!currentTrack) return
 
-  let resumeTile = section.querySelector('.home-resume-tile')
-  if (!resumeTile) {
-    resumeTile = document.createElement('div')
-    resumeTile.className = 'home-resume-tile'
-    section.appendChild(resumeTile)
-  }
+  // REDESIGN v3 : the section IS the now-strip (no nested .home-resume-tile)
+  const resumeTile = section
 
   const title = currentTrack.metadata?.title || currentTrack.name || 'Titre inconnu'
   const artist = currentTrack.metadata?.artist || 'Unknown Artist'
   const albumName = currentTrack.metadata?.album || ''
+  const isPlayingNow = playback.audioIsPlaying
 
-  let specsTagsHtml = ''
+  // Hallmark cells
+  let hallmarkHtml = ''
   if (currentTrack.metadata) {
-    const meta = currentTrack.metadata
-    const codec = meta.codec || getCodecFromPath(currentTrack.path)
-    const bitDepth = meta.bitDepth ? `${meta.bitDepth}-bit` : ''
-    const sampleRate = meta.sampleRate ? `${(meta.sampleRate / 1000).toFixed(1).replace('.0', '')}kHz` : ''
-    const duration = meta.duration ? formatTime(meta.duration) : ''
-
-    const tags = []
-    if (bitDepth) tags.push(`<span class="resume-spec-tag bitdepth">${bitDepth}</span>`)
-    if (sampleRate) tags.push(`<span class="resume-spec-tag samplerate">${sampleRate}</span>`)
-
-    const textParts = []
-    if (codec) textParts.push(codec.toUpperCase())
-    if (duration) textParts.push(duration)
-    const textSpecs = textParts.length > 0 ? `<span class="resume-specs-text">${textParts.join(' \u2022 ')}</span>` : ''
-
-    if (tags.length > 0 || textSpecs) {
-      specsTagsHtml = `<div class="resume-specs-container">${tags.join('')}${textSpecs}</div>`
-    }
+    const m = currentTrack.metadata
+    const codec = m.codec || getCodecFromPath(currentTrack.path)
+    const bitDepth = m.bitDepth ? `${m.bitDepth}-bit` : ''
+    const sampleRate = m.sampleRate ? `${(m.sampleRate / 1000).toFixed(1).replace('.0', '')} kHz` : ''
+    const cells = []
+    if (bitDepth) cells.push(`<div class="cell"><span class="cell-label">Bit depth</span><span class="cell-val">${bitDepth}</span></div>`)
+    if (sampleRate) cells.push(`<div class="cell"><span class="cell-label">Sample</span><span class="cell-val">${sampleRate}</span></div>`)
+    if (codec) cells.push(`<div class="cell"><span class="cell-label">Format</span><span class="cell-val">${escapeHtml(codec.toUpperCase())}</span></div>`)
+    cells.push(`<div class="cell bp-cell"><span class="bp-mark" aria-hidden="true"></span><span class="cell-val">Bit perfect</span></div>`)
+    hallmarkHtml = `<div class="strip-hallmark">${cells.join('')}</div>`
   }
+  const eqOrDotHtml = (isPlayingNow
+    ? '<span class="eq-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>'
+    : '<span class="live-dot" aria-hidden="true"></span>')
 
-  // Destroy previous particle animation before replacing innerHTML
   destroyParticleCanvas(resumeTile)
+
+  // Sync is-playing class on the now-strip section
+  if (isPlayingNow) section.classList.add('is-playing')
+  else section.classList.remove('is-playing')
 
   resumeTile.dataset.trackPath = currentTrack.path
 
   resumeTile.innerHTML = `
-    <div class="resume-cover">
+    <div class="strip-bg" aria-hidden="true"></div>
+    <div class="strip-halo" aria-hidden="true"></div>
+    <div class="cover-shell c-200 strip-cover" role="button" tabindex="0">
       <img class="resume-cover-img" style="display: none;" alt="">
       <div class="resume-cover-placeholder">\u266A</div>
     </div>
-    <div class="resume-info">
-      <span class="resume-label resume-label-active">Now Playing</span>
-      <span class="resume-title">${escapeHtml(title)}</span>
-      <span class="resume-artist">${escapeHtml(artist)}</span>
-      ${albumName ? `<span class="resume-album">${escapeHtml(albumName)}</span>` : ''}
-      ${specsTagsHtml}
+    <div class="strip-meta">
+      <div class="strip-eyebrow">${eqOrDotHtml}<span>Now playing</span></div>
+      <div class="strip-track">${escapeHtml(title)}</div>
+      <h1 class="strip-title"><button class="strip-link" type="button">${escapeHtml(albumName || title)}</button></h1>
+      <div class="strip-artist"><button class="strip-link" type="button">${escapeHtml(artist)}</button></div>
+      ${hallmarkHtml}
     </div>
-    <button class="resume-play-btn">${playback.audioIsPlaying ? '\u23F8' : '\u25B6'}</button>
+    <div class="strip-controls">
+      <button class="btn-play-strip resume-play-btn" type="button" aria-label="${isPlayingNow ? 'Pause' : 'Play'}">${isPlayingNow ? '\u23F8' : '\u25B6'}</button>
+    </div>
   `
 
-  // Start particle animation
   createParticleCanvas(resumeTile)
 
   const img = resumeTile.querySelector('.resume-cover-img')
