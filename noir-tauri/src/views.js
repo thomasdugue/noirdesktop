@@ -2961,7 +2961,6 @@ export function displayArtistPage(artistKey) {
   pageContainer.dataset.artistName = artist.name
 
   pageContainer.innerHTML = `
-    <div class="artist-watermark" aria-hidden="true"><span class="artist-watermark-text">${escapeHtml(watermarkText)}</span></div>
     <div class="album-page-header">
       <button class="btn-back-nav" title="Back">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -2969,33 +2968,41 @@ export function displayArtistPage(artistKey) {
           <path d="M12 19l-7-7 7-7"/>
         </svg>
       </button>
-      <h1 class="album-page-title">${artist.name}</h1>
     </div>
-    <div class="artist-page-content">
-      <div class="artist-page-photo">
-        <img class="artist-page-photo-img" style="display: none;" alt="${artist.name}">
-        <div class="artist-photo-placeholder">\u266A</div>
+    <div class="artist-hero">
+      <div class="artist-hero-halo" aria-hidden="true"></div>
+      <div class="artist-watermark-v3 hero-watermark" aria-hidden="true">${escapeHtml(watermarkText)}</div>
+      <div class="artist-portrait">
+        <img class="artist-page-photo-img" style="display: none;" alt="${escapeHtml(artist.name)}">
+        <div class="artist-photo-placeholder">${escapeHtml((artist.name || '?').charAt(0).toUpperCase())}</div>
       </div>
-      <div class="artist-page-info">
-        <p class="artist-page-meta">
-          ${metaParts.join(' \u2022 ')}
-        </p>
-        <div class="artist-page-buttons">
-          <button class="btn-primary-small play-artist-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z"/>
-            </svg>
-            Play All
+      <div class="artist-meta-col">
+        <div class="artist-eyebrow"><span>Artist</span></div>
+        <h1 class="artist-name-xl album-page-title">${escapeHtml(artist.name)}</h1>
+        <div class="artist-stats">
+          <div class="stat"><div class="stat-val">${fullAlbumsCount}</div><div class="stat-label">Albums</div></div>
+          <div class="stat"><div class="stat-val">${totalTracks}</div><div class="stat-label">Tracks</div></div>
+          <div class="stat"><div class="stat-val">${formatTime(totalDuration)}</div><div class="stat-label">Total</div></div>
+        </div>
+        <div class="artist-actions artist-page-buttons">
+          <button class="btn-primary play-artist-btn" type="button">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+            <span>Play top tracks</span>
           </button>
-          <button class="btn-add-queue-album add-artist-queue-btn" title="Add to queue">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
-            </svg>
+          <button class="btn-ghost shuffle-artist-btn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+            <span>Shuffle</span>
+          </button>
+          <button class="btn-ghost add-artist-queue-btn" type="button" title="Add to queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/></svg>
+            <span>Add to queue</span>
           </button>
         </div>
       </div>
     </div>
-    <div class="artist-albums-grid"></div>
+    <div class="artist-body">
+      <div class="artist-albums-grid"></div>
+    </div>
   `
 
   pageContainer.querySelector('.btn-back-nav').addEventListener('click', navigateBack)
@@ -3020,6 +3027,23 @@ export function displayArtistPage(artistKey) {
     app.showQueueNotification(`${artist.tracks.length} tracks added to queue`)
   })
 
+  const shuffleArtistBtn = pageContainer.querySelector('.shuffle-artist-btn')
+  if (shuffleArtistBtn) {
+    shuffleArtistBtn.addEventListener('click', () => {
+      if (artist.tracks.length === 0) return
+      if (!playback.shuffleMode) {
+        playback.shuffleMode = true
+        if (typeof app.updateShuffleButton === 'function') app.updateShuffleButton()
+      }
+      const firstTrack = artist.tracks[0]
+      const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
+      if (globalIndex !== -1) {
+        const artistTrackPaths = artist.tracks.map(t => t.path)
+        app.playTrack(globalIndex, { type: 'mix', id: artist.name, tracks: artistTrackPaths })
+      }
+    })
+  }
+
   // Load artist photo
   const img = pageContainer.querySelector('.artist-page-photo-img')
   const placeholder = pageContainer.querySelector('.artist-photo-placeholder')
@@ -3034,7 +3058,7 @@ export function displayArtistPage(artistKey) {
   })
 
   // Extract ambient color from the displayed artist photo/cover (2026 Trend 1)
-  const artistPhotoContainer = pageContainer.querySelector('.artist-page-photo')
+  const artistPhotoContainer = pageContainer.querySelector('.artist-portrait')
   const ambientArtistFallback = fallbackCoverPath || artist.sample_path || (artist.tracks.length > 0 ? artist.tracks[0].path : null)
   if (artistPhotoContainer) {
     watchForCoverAndApplyAmbient(artistPhotoContainer, ambientArtistFallback, `Artist: ${artist.name}`)
