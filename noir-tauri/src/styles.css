@@ -2732,7 +2732,11 @@ body.sidebar-resizing * {
 }
 
 /* Particle canvas animation in Now Playing tile */
-.home-resume-tile .particle-canvas {
+/* REDESIGN v3 : selector étendu à .now-strip (sinon canvas en grid item
+   normal → feedback loop entre offsetWidth et style.width → growth infini
+   + freeze. Bug constate 2026-06-06 sur la now-strip v3.) */
+.home-resume-tile .particle-canvas,
+.now-strip .particle-canvas {
   position: absolute;
   top: 0;
   left: 0;
@@ -10770,7 +10774,9 @@ body:not(.player-visible) .track-info-panel {
 }
 
 /* Make all direct children layer above the bg/halo */
-.home-page .now-strip > *:not(.strip-bg):not(.strip-halo) {
+/* Note : .particle-canvas exclu — il reste absolute (cf. ligne ~2735),
+   sinon feedback-loop offsetWidth → style.width → growth infini. */
+.home-page .now-strip > *:not(.strip-bg):not(.strip-halo):not(.particle-canvas) {
   position: relative;
   z-index: 1;
 }
