@@ -11207,3 +11207,373 @@ aside.sidebar .indexation-module .indexation-title {
   background: var(--glass-lo) !important;
   color: var(--color-text) !important;
 }
+
+/* ============================================================
+   REDESIGN v3 — Step 3 : Album page (hero + body + aside)
+   Markup change : views.js displayAlbumPage uses now .album-hero
+   + .album-body 2-col + .album-aside. Tracklist kept compatible
+   (existing .album-track-item rows) for now.
+   ============================================================ */
+
+/* Reset .album-page-container padding/margin: prototype uses .album-page */
+.album-page-container.album-page {
+  padding: 0 !important;
+}
+
+/* Header strip with back button only */
+.album-page-container.album-page .album-page-header {
+  padding: 16px 32px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03) !important;
+  display: flex;
+  align-items: center;
+  margin-bottom: 0 !important;
+}
+.album-page-container.album-page .btn-back-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px !important;
+  background: transparent;
+  border: 1px solid var(--glass-lo) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text-muted) !important;
+  font-family: var(--font-body);
+  font-size: 10px !important;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+.album-page-container.album-page .btn-back-nav:hover {
+  background: var(--glass-lo);
+  color: var(--color-text);
+  border-color: var(--glass-md);
+}
+
+/* Hero */
+.album-page-container.album-page .album-hero {
+  position: relative;
+  padding: 56px 64px 48px !important;
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 56px;
+  align-items: start;
+  overflow: hidden;
+}
+.album-page-container.album-page .album-hero-halo {
+  position: absolute;
+  top: -200px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1200px;
+  height: 1000px;
+  border-radius: 50%;
+  filter: blur(140px);
+  opacity: 0.3;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(circle at center,
+    rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.55) 0%,
+    transparent 70%);
+}
+.album-page-container.album-page .hero-watermark {
+  position: absolute;
+  left: 16px;
+  top: -40px;
+  font-family: var(--font-sans);
+  font-size: clamp(120px, 18vw, 240px);
+  font-weight: 900;
+  letter-spacing: -0.06em;
+  line-height: 0.85;
+  color: rgba(255, 255, 255, 0.02);
+  pointer-events: none;
+  z-index: 0;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+.album-page-container.album-page .album-cover-wrap,
+.album-page-container.album-page .album-meta {
+  position: relative;
+  z-index: 1;
+}
+.album-page-container.album-page .album-cover {
+  width: 360px;
+  height: 360px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  position: relative;
+}
+.album-page-container.album-page .album-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 30px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.album-page-container.album-page .album-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.album-page-container.album-page .album-cover .album-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 64px;
+  background: var(--color-bg-surface);
+  color: var(--color-text-faint);
+}
+
+/* Meta column */
+.album-page-container.album-page .album-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.album-page-container.album-page .album-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .album-title {
+  font-family: var(--font-sans) !important;
+  font-size: clamp(48px, 5.5vw, 84px) !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.045em !important;
+  line-height: 0.95 !important;
+  color: var(--color-text) !important;
+  text-wrap: balance;
+  margin: 0 !important;
+}
+.album-page-container.album-page .album-byline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+.album-page-container.album-page .album-byline .artist-link {
+  font-weight: 600;
+  color: var(--color-text);
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: -0.01em;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--transition-fast);
+  cursor: pointer;
+}
+.album-page-container.album-page .album-byline .artist-link:hover {
+  border-bottom-color: var(--color-text);
+}
+.album-page-container.album-page .album-byline .dot {
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .album-byline .num {
+  font-family: var(--font-body);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-faint);
+}
+
+/* Hallmark cells */
+.album-page-container.album-page .hallmark {
+  display: flex;
+  border: 1px solid var(--glass-md);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  width: fit-content;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.album-page-container.album-page .hallmark .cell {
+  padding: 10px 16px;
+  border-right: 1px solid var(--glass-md);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.album-page-container.album-page .hallmark .cell:last-child {
+  border-right: none;
+}
+.album-page-container.album-page .hallmark .cell-label {
+  font-family: var(--font-body);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .hallmark .cell-val {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* Actions — 4 buttons (Play primary + 3 ghosts) */
+.album-page-container.album-page .album-actions {
+  display: flex !important;
+  gap: 12px !important;
+  align-items: center;
+  margin-top: 12px !important;
+  flex-wrap: wrap;
+}
+.album-page-container.album-page .btn-primary {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px !important;
+  background: var(--color-text) !important;
+  color: #000 !important;
+  border: none !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  cursor: pointer;
+}
+.album-page-container.album-page .btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(255, 255, 255, 0.15);
+}
+.album-page-container.album-page .btn-primary:active {
+  transform: scale(0.97);
+}
+.album-page-container.album-page .btn-ghost {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px !important;
+  background: transparent !important;
+  color: var(--color-text) !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  cursor: pointer;
+}
+.album-page-container.album-page .btn-ghost:hover {
+  background: var(--glass-lo) !important;
+  border-color: var(--glass-hi) !important;
+}
+
+/* Body (2 columns: tracks + aside) */
+.album-page-container.album-page .album-body {
+  padding: 24px 64px 56px !important;
+  display: grid !important;
+  grid-template-columns: 1fr 360px !important;
+  gap: 64px !important;
+}
+.album-page-container.album-page .album-tracks-wrap {
+  min-width: 0;
+}
+
+/* Aside */
+.album-page-container.album-page .album-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  min-width: 0;
+}
+.album-page-container.album-page .section-h-sm {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--glass-lo);
+  margin-bottom: 14px;
+}
+.album-page-container.album-page .section-h-sm .title {
+  font-family: var(--font-sans);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+}
+.album-page-container.album-page .section-h-sm .kicker {
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .album-credit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.album-page-container.album-page .credit-row {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 16px;
+  font-size: 12px;
+  align-items: baseline;
+}
+.album-page-container.album-page .credit-row .credit-label {
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .credit-row .credit-val {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-text);
+}
+
+/* Responsive : aside passes under body < 1100px */
+@media (max-width: 1100px) {
+  .album-page-container.album-page .album-body {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+  }
+  .album-page-container.album-page .album-hero {
+    grid-template-columns: 280px 1fr !important;
+    gap: 32px !important;
+    padding: 40px 32px 32px !important;
+  }
+  .album-page-container.album-page .album-cover {
+    width: 280px;
+    height: 280px;
+  }
+  .album-page-container.album-page .album-body {
+    padding: 24px 32px 40px !important;
+  }
+}
+@media (max-width: 720px) {
+  .album-page-container.album-page .album-hero {
+    grid-template-columns: 1fr !important;
+    padding: 32px 24px 24px !important;
+  }
+  .album-page-container.album-page .album-cover {
+    width: 100%;
+    max-width: 360px;
+    height: auto;
+    aspect-ratio: 1;
+  }
+}

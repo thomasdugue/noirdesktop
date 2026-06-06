@@ -918,8 +918,32 @@ export function displayAlbumPage(albumKey) {
     ? `<span class="quality-tag ${quality.class}">${quality.label}</span>`
     : ''
 
+  // REDESIGN v3 \u2014 hallmark cells from firstTrack metadata
+  let hallmarkHtml = ''
+  if (firstTrack?.metadata) {
+    const m = firstTrack.metadata
+    const codec = m.codec || getCodecFromPath(firstTrack.path)
+    const bitDepth = m.bitDepth ? `${m.bitDepth}-bit` : ''
+    const sampleRate = m.sampleRate ? `${(m.sampleRate / 1000).toFixed(1).replace('.0', '')} kHz` : ''
+    const cells = []
+    if (bitDepth) cells.push(`<div class="cell"><span class="cell-label">Bit depth</span><span class="cell-val">${bitDepth}</span></div>`)
+    if (sampleRate) cells.push(`<div class="cell"><span class="cell-label">Sample rate</span><span class="cell-val">${sampleRate}</span></div>`)
+    if (codec) cells.push(`<div class="cell"><span class="cell-label">Format</span><span class="cell-val">${escapeHtml(codec.toUpperCase())}</span></div>`)
+    if (cells.length > 0) hallmarkHtml = `<div class="hallmark">${cells.join('')}</div>`
+  }
+
+  // Year + label fallback for eyebrow
+  const albumYear = firstTrack?.metadata?.year || ''
+  const albumLabel = firstTrack?.metadata?.label || ''
+  const eyebrowParts = ['Album']
+  if (albumYear) eyebrowParts.push(`${albumYear}`)
+  if (albumLabel) eyebrowParts.push(escapeHtml(albumLabel))
+  const eyebrowHtml = eyebrowParts.map((p, i) =>
+    i === 0 ? `<span>${p}</span>` : `<span style="color: var(--color-text-dimmed)">\u00B7</span><span>${p}</span>`
+  ).join('')
+
   const pageContainer = document.createElement('div')
-  pageContainer.className = 'album-page-container'
+  pageContainer.className = 'album-page-container album-page'
 
   pageContainer.innerHTML = `
     <div class="album-page-header">
@@ -929,42 +953,73 @@ export function displayAlbumPage(albumKey) {
           <path d="M12 19l-7-7 7-7"/>
         </svg>
       </button>
-      <h1 class="album-page-title">${album.album}</h1>
     </div>
-    <div class="album-page-content">
-      <div class="album-page-cover">
-        ${isValidImageSrc(cover)
-          ? `<img src="${cover}" alt="${album.album}">`
-          : '<div class="album-cover-placeholder">\u266A</div>'
-        }
+    <div class="album-hero">
+      <div class="album-hero-halo" aria-hidden="true"></div>
+      <div class="hero-watermark" aria-hidden="true">${escapeHtml(album.artist || '').toUpperCase()}</div>
+      <div class="album-cover-wrap">
+        <div class="cover-shell album-cover">
+          ${isValidImageSrc(cover)
+            ? `<img class="album-cover-img" src="${cover}" alt="${escapeHtml(album.album)}">`
+            : '<div class="album-cover-placeholder">\u266A</div>'
+          }
+        </div>
       </div>
-      <div class="album-page-info">
-        <p class="album-page-artist clickable-artist" data-artist="${escapeHtml(album.artist)}">${escapeHtml(album.artist)}</p>
-        <p class="album-page-meta">
-          ${album.tracks.length} tracks \u2022 ${formatTime(totalDuration)}${firstTrack?.metadata?.year ? ` \u2022 ${firstTrack.metadata.year}` : ''}
-          ${qualityTag ? `<span class="album-page-tags">${qualityTag}</span>` : ''}
-        </p>
-        <div class="album-page-buttons">
-          <button class="btn-primary-small play-album-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z"/>
-            </svg>
-            Play
+      <div class="album-meta">
+        <div class="album-eyebrow">${eyebrowHtml}</div>
+        <h1 class="album-title album-page-title">${escapeHtml(album.album)}</h1>
+        <div class="album-byline">
+          <button class="artist-link clickable-artist" type="button" data-artist="${escapeHtml(album.artist)}">${escapeHtml(album.artist)}</button>
+          <span class="dot">\u2022</span>
+          <span class="num">${album.tracks.length} ${album.tracks.length === 1 ? 'track' : 'tracks'}</span>
+          <span class="dot">\u2022</span>
+          <span class="num">${formatTime(totalDuration)}</span>
+        </div>
+        ${hallmarkHtml}
+        <div class="album-actions album-page-buttons">
+          <button class="btn-primary play-album-btn" type="button">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+            <span>Play album</span>
           </button>
-          <button class="btn-add-queue-album add-album-queue-btn" title="Add to queue">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
-            </svg>
+          <button class="btn-ghost shuffle-album-btn" type="button" title="Shuffle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+            <span>Shuffle</span>
+          </button>
+          <button class="btn-ghost add-album-queue-btn" type="button" title="Add to queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/></svg>
+            <span>Add to queue</span>
+          </button>
+          <button class="btn-ghost fav-album-btn" type="button" title="Favorite">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            <span>Favorite</span>
           </button>
         </div>
       </div>
     </div>
-    <div class="album-page-tracks"></div>
+    <div class="album-body">
+      <div class="album-tracks-wrap">
+        <div class="album-page-tracks"></div>
+      </div>
+      <aside class="album-aside">
+        <div class="aside-section">
+          <div class="section-h-sm">
+            <span class="title">Details</span>
+            <span class="kicker">Credits</span>
+          </div>
+          <div class="album-credit-list">
+            ${albumYear ? `<div class="credit-row"><span class="credit-label">Release</span><span class="credit-val">${albumYear}</span></div>` : ''}
+            ${albumLabel ? `<div class="credit-row"><span class="credit-label">Label</span><span class="credit-val">${escapeHtml(albumLabel)}</span></div>` : ''}
+            <div class="credit-row"><span class="credit-label">Tracks</span><span class="credit-val">${album.tracks.length} \u2022 ${formatTime(totalDuration)}</span></div>
+            ${qualityTag ? `<div class="credit-row"><span class="credit-label">Quality</span><span class="credit-val">${qualityTag}</span></div>` : ''}
+          </div>
+        </div>
+      </aside>
+    </div>
   `
 
   pageContainer.querySelector('.btn-back-nav').addEventListener('click', navigateBack)
 
-  const artistLink = pageContainer.querySelector('.album-page-artist.clickable-artist')
+  const artistLink = pageContainer.querySelector('.artist-link.clickable-artist')
   if (artistLink && library.artists[album.artist]) {
     artistLink.addEventListener('click', () => {
       navigateToArtistPage(album.artist)
@@ -975,9 +1030,22 @@ export function displayAlbumPage(albumKey) {
     app.playAlbum(albumKey)
   })
 
+  pageContainer.querySelector('.shuffle-album-btn').addEventListener('click', () => {
+    // Toggle shuffle ON then play album
+    if (!playback.shuffleMode) {
+      playback.shuffleMode = true
+      if (typeof app.updateShuffleButton === 'function') app.updateShuffleButton()
+    }
+    app.playAlbum(albumKey)
+  })
+
   pageContainer.querySelector('.add-album-queue-btn').addEventListener('click', () => {
     app.addAlbumToQueue(albumKey)
     app.showQueueNotification(`Album "${album.album}" added to queue`)
+  })
+
+  pageContainer.querySelector('.fav-album-btn').addEventListener('click', () => {
+    showToast('Album favorites coming soon')
   })
 
   const tracksContainer = pageContainer.querySelector('.album-page-tracks')
