@@ -1145,7 +1145,7 @@ export function displayAlbumPage(albumKey) {
   dom.albumsGridDiv.appendChild(pageContainer)
 
   if (!isValidImageSrc(cover) && album.coverPath) {
-    const albumPageCoverContainer = pageContainer.querySelector('.album-page-cover')
+    const albumPageCoverContainer = pageContainer.querySelector('.album-cover')
     if (albumPageCoverContainer) {
       const hiddenImg = document.createElement('img')
       hiddenImg.style.display = 'none'
@@ -1159,6 +1159,7 @@ export function displayAlbumPage(albumKey) {
             const newImg = document.createElement('img')
             newImg.src = cachedSrc
             newImg.alt = album.album
+            newImg.className = 'album-cover-img'
             placeholder.replaceWith(newImg)
           }
           if (hiddenImg.parentNode) hiddenImg.remove()
@@ -1168,7 +1169,7 @@ export function displayAlbumPage(albumKey) {
   }
 
   // Extract ambient color from the displayed cover image (2026 Trend 1)
-  const coverContainer = dom.albumsGridDiv.querySelector('.album-page-cover')
+  const coverContainer = dom.albumsGridDiv.querySelector('.album-page-container.album-page .album-cover')
   const ambientFallback = album.coverPath || (album.tracks.length > 0 ? album.tracks[0].path : null)
   if (coverContainer) {
     watchForCoverAndApplyAmbient(coverContainer, ambientFallback, `Album: ${album.album}`)
