@@ -12065,3 +12065,292 @@ aside.sidebar .indexation-module .indexation-title {
     font-size: 44px;
   }
 }
+
+/* ============================================================
+   REDESIGN v3 — Step 6 : Playlist view header (CSS only)
+   Markup .playlist-view-header / .playlist-header-info / .playlist-
+   header-buttons / .playlist-cover-grid-lg preserve.
+   ============================================================ */
+
+.playlist-view-header {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 32px;
+  padding: 48px 64px 32px !important;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+  border-bottom: 1px solid var(--glass-lo);
+  margin-bottom: 32px;
+}
+.playlist-view-header::before {
+  content: "";
+  position: absolute;
+  top: -150px;
+  left: 30%;
+  width: 800px;
+  height: 600px;
+  border-radius: 50%;
+  filter: blur(120px);
+  opacity: 0.22;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(circle at center,
+    rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.5) 0%,
+    transparent 70%);
+}
+.playlist-view-header > * {
+  position: relative;
+  z-index: 1;
+}
+.playlist-view-header .playlist-header-left {
+  display: contents;
+}
+.playlist-view-header .playlist-cover-grid-lg {
+  width: 240px !important;
+  height: 240px !important;
+  border-radius: var(--radius-md) !important;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  position: relative;
+}
+.playlist-view-header .playlist-cover-grid-lg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 30px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 2;
+}
+.playlist-view-header .playlist-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.playlist-view-header .playlist-header-info h2 {
+  font-family: var(--font-sans) !important;
+  font-size: clamp(40px, 4.5vw, 72px) !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.04em !important;
+  line-height: 0.95 !important;
+  color: var(--color-text) !important;
+  margin: 0 !important;
+  text-wrap: balance;
+}
+.playlist-view-header .playlist-header-info p {
+  font-family: var(--font-body) !important;
+  font-size: 12px !important;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted) !important;
+  margin: 0;
+}
+.playlist-view-header .playlist-header-info .playlist-detail-ornament {
+  font-family: var(--font-body);
+  font-size: 10px;
+  color: var(--color-text-faint);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.playlist-view-header .playlist-header-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+  grid-column: 2;
+  align-self: end;
+}
+.playlist-view-header .btn-primary-small {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 22px !important;
+  background: var(--color-text) !important;
+  color: #000 !important;
+  border: none !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.playlist-view-header .btn-primary-small:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(255, 255, 255, 0.15);
+}
+.playlist-view-header .btn-sort-playlist {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px !important;
+  background: transparent !important;
+  color: var(--color-text) !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.playlist-view-header .btn-sort-playlist:hover {
+  background: var(--glass-lo) !important;
+  border-color: var(--glass-hi) !important;
+}
+@media (max-width: 1100px) {
+  .playlist-view-header {
+    padding: 32px 32px 24px !important;
+    grid-template-columns: 200px 1fr;
+    gap: 24px;
+  }
+  .playlist-view-header .playlist-cover-grid-lg {
+    width: 200px !important;
+    height: 200px !important;
+  }
+}
+@media (max-width: 720px) {
+  .playlist-view-header {
+    grid-template-columns: 1fr;
+    padding: 24px 24px 20px !important;
+  }
+  .playlist-view-header .playlist-cover-grid-lg {
+    width: 160px !important;
+    height: 160px !important;
+  }
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 7 : Tracks library + Albums grids titles
+   ============================================================ */
+
+/* Albums view header — big editorial title */
+.albums-view .view-header h2,
+.albums-view .view-title,
+.albums-view h2 {
+  font-family: var(--font-sans) !important;
+  font-size: clamp(32px, 3.5vw, 48px) !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.04em !important;
+  line-height: 0.95 !important;
+  color: var(--color-text) !important;
+  padding-bottom: 16px !important;
+  border-bottom: 1px solid var(--glass-lo) !important;
+  margin-bottom: 24px !important;
+}
+
+/* Tracks view : same treatment + kicker for track count */
+.albums-view.tracks-mode .view-header h2,
+.albums-view.tracks-mode .view-title {
+  margin-bottom: 8px !important;
+}
+
+/* Sort selects */
+.albums-view .sort-select {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid var(--glass-md) !important;
+  font-family: var(--font-body) !important;
+  font-size: 11px !important;
+  letter-spacing: 0.04em !important;
+  padding: 7px 12px !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text) !important;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.albums-view .sort-select:hover {
+  border-color: var(--glass-hi) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 8 : Settings drawer (anchored in window)
+   README: anchored INSIDE .window (position: absolute), glass blur 40px.
+   ============================================================ */
+
+/* Anchor the .app container to host position:absolute drawer */
+.app {
+  position: relative !important;
+}
+
+.settings-panel {
+  position: absolute !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: clamp(380px, 30vw, 440px) !important;
+  background: linear-gradient(135deg, rgba(14, 14, 14, 0.92) 0%, rgba(18, 18, 22, 0.88) 100%) !important;
+  backdrop-filter: blur(40px) saturate(1.6) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(1.6) !important;
+  border-left: 1px solid var(--glass-md) !important;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0 !important;
+  box-shadow: -20px 0 60px rgba(0, 0, 0, 0.4) !important;
+  transform: translateX(105%) !important;
+  transition: transform 0.4s var(--ease-out-expo) !important;
+  z-index: 520;
+}
+.settings-panel.open {
+  transform: translateX(0) !important;
+}
+
+/* Settings header */
+.settings-panel .settings-header {
+  padding: 20px 24px !important;
+  border-bottom: 1px solid var(--glass-md) !important;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.settings-panel .settings-header h3 {
+  font-family: var(--font-body) !important;
+  font-size: 10px !important;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  color: var(--color-text) !important;
+  margin: 0;
+}
+
+/* Settings sections */
+.settings-panel .settings-content {
+  padding: 0 !important;
+}
+.settings-panel .settings-section {
+  padding: 24px !important;
+  border-bottom: 1px solid var(--glass-md) !important;
+}
+.settings-panel .settings-section:last-child {
+  border-bottom: none !important;
+}
+.settings-panel .settings-section-title {
+  font-family: var(--font-body) !important;
+  font-size: 10px !important;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  color: var(--color-text-faint) !important;
+  text-transform: uppercase;
+  margin-bottom: 20px !important;
+}
+
+/* Settings rows */
+.settings-panel .settings-row {
+  min-height: 40px !important;
+  margin-bottom: 18px !important;
+}
+.settings-panel .settings-label {
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--color-text) !important;
+}
+.settings-panel .settings-description {
+  font-family: var(--font-body) !important;
+  font-size: 11px !important;
+  color: var(--color-text-faint) !important;
+  line-height: 1.45;
+  margin-top: 4px;
+}
