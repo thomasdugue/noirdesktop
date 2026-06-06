@@ -1621,10 +1621,11 @@ export async function displayHomeView() {
       </div>
     `
 
-    // Particle animation si une track est chargée (lecture ou pause)
-    if (hasActiveTrack) {
-      createParticleCanvas(resumeTile)
-    }
+    // REDESIGN v3 : pas de particle canvas sur la now-strip (legacy v2
+    // home-resume-tile). Le canvas causait un growth-loop offsetWidth ↔
+    // canvas.style.width qui freezait l'app. Le proto v3 n'a pas de
+    // particles — seulement le strip-bg drift + halo.
+    // if (hasActiveTrack) createParticleCanvas(resumeTile)
 
     const coverPath = currentTrack?.path || displayTrack.path
     const img = resumeTile.querySelector('.resume-cover-img')
@@ -2496,6 +2497,7 @@ export function updateHomeNowPlayingSection() {
     ? '<span class="eq-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>'
     : '<span class="live-dot" aria-hidden="true"></span>')
 
+  // REDESIGN v3 : nettoyage defensif d'eventuels canvas legacy + plus de re-create.
   destroyParticleCanvas(resumeTile)
 
   // Sync is-playing class on the now-strip section
@@ -2523,7 +2525,7 @@ export function updateHomeNowPlayingSection() {
     </div>
   `
 
-  createParticleCanvas(resumeTile)
+  // REDESIGN v3 : createParticleCanvas retire (cf. displayHomeView).
 
   const img = resumeTile.querySelector('.resume-cover-img')
   const placeholder = resumeTile.querySelector('.resume-cover-placeholder')
