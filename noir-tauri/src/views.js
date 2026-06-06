@@ -2734,8 +2734,9 @@ export function displayAlbumsGrid() {
     const key = card.dataset.albumKey
     const album = library.albums[key]
     if (!album) return
-    const cover = caches.coverCache.get(album.coverPath) || caches.thumbnailCache.get(album.coverPath)
-    showAlbumDetail(key, cover, card)
+    // REDESIGN v3 : navigate to full album page (consistent with home/artist clicks)
+    // instead of opening the legacy inline .album-detail panel (which has the old design).
+    navigateToAlbumPage(key)
   })
 
   gridContainer.addEventListener('contextmenu', (e) => {
