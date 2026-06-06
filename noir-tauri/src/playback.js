@@ -138,6 +138,11 @@ export async function playTrack(index, context) {
     await invoke('audio_pause').catch(() => {}) // attendre l'arrêt confirmé
   }
 
+  // Fix queue panel "previous track" : currentTrackIndex DOIT etre set AVANT
+  // populateQueueFromContext (qui appelle updateQueueDisplay et lit l'index).
+  // Sinon le panel queue affiche l'ancienne track. Bug recurrent constate 2026-06-06.
+  playback.currentTrackIndex = index
+
   // Auto-queue : si un contexte est fourni, construire la queue automatiquement
   if (context) {
     const track = library.tracks[index]
@@ -158,8 +163,6 @@ export async function playTrack(index, context) {
       playback.currentPlaylistId = null
     }
   }
-
-  playback.currentTrackIndex = index
   const track = library.tracks[index]
 
   if (!track || !track.path) {
@@ -866,6 +869,9 @@ export function updateAudioSpecs(specs) {
   // Stocker les specs source pour le calcul bit-perfect des devices
   playback.currentSourceSampleRate = specs.source_sample_rate
   playback.currentSourceBitDepth = specs.source_bit_depth
+  // Flag bit-perfect partage avec la now-strip (cf. views.js updateHomeNowPlayingSection).
+  playback.isBitPerfect = !specs.is_mismatch
+  if (app.updateHomeNowPlayingSection) app.updateHomeNowPlayingSection()
 
   // Formater les valeurs SOURCE
   sourceEl.textContent = `${formatSampleRate(specs.source_sample_rate)}/${specs.source_bit_depth}bit`
@@ -902,6 +908,7 @@ export function resetAudioSpecs() {
   stopBitPerfectAnimation()
   playback.currentSourceSampleRate = null
   playback.currentSourceBitDepth = null
+  playback.isBitPerfect = false
 
   const container = document.getElementById('audio-specs')
   const sourceEl = document.getElementById('source-specs')

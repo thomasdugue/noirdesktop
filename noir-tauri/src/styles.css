@@ -11136,6 +11136,13 @@ aside.sidebar .indexation-module .indexation-title {
   border-radius: var(--radius-sm) !important;
   color: var(--color-text-faint);
 }
+/* REDESIGN v3 fix : .search-bar-actions (feedback + settings) doit stacker
+   au-dessus de .search-bar-inner qui est absolute + 560px → sinon intercepte
+   les clics sur le bouton settings (bug constate 2026-06-06). */
+.search-bar .search-bar-actions {
+  position: relative;
+  z-index: 2;
+}
 .search-bar .search-input {
   background: transparent !important;
   border: none !important;
@@ -11254,12 +11261,14 @@ aside.sidebar .indexation-module .indexation-title {
   border-color: var(--glass-md);
 }
 
-/* Hero */
+/* Hero — REDESIGN v3 : cover reduit a 280px (etait 360px). La taille
+   precedente affichait flou sur les covers embedded (~500-600px) en
+   retina. 280px tient dans la resolution native sans up-scale. */
 .album-page-container.album-page .album-hero {
   position: relative;
   padding: 56px 64px 48px !important;
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: 280px 1fr;
   gap: 56px;
   align-items: start;
   overflow: hidden;
@@ -11301,8 +11310,8 @@ aside.sidebar .indexation-module .indexation-title {
   z-index: 1;
 }
 .album-page-container.album-page .album-cover {
-  width: 360px;
-  height: 360px;
+  width: 280px;
+  height: 280px;
   border-radius: var(--radius-md);
   overflow: hidden;
   position: relative;
@@ -11470,7 +11479,7 @@ aside.sidebar .indexation-module .indexation-title {
   gap: 8px;
   padding: 12px 18px !important;
   background: transparent !important;
-  color: var(--color-text) !important;
+  color: var(--color-text-muted) !important;
   border: 1px solid var(--glass-md) !important;
   border-radius: 999px !important;
   font-family: var(--font-body);
@@ -11479,12 +11488,32 @@ aside.sidebar .indexation-module .indexation-title {
   letter-spacing: 0.1em;
   text-transform: uppercase;
   white-space: nowrap;
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+              transform var(--transition-fast), color var(--transition-fast),
+              box-shadow var(--transition-fast);
   cursor: pointer;
 }
 .album-page-container.album-page .btn-ghost:hover {
   background: var(--glass-lo) !important;
   border-color: var(--glass-hi) !important;
+  color: var(--color-text) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(255, 255, 255, 0.08);
+}
+.album-page-container.album-page .btn-ghost:active {
+  transform: scale(0.97);
+}
+.album-page-container.album-page .btn-ghost svg {
+  transition: stroke var(--transition-fast);
+}
+/* Favorite : etat "actif" (rouge subtil) quand favorited */
+.album-page-container.album-page .btn-ghost.is-favorite {
+  color: #ff6b6b !important;
+  border-color: rgba(255, 107, 107, 0.4) !important;
+}
+.album-page-container.album-page .btn-ghost.is-favorite:hover {
+  background: rgba(255, 107, 107, 0.08) !important;
+  border-color: rgba(255, 107, 107, 0.6) !important;
 }
 
 /* Body (2 columns: tracks + aside) */
@@ -11600,8 +11629,14 @@ aside.sidebar .indexation-module .indexation-title {
   margin-bottom: 0 !important;
 }
 
-/* Section title : oversized DM Sans 800 with bottom border (.section-h pattern) */
+/* Section title : oversized DM Sans 800 with bottom border (.section-h pattern).
+   REDESIGN v3 : titre + eyebrow Geist Mono baseline-aligne (proto fidele).
+   Markup : <h2 class="home-section-title" data-eyebrow="Recent">Recently Added</h2>
+   Eyebrow rendu via ::after content: attr(data-eyebrow). */
 .home-container.home-page .home-section-title {
+  display: flex !important;
+  align-items: baseline !important;
+  gap: 18px !important;
   font-family: var(--font-sans) !important;
   font-size: clamp(32px, 3.5vw, 48px) !important;
   font-weight: 800 !important;
@@ -11612,6 +11647,16 @@ aside.sidebar .indexation-module .indexation-title {
   border-bottom: 1px solid var(--glass-lo) !important;
   margin-bottom: 28px !important;
   margin-top: 0 !important;
+}
+.home-container.home-page .home-section-title[data-eyebrow]::after {
+  content: attr(data-eyebrow);
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+  flex-shrink: 0;
 }
 
 /* Home carousel : horizontal scroll, hide scrollbar */

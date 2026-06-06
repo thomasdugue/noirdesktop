@@ -714,6 +714,11 @@ async function generateDiscoveryMixes() {
     console.warn('[Discovery] Failed to cache mixes:', e)
   }
 
+  // Peupler le cache memoire dans la branche froide aussi (sinon prochaine
+  // navigation re-passe par localStorage.getItem + rebuild coverCandidates).
+  _discoveryMixesMemCache = discoveryMixes
+  _discoveryMixesMemCacheAt = Date.now()
+
   console.log(`[Discovery] Generated ${discoveryMixes.length} mixes`)
   return discoveryMixes
 }
@@ -1507,18 +1512,38 @@ export async function displayHomeView() {
 
   const now = Date.now()
   const cacheValid = caches.homeDataCache.isValid && (now - caches.homeDataCache.lastFetch < HOME_CACHE_TTL)
+  // Stale-while-revalidate : si on a des anciennes data (meme invalidees par un
+  // play, scan, etc), on les utilise immediatement et on refresh en background.
+  // Evite le freeze 10s quand NAS lent / SQL froid au retour sur home apres play.
+  const hasStaleData = caches.homeDataCache.lastFetch > 0
 
   let lastPlayed, recentTracks, allPlayedAlbums, topArtists
 
-  if (cacheValid) {
-    // Cache chaud → rendu instantané sans attendre les invoke Rust
+  if (cacheValid || hasStaleData) {
+    // Cache chaud OU stale → rendu instantane
     lastPlayed = caches.homeDataCache.lastPlayed
-    recentTracks = caches.homeDataCache.recentTracks
-    allPlayedAlbums = caches.homeDataCache.allPlayedAlbums
-    topArtists = caches.homeDataCache.topArtists
+    recentTracks = caches.homeDataCache.recentTracks || []
+    allPlayedAlbums = caches.homeDataCache.allPlayedAlbums || []
+    topArtists = caches.homeDataCache.topArtists || []
+
+    // Si stale, refresh en background (fire-and-forget) pour le prochain affichage
+    if (!cacheValid) {
+      Promise.all([
+        invoke('get_last_played').catch(() => null),
+        invoke('get_recent_albums', { days: 30 }).catch(() => []),
+        invoke('get_all_played_albums').catch(() => []),
+        invoke('get_top_artists', { limit: 20 }).catch(() => [])
+      ]).then(([lp, rt, apa, ta]) => {
+        caches.homeDataCache.lastPlayed = lp
+        caches.homeDataCache.recentTracks = rt || []
+        caches.homeDataCache.allPlayedAlbums = apa || []
+        caches.homeDataCache.topArtists = ta || []
+        caches.homeDataCache.lastFetch = Date.now()
+        caches.homeDataCache.isValid = true
+      }).catch(() => {})
+    }
   } else {
-    // Cache froid (démarrage, après scan_complete, TTL expiré) → bloquer et
-    // attendre les données Rust pour garantir un rendu non-vide dès le premier affichage
+    // Cold start (jamais charge) → bloquant, sinon rendu vide
     try {
       const [lastPlayedResult, recentTracksResult, allPlayedAlbumsResult, topArtistsResult] = await Promise.all([
         invoke('get_last_played').catch(() => null),
@@ -1595,7 +1620,11 @@ export async function displayHomeView() {
       if (bitDepth) cells.push(`<div class="cell"><span class="cell-label">Bit depth</span><span class="cell-val">${bitDepth}</span></div>`)
       if (sampleRate) cells.push(`<div class="cell"><span class="cell-label">Sample</span><span class="cell-val">${sampleRate}</span></div>`)
       if (codec) cells.push(`<div class="cell"><span class="cell-label">Format</span><span class="cell-val">${escapeHtml(codec.toUpperCase())}</span></div>`)
-      cells.push(`<div class="cell bp-cell"><span class="bp-mark" aria-hidden="true"></span><span class="cell-val">Bit perfect</span></div>`)
+      // Bit-perfect cell only when actually bit-perfect (source rate == output rate, no resampling).
+      // Flag set by updateAudioSpecs in playback.js — emis par Rust apres start de lecture.
+      if (playback.isBitPerfect) {
+        cells.push(`<div class="cell bp-cell"><span class="bp-mark" aria-hidden="true"></span><span class="cell-val">Bit perfect</span></div>`)
+      }
       hallmarkHtml = `<div class="strip-hallmark">${cells.join('')}</div>`
     }
     const eqOrDotHtml = (isCurrentlyPlaying
@@ -1669,6 +1698,7 @@ export async function displayHomeView() {
 
       const newHeader = document.createElement('h2')
       newHeader.className = 'home-section-title'
+      newHeader.dataset.eyebrow = 'Recent'
       newHeader.textContent = 'Recently Added'
       newSection.appendChild(newHeader)
 
@@ -1697,6 +1727,7 @@ export async function displayHomeView() {
 
     const recentHeader = document.createElement('h2')
     recentHeader.className = 'home-section-title'
+    recentHeader.dataset.eyebrow = 'Played'
     recentHeader.textContent = 'Recently Played'
     recentSection.appendChild(recentHeader)
 
@@ -1816,6 +1847,7 @@ export async function displayHomeView() {
 
     const discoverHeader = document.createElement('h2')
     discoverHeader.className = 'home-section-title'
+    discoverHeader.dataset.eyebrow = 'Library'
     discoverHeader.textContent = 'Discover'
     discoverSection.appendChild(discoverHeader)
 
@@ -1841,6 +1873,7 @@ export async function displayHomeView() {
 
     const artistsHeader = document.createElement('h2')
     artistsHeader.className = 'home-section-title'
+    artistsHeader.dataset.eyebrow = 'Artists'
     artistsHeader.textContent = 'Your Favorite Artists'
     artistsSection.appendChild(artistsHeader)
 
@@ -1902,6 +1935,7 @@ export async function displayHomeView() {
 
     const hiResHeader = document.createElement('h2')
     hiResHeader.className = 'home-section-title'
+    hiResHeader.dataset.eyebrow = 'Hi-Res'
     hiResHeader.textContent = 'Audiophile Quality'
     hiResSection.appendChild(hiResHeader)
 
@@ -1977,6 +2011,7 @@ export async function displayHomeView() {
 
     const longHeader = document.createElement('h2')
     longHeader.className = 'home-section-title'
+    longHeader.dataset.eyebrow = 'Deep cuts'
     longHeader.textContent = 'Long Albums'
     longSection.appendChild(longHeader)
 
@@ -2046,6 +2081,7 @@ export async function displayHomeView() {
 
     const weekHeader = document.createElement('h2')
     weekHeader.className = 'home-section-title'
+    weekHeader.dataset.eyebrow = 'New'
     weekHeader.textContent = 'Added This Week'
     weekSection.appendChild(weekHeader)
 
@@ -2104,6 +2140,7 @@ export async function displayHomeView() {
 
     const mixHeader = document.createElement('h2')
     mixHeader.className = 'home-section-title'
+    mixHeader.dataset.eyebrow = 'Shuffle'
     mixHeader.textContent = 'Random Mix'
     mixSection.appendChild(mixHeader)
 
@@ -2131,6 +2168,7 @@ export async function displayHomeView() {
 
     const discoveryHeader = document.createElement('h2')
     discoveryHeader.className = 'home-section-title'
+    discoveryHeader.dataset.eyebrow = 'Discovery'
     discoveryHeader.textContent = 'Discovery Mix'
     discoverySection.appendChild(discoveryHeader)
 
@@ -2490,7 +2528,9 @@ export function updateHomeNowPlayingSection() {
     if (bitDepth) cells.push(`<div class="cell"><span class="cell-label">Bit depth</span><span class="cell-val">${bitDepth}</span></div>`)
     if (sampleRate) cells.push(`<div class="cell"><span class="cell-label">Sample</span><span class="cell-val">${sampleRate}</span></div>`)
     if (codec) cells.push(`<div class="cell"><span class="cell-label">Format</span><span class="cell-val">${escapeHtml(codec.toUpperCase())}</span></div>`)
-    cells.push(`<div class="cell bp-cell"><span class="bp-mark" aria-hidden="true"></span><span class="cell-val">Bit perfect</span></div>`)
+    if (playback.isBitPerfect) {
+      cells.push(`<div class="cell bp-cell"><span class="bp-mark" aria-hidden="true"></span><span class="cell-val">Bit perfect</span></div>`)
+    }
     hallmarkHtml = `<div class="strip-hallmark">${cells.join('')}</div>`
   }
   const eqOrDotHtml = (isPlayingNow
