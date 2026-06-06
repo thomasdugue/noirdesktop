@@ -10982,3 +10982,228 @@ body:not(.player-visible) .track-info-panel {
     animation: none !important;
   }
 }
+
+/* ============================================================
+   REDESIGN v3 — Step 2 : Sidebar + Topbar chrome
+   CSS-only (markup existant preserve). Mappe les classes existantes
+   sur le langage visuel du prototype.
+   ============================================================ */
+
+/* --- Sidebar: glass blur 40px + saturate, like the proto --- */
+aside.sidebar {
+  background: rgba(10, 10, 10, 0.6) !important;
+  backdrop-filter: blur(40px) saturate(1.6);
+  -webkit-backdrop-filter: blur(40px) saturate(1.6);
+  border-right: 1px solid rgba(255, 255, 255, 0.04) !important;
+  padding: 20px 0 12px !important;
+}
+
+/* Sidebar header (logo wrapper) — match .sb-logo padding */
+aside.sidebar .sidebar-header {
+  padding: 0 20px 24px !important;
+  border-bottom: none !important;
+  border-top: none !important;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+aside.sidebar .sidebar-header .app-logo {
+  width: 140px !important;
+  height: auto !important;
+  opacity: 0.98;
+}
+
+/* Sidebar nav: gap 1px between items, proto font 12px, active state with left accent */
+aside.sidebar .sidebar-nav {
+  padding: 0 12px !important;
+  gap: 1px !important;
+  border-bottom: none !important;
+}
+aside.sidebar .nav-item {
+  font-family: var(--font-body) !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  padding: 9px 12px !important;
+  color: var(--color-text-muted) !important;
+  position: relative;
+  text-align: left;
+  letter-spacing: 0;
+  border-radius: var(--radius-sm) !important;
+}
+aside.sidebar .nav-item svg {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+aside.sidebar .nav-item:hover {
+  background: var(--glass-lo) !important;
+  color: var(--color-text) !important;
+}
+aside.sidebar .nav-item:hover svg {
+  opacity: 1;
+}
+aside.sidebar .nav-item.active {
+  background: var(--glass-md) !important;
+  color: var(--color-text) !important;
+}
+aside.sidebar .nav-item.active svg {
+  opacity: 1;
+}
+aside.sidebar .nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 14px;
+  background: var(--color-text);
+  border-radius: 2px;
+}
+
+/* Sidebar playlists section — eyebrow harmonized with .sb-label */
+aside.sidebar .sidebar-playlists {
+  padding: 24px 20px 8px !important;
+}
+aside.sidebar .sidebar-playlists .playlists-header {
+  margin-bottom: 4px;
+  padding: 0;
+}
+aside.sidebar .sidebar-playlists .playlists-title {
+  font-family: var(--font-body) !important;
+  font-size: 9px !important;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+aside.sidebar .sidebar-playlists .playlists-actions {
+  display: flex;
+  gap: 4px;
+}
+aside.sidebar .sidebar-playlists .btn-icon-small {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+aside.sidebar .sidebar-playlists .btn-icon-small:hover {
+  color: var(--color-text);
+  background: var(--glass-lo);
+}
+
+/* Indexation module — eyebrow style matched to .sb-label */
+aside.sidebar .indexation-module .indexation-title {
+  font-family: var(--font-body) !important;
+  font-size: 9px !important;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--color-text-faint);
+}
+
+/* --- Topbar (search-bar) — centered search like .search-wrap --- */
+.search-bar {
+  position: relative;
+  padding: 0 32px !important;
+  gap: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03) !important;
+  background: var(--color-bg) !important;
+}
+.search-bar .search-bar-inner {
+  position: absolute !important;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  max-width: 560px !important;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--glass-xs);
+  border: 1px solid var(--glass-lo) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text-faint);
+}
+.search-bar .search-input {
+  background: transparent !important;
+  border: none !important;
+  outline: none;
+  color: var(--color-text);
+  font-family: var(--font-body) !important;
+  font-size: 11px !important;
+  flex: 1;
+  padding: 0 !important;
+}
+.search-bar .search-input::placeholder {
+  color: var(--color-text-faint);
+}
+.search-bar .search-icon {
+  position: absolute !important;
+  right: 12px !important;
+  color: var(--color-text-faint);
+  pointer-events: none;
+}
+
+/* Search results panel — glass dropdown */
+.search-bar .search-results-panel {
+  background: rgba(18, 18, 20, 0.96) !important;
+  backdrop-filter: blur(32px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(160%) !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* Feedback button — match .feedback-btn from proto */
+.search-bar .feedback-header-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px !important;
+  background: transparent !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text) !important;
+  font-family: var(--font-body) !important;
+  font-size: 11px !important;
+  letter-spacing: 0 !important;
+  white-space: nowrap;
+  transition: background var(--transition-fast);
+}
+.search-bar .feedback-header-btn:hover {
+  background: var(--glass-lo) !important;
+}
+.search-bar .feedback-header-btn .beta-badge {
+  font-size: 8px !important;
+  letter-spacing: 0.15em !important;
+  padding: 1px 5px !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: 3px !important;
+  color: var(--color-text-muted) !important;
+  background: transparent !important;
+}
+
+/* Settings gear — icon-btn-lg style */
+.search-bar .titlebar-settings-btn {
+  width: 32px;
+  height: 32px;
+  background: transparent !important;
+  border: none !important;
+  color: var(--color-text-muted) !important;
+  border-radius: var(--radius-sm) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  opacity: 1 !important;
+}
+.search-bar .titlebar-settings-btn:hover {
+  background: var(--glass-lo) !important;
+  color: var(--color-text) !important;
+}
