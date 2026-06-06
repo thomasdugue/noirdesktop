@@ -11577,3 +11577,228 @@ aside.sidebar .indexation-module .indexation-title {
     aspect-ratio: 1;
   }
 }
+
+/* ============================================================
+   REDESIGN v3 — Step 4 : Home carousels + section headers
+   CSS-only — markup existant .home-section / .home-section-title /
+   .home-carousel / .carousel-item / .carousel-cover preserve.
+   Mappe sur .section-h / .carousel-row / .carousel-card / .cover-shell.
+   ============================================================ */
+
+/* Section block spacing */
+.home-container.home-page .home-section {
+  margin-bottom: 56px !important;
+  position: relative;
+}
+.home-container.home-page .home-section:last-child {
+  margin-bottom: 0 !important;
+}
+
+/* Section title : oversized DM Sans 800 with bottom border (.section-h pattern) */
+.home-container.home-page .home-section-title {
+  font-family: var(--font-sans) !important;
+  font-size: clamp(32px, 3.5vw, 48px) !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.04em !important;
+  line-height: 0.95 !important;
+  color: var(--color-text) !important;
+  padding-bottom: 20px !important;
+  border-bottom: 1px solid var(--glass-lo) !important;
+  margin-bottom: 28px !important;
+  margin-top: 0 !important;
+}
+
+/* Home carousel : horizontal scroll, hide scrollbar */
+.home-container.home-page .home-carousel {
+  display: flex !important;
+  gap: 16px !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+}
+.home-container.home-page .home-carousel::-webkit-scrollbar {
+  height: 6px;
+}
+.home-container.home-page .home-carousel::-webkit-scrollbar-track {
+  background: transparent;
+}
+.home-container.home-page .home-carousel::-webkit-scrollbar-thumb {
+  background: var(--glass-md);
+  border-radius: 3px;
+}
+.home-container.home-page .home-carousel::-webkit-scrollbar-thumb:hover {
+  background: var(--glass-hi);
+}
+
+/* Carousel cards (.carousel-item maps to .carousel-card) */
+.home-container.home-page .carousel-item {
+  flex: 0 0 180px !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  cursor: pointer;
+  transition: transform var(--transition-normal) var(--ease-out-expo);
+}
+.home-container.home-page .carousel-item:hover {
+  transform: translateY(-4px);
+}
+.home-container.home-page .carousel-cover {
+  width: 180px !important;
+  height: 180px !important;
+  border-radius: var(--radius-md) !important;
+  overflow: hidden;
+  position: relative;
+  background: var(--color-bg-surface) !important;
+  margin-bottom: 12px !important;
+  transition: filter var(--transition-normal);
+}
+.home-container.home-page .carousel-item:hover .carousel-cover {
+  filter: brightness(1.06);
+}
+.home-container.home-page .carousel-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 30px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 1;
+}
+.home-container.home-page .carousel-cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.home-container.home-page .carousel-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  color: var(--color-text-faint);
+  background: var(--color-bg-surface);
+}
+
+/* Artist carousel (round cover) */
+.home-container.home-page .artist-carousel-item .carousel-cover {
+  border-radius: 50% !important;
+}
+.home-container.home-page .artist-carousel-item .carousel-cover::after {
+  border-radius: 50%;
+}
+
+/* Card text */
+.home-container.home-page .carousel-item .carousel-title,
+.home-container.home-page .carousel-item .carousel-album-title {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--color-text);
+  margin-top: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-container.home-page .carousel-item .carousel-artist,
+.home-container.home-page .carousel-item .carousel-meta {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Recent played grid (3×2 alt layout) */
+.home-container.home-page .recent-grid,
+.home-container.home-page .home-recent-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+@media (max-width: 1100px) {
+  .home-container.home-page .recent-grid,
+  .home-container.home-page .home-recent-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 720px) {
+  .home-container.home-page .recent-grid,
+  .home-container.home-page .home-recent-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Recent track item */
+.home-container.home-page .recent-track-item,
+.home-container.home-page .recent-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition-fast);
+}
+.home-container.home-page .recent-track-item:hover,
+.home-container.home-page .recent-row:hover {
+  background: var(--glass-xs);
+}
+.home-container.home-page .recent-track-cover,
+.home-container.home-page .recent-cover {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--color-bg-surface);
+  position: relative;
+  flex-shrink: 0;
+}
+.home-container.home-page .recent-track-title {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-container.home-page .recent-track-artist {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Home page outer padding aligned with proto */
+.home-container.home-page {
+  padding: 32px 48px 48px !important;
+}
+@media (max-width: 900px) {
+  .home-container.home-page {
+    padding: 24px 32px 32px !important;
+  }
+}
+@media (max-width: 600px) {
+  .home-container.home-page {
+    padding: 20px 20px 24px !important;
+  }
+}
