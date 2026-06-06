@@ -12354,3 +12354,117 @@ aside.sidebar .indexation-module .indexation-title {
   line-height: 1.45;
   margin-top: 4px;
 }
+
+/* ============================================================
+   REDESIGN v3 — Step 10 : Context menu + heart burst + a11y
+   Final polish from prototype context-menu.jsx + animations.
+   ============================================================ */
+
+/* Context menu — glass deeper, tighter padding */
+.context-menu {
+  background: rgba(20, 20, 20, 0.92) !important;
+  backdrop-filter: blur(24px) !important;
+  -webkit-backdrop-filter: blur(24px) !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: var(--radius-md) !important;
+  padding: 4px !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6) !important;
+  min-width: 240px !important;
+}
+.context-menu .context-menu-item {
+  padding: 8px 12px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  border-radius: var(--radius-sm) !important;
+  transition: background 0.1s ease !important;
+}
+.context-menu .context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+}
+.context-menu .context-menu-item svg {
+  width: 16px;
+  height: 16px;
+  opacity: 0.8;
+}
+.context-menu .context-menu-separator {
+  margin: 4px 6px !important;
+  background: var(--glass-md) !important;
+  height: 1px;
+}
+.context-menu .context-menu-item-danger {
+  color: var(--color-error-muted, #ff6b6b) !important;
+}
+.context-menu .context-menu-item-danger:hover {
+  background: rgba(255, 107, 107, 0.1) !important;
+}
+
+/* Heart burst micro-animations (ready to be triggered by panels.js
+   toggleFavorite when a .heart-burst element is inserted in the
+   .track-favorite-btn or .track-add-favorite wrapper). */
+.heart-burst {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+.heart-burst svg {
+  width: 100%;
+  height: 100%;
+}
+.heart-burst-add {
+  animation-name: heart-burst-add;
+  animation-duration: 0.7s;
+  animation-timing-function: var(--ease-out-expo);
+  animation-fill-mode: forwards;
+}
+@keyframes heart-burst-add {
+  0%   { transform: scale(0.6) translateY(0); opacity: 0; }
+  20%  { transform: scale(1.2) translateY(-2px); opacity: 1; }
+  60%  { transform: scale(1.0) translateY(-12px); opacity: 0.7; }
+  100% { transform: scale(0.9) translateY(-24px); opacity: 0; }
+}
+.heart-burst-remove {
+  animation-name: heart-burst-remove;
+  animation-duration: 0.8s;
+  animation-timing-function: var(--ease-out-expo);
+  animation-fill-mode: forwards;
+}
+@keyframes heart-burst-remove {
+  0%   { transform: rotate(0deg) translateY(0); opacity: 1; }
+  40%  { transform: rotate(-8deg) translateY(8px); opacity: 0.8; }
+  100% { transform: rotate(-16deg) translateY(28px); opacity: 0; }
+}
+
+/* A11y — focus visible rings on key interactive elements */
+.now-strip .btn-play-strip:focus-visible,
+.album-page-container.album-page .btn-primary:focus-visible,
+.album-page-container.album-page .btn-ghost:focus-visible,
+.artist-page-container .btn-primary:focus-visible,
+.artist-page-container .btn-ghost:focus-visible,
+.playlist-view-header .btn-primary-small:focus-visible,
+aside.sidebar .nav-item:focus-visible,
+.search-bar .feedback-header-btn:focus-visible,
+.search-bar .titlebar-settings-btn:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 2px;
+}
+
+/* Global reduced-motion coverage */
+@media (prefers-reduced-motion: reduce) {
+  .home-page .home-section,
+  .albums-view h2,
+  .album-page-container.album-page .album-cover,
+  .artist-page-container .artist-portrait,
+  .playlist-view-header .playlist-cover-grid-lg,
+  .heart-burst-add,
+  .heart-burst-remove {
+    animation: none !important;
+    transition: none !important;
+  }
+}
