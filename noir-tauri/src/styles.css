@@ -11138,10 +11138,19 @@ aside.sidebar .indexation-module .indexation-title {
 }
 /* REDESIGN v3 fix : .search-bar-actions (feedback + settings) doit stacker
    au-dessus de .search-bar-inner qui est absolute + 560px → sinon intercepte
-   les clics sur le bouton settings (bug constate 2026-06-06). */
+   les clics sur le bouton settings (bug constate 2026-06-06).
+   ET au-dessus de .titlebar (position:fixed z-index:9999 -webkit-app-region:drag,
+   couvre le haut 38px qui contient visuellement le bouton settings) — sinon le
+   drag region intercepte tous les clics. */
 .search-bar .search-bar-actions {
   position: relative;
-  z-index: 2;
+  z-index: 10000;
+  -webkit-app-region: no-drag;
+}
+.search-bar .search-bar-actions button {
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 10000;
 }
 .search-bar .search-input {
   background: transparent !important;

@@ -1505,6 +1505,10 @@ export function updateNowPlayingHighlight() {
 // ============================================================
 
 export async function displayHomeView() {
+  // INSTRUMENTATION TEMPORAIRE — investigation perf home (2026-06-06).
+  // A retirer une fois le bottleneck identifie.
+  console.time('[HOME] total displayHomeView')
+  console.time('[HOME] step1 cache+invokes')
   dom.albumsGridDiv.classList.remove('tracks-mode')
 
   const existingNav = document.querySelector('.alphabet-nav')
@@ -1571,7 +1575,11 @@ export async function displayHomeView() {
     }
   }
 
+  console.timeEnd('[HOME] step1 cache+invokes')
+  console.time('[HOME] step2 generateDiscoveryMixes')
   await generateDiscoveryMixes()
+  console.timeEnd('[HOME] step2 generateDiscoveryMixes')
+  console.time('[HOME] step3 build DOM')
 
   const homeContainer = document.createElement('div')
   homeContainer.className = 'home-container home-page'
@@ -2419,7 +2427,11 @@ export async function displayHomeView() {
     }
   })
 
+  console.timeEnd('[HOME] step3 build DOM')
+  console.time('[HOME] step4 appendChild + reflow')
   dom.albumsGridDiv.appendChild(homeContainer)
+  console.timeEnd('[HOME] step4 appendChild + reflow')
+  console.timeEnd('[HOME] total displayHomeView')
 
   // Chargement différé des covers — APRÈS insertion DOM pour que isConnected === true
   requestAnimationFrame(() => {
