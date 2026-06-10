@@ -11639,13 +11639,15 @@ aside.sidebar .indexation-module .indexation-title {
 }
 
 /* Section title : oversized DM Sans 800 with bottom border (.section-h pattern).
-   REDESIGN v3 : titre + eyebrow Geist Mono baseline-aligne (proto fidele).
+   REDESIGN v3 : kicker eyebrow Geist Mono AU-DESSUS du titre (proto Hean v3
+   style — coherent avec .page-eyebrow et le pattern eyebrow→title du site).
    Markup : <h2 class="home-section-title" data-eyebrow="Recent">Recently Added</h2>
-   Eyebrow rendu via ::after content: attr(data-eyebrow). */
+   Eyebrow rendu via ::before content: attr(data-eyebrow). */
 .home-container.home-page .home-section-title {
   display: flex !important;
-  align-items: baseline !important;
-  gap: 18px !important;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   font-family: var(--font-sans) !important;
   font-size: clamp(32px, 3.5vw, 48px) !important;
   font-weight: 800 !important;
@@ -11657,7 +11659,7 @@ aside.sidebar .indexation-module .indexation-title {
   margin-bottom: 28px !important;
   margin-top: 0 !important;
 }
-.home-container.home-page .home-section-title[data-eyebrow]::after {
+.home-container.home-page .home-section-title[data-eyebrow]::before {
   content: attr(data-eyebrow);
   font-family: var(--font-body);
   font-size: 10px;
@@ -11665,7 +11667,7 @@ aside.sidebar .indexation-module .indexation-title {
   letter-spacing: 0.28em;
   text-transform: uppercase;
   color: var(--color-text-faint);
-  flex-shrink: 0;
+  line-height: 1;
 }
 
 /* Home carousel : horizontal scroll, hide scrollbar */
