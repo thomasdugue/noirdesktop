@@ -2732,7 +2732,11 @@ body.sidebar-resizing * {
 }
 
 /* Particle canvas animation in Now Playing tile */
-.home-resume-tile .particle-canvas {
+/* REDESIGN v3 : selector étendu à .now-strip (sinon canvas en grid item
+   normal → feedback loop entre offsetWidth et style.width → growth infini
+   + freeze. Bug constate 2026-06-06 sur la now-strip v3.) */
+.home-resume-tile .particle-canvas,
+.now-strip .particle-canvas {
   position: absolute;
   top: 0;
   left: 0;
@@ -10636,5 +10640,1893 @@ body:not(.player-visible) .track-info-panel {
   }
   .album-detail-watermark-text {
     font-size: clamp(120px, 22vw, 200px);
+  }
+}
+
+/* ============================================================
+   REDESIGN v3 — PROTOTYPE PORT (faithful port of design_handoff)
+   Source: /tmp/proto/player_test_1/css/tokens.css + app.css
+   Scope: home page, sidebar (light), topbar (light), then later
+   commits will add album/artist/playlist/tracks/settings.
+   Player bar, queue panel, lyrics panel, fullscreen view stay INTACT.
+   ============================================================ */
+
+/* --- Foundation tokens missing in current styles.css --- */
+:root {
+  --glass-xs: rgba(255, 255, 255, 0.025);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* fs tokens used by prototype */
+  --fs-caption: 9px;
+  --fs-small: 10px;
+  --fs-label: 12px;
+  --fs-subheading: 13px;
+  --fs-title: 14px;
+  --fs-heading: 16px;
+}
+
+/* --- Page eyebrow (greeting hairline at top of home page) --- */
+.home-page .page-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+  margin-bottom: 16px;
+}
+.home-page .page-eyebrow .live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
+  animation: home-eyebrow-pulse 2s infinite;
+}
+.home-page .page-eyebrow .hairline {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, var(--glass-md), transparent);
+  max-width: 200px;
+}
+@keyframes home-eyebrow-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* --- Now-strip (replaces .home-resume-tile from v2 layer) --- */
+.home-page .now-strip {
+  position: relative;
+  display: grid;
+  grid-template-columns: 200px 1fr auto;
+  gap: 28px;
+  align-items: center;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--glass-lo);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin-bottom: 56px;
+  isolation: isolate;
+  /* --strip-color from album.art.halo equivalent → ambient color */
+  --strip-color: rgb(
+    var(--color-ambient-r, 100),
+    var(--color-ambient-g, 100),
+    var(--color-ambient-b, 100)
+  );
+}
+/* Neutralise v2 overrides on .home-resume-tile (selector unmatched now,
+   but defensive in case any cached rule still applies) */
+.home-page .now-strip {
+  margin: 0 0 56px 0 !important;
+}
+
+/* Slow background drift (radial gradients from ambient color) */
+.home-page .now-strip .strip-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 80% 100% at 20% 30%,
+      rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.22) 0%,
+      transparent 60%),
+    radial-gradient(ellipse 70% 90% at 80% 70%,
+      rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.18) 0%,
+      transparent 65%),
+    radial-gradient(ellipse 100% 60% at 50% 100%,
+      rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.12) 0%,
+      transparent 70%),
+    linear-gradient(135deg,
+      rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.10) 0%,
+      #0a0a0a 100%);
+  background-size: 180% 180%, 160% 160%, 200% 120%, 100% 100%;
+  background-position: 0% 0%, 100% 100%, 50% 100%, 0 0;
+  filter: saturate(1.1);
+}
+.home-page .now-strip.is-playing .strip-bg {
+  animation: home-strip-bg-drift 18s ease-in-out infinite alternate;
+}
+@keyframes home-strip-bg-drift {
+  0%   { background-position:   0% 20%, 100%  80%, 30% 100%, 0 0; }
+  50%  { background-position:  60% 80%,  40%  30%, 70%  60%, 0 0; }
+  100% { background-position: 100% 40%,   0% 100%, 20%  90%, 0 0; }
+}
+
+/* Soft color halo (always on, intensified by ambient color) */
+.home-page .now-strip .strip-halo {
+  position: absolute;
+  right: -120px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 600px;
+  height: 600px;
+  border-radius: 50%;
+  filter: blur(120px);
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(circle at center,
+    rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.55) 0%,
+    transparent 70%);
+}
+
+/* Make all direct children layer above the bg/halo */
+/* Note : .particle-canvas exclu — il reste absolute (cf. ligne ~2735),
+   sinon feedback-loop offsetWidth → style.width → growth infini. */
+.home-page .now-strip > *:not(.strip-bg):not(.strip-halo):not(.particle-canvas) {
+  position: relative;
+  z-index: 1;
+}
+
+/* Cover (200×200, prototype's .c-200) */
+.home-page .now-strip .strip-cover {
+  width: 200px;
+  height: 200px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-bg-surface);
+  cursor: pointer;
+  position: relative;
+}
+.home-page .now-strip .strip-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 30px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.home-page .now-strip .strip-cover .resume-cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.home-page .now-strip .strip-cover .resume-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+  color: var(--color-text-faint);
+  background: var(--color-bg-surface);
+}
+
+/* Meta column */
+.home-page .now-strip .strip-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.home-page .now-strip .strip-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.home-page .now-strip .strip-eyebrow .live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+}
+.home-page .now-strip .strip-track {
+  font-family: var(--font-body);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  letter-spacing: 0.05em;
+}
+.home-page .now-strip .strip-title {
+  font-family: var(--font-sans);
+  font-size: clamp(28px, 3.2vw, 44px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  color: var(--color-text);
+  margin: 0;
+}
+.home-page .now-strip .strip-artist {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  letter-spacing: -0.005em;
+}
+.home-page .now-strip .strip-link {
+  all: unset;
+  cursor: pointer;
+}
+.home-page .now-strip .strip-link:hover {
+  color: var(--color-text);
+}
+
+/* EQ bars (animate when .is-playing.np-anim-eq) */
+.home-page .now-strip .eq-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 11px;
+  width: 14px;
+  flex-shrink: 0;
+}
+.home-page .now-strip .eq-bars i {
+  display: block;
+  width: 2px;
+  background: var(--color-text);
+  border-radius: 1px;
+  transform-origin: bottom;
+  height: 3px;
+}
+.home-page .now-strip.is-playing.np-anim-eq .eq-bars i {
+  animation: home-eq-pulse 1.05s cubic-bezier(0.42, 0, 0.58, 1) infinite;
+  will-change: transform;
+}
+.home-page .now-strip.is-playing.np-anim-eq .eq-bars i:nth-child(1) { animation-delay: -0.10s; }
+.home-page .now-strip.is-playing.np-anim-eq .eq-bars i:nth-child(2) { animation-delay: -0.45s; }
+.home-page .now-strip.is-playing.np-anim-eq .eq-bars i:nth-child(3) { animation-delay: -0.70s; }
+.home-page .now-strip.is-playing.np-anim-eq .eq-bars i:nth-child(4) { animation-delay: -0.25s; }
+@keyframes home-eq-pulse {
+  0%, 100% { transform: scaleY(0.3); }
+  50%      { transform: scaleY(1); }
+}
+
+/* Hallmark cells */
+.home-page .now-strip .strip-hallmark {
+  display: flex;
+  border: 1px solid var(--glass-md);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  width: fit-content;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.home-page .now-strip .strip-hallmark .cell {
+  padding: 8px 14px;
+  border-right: 1px solid var(--glass-md);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.home-page .now-strip .strip-hallmark .cell:last-child {
+  border-right: none;
+}
+.home-page .now-strip .strip-hallmark .cell-label {
+  font-family: var(--font-body);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.home-page .now-strip .strip-hallmark .cell-val {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.home-page .now-strip .strip-hallmark .bp-cell {
+  background: rgba(255, 255, 255, 0.04);
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.home-page .now-strip .strip-hallmark .bp-cell .bp-mark {
+  width: 6px;
+  height: 6px;
+  background: var(--color-text);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
+}
+
+/* Play button (56px round, black on white) */
+.home-page .now-strip .strip-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.home-page .now-strip .btn-play-strip {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--color-text);
+  color: #000;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.home-page .now-strip .btn-play-strip:hover {
+  transform: scale(1.05);
+  box-shadow: 0 8px 24px rgba(255, 255, 255, 0.2);
+}
+.home-page .now-strip .btn-play-strip:active {
+  transform: scale(0.96);
+}
+
+/* Reduced motion — neutralise animations */
+@media (prefers-reduced-motion: reduce) {
+  .home-page .now-strip.is-playing .strip-bg,
+  .home-page .now-strip.is-playing.np-anim-eq .eq-bars i,
+  .home-page .page-eyebrow .live-dot,
+  .home-page .now-strip .strip-eyebrow .live-dot {
+    animation: none !important;
+  }
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 2 : Sidebar + Topbar chrome
+   CSS-only (markup existant preserve). Mappe les classes existantes
+   sur le langage visuel du prototype.
+   ============================================================ */
+
+/* --- Sidebar: glass blur 40px + saturate, like the proto --- */
+aside.sidebar {
+  background: rgba(10, 10, 10, 0.6) !important;
+  backdrop-filter: blur(40px) saturate(1.6);
+  -webkit-backdrop-filter: blur(40px) saturate(1.6);
+  border-right: 1px solid rgba(255, 255, 255, 0.04) !important;
+  padding: 20px 0 12px !important;
+}
+
+/* Sidebar header (logo wrapper) — match .sb-logo padding */
+aside.sidebar .sidebar-header {
+  padding: 0 20px 24px !important;
+  border-bottom: none !important;
+  border-top: none !important;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+aside.sidebar .sidebar-header .app-logo {
+  width: 140px !important;
+  height: auto !important;
+  opacity: 0.98;
+}
+
+/* Sidebar nav: gap 1px between items, proto font 12px, active state with left accent */
+aside.sidebar .sidebar-nav {
+  padding: 0 12px !important;
+  gap: 1px !important;
+  border-bottom: none !important;
+}
+aside.sidebar .nav-item {
+  font-family: var(--font-body) !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  padding: 9px 12px !important;
+  color: var(--color-text-muted) !important;
+  position: relative;
+  text-align: left;
+  letter-spacing: 0;
+  border-radius: var(--radius-sm) !important;
+}
+aside.sidebar .nav-item svg {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+aside.sidebar .nav-item:hover {
+  background: var(--glass-lo) !important;
+  color: var(--color-text) !important;
+}
+aside.sidebar .nav-item:hover svg {
+  opacity: 1;
+}
+aside.sidebar .nav-item.active {
+  background: var(--glass-md) !important;
+  color: var(--color-text) !important;
+}
+aside.sidebar .nav-item.active svg {
+  opacity: 1;
+}
+aside.sidebar .nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 14px;
+  background: var(--color-text);
+  border-radius: 2px;
+}
+
+/* Sidebar playlists section — eyebrow harmonized with .sb-label */
+aside.sidebar .sidebar-playlists {
+  padding: 24px 20px 8px !important;
+}
+aside.sidebar .sidebar-playlists .playlists-header {
+  margin-bottom: 4px;
+  padding: 0;
+}
+aside.sidebar .sidebar-playlists .playlists-title {
+  font-family: var(--font-body) !important;
+  font-size: 9px !important;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+aside.sidebar .sidebar-playlists .playlists-actions {
+  display: flex;
+  gap: 4px;
+}
+aside.sidebar .sidebar-playlists .btn-icon-small {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+aside.sidebar .sidebar-playlists .btn-icon-small:hover {
+  color: var(--color-text);
+  background: var(--glass-lo);
+}
+
+/* Indexation module — eyebrow style matched to .sb-label */
+aside.sidebar .indexation-module .indexation-title {
+  font-family: var(--font-body) !important;
+  font-size: 9px !important;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--color-text-faint);
+}
+
+/* --- Topbar (search-bar) — centered search like .search-wrap --- */
+.search-bar {
+  position: relative;
+  padding: 0 32px !important;
+  gap: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03) !important;
+  background: var(--color-bg) !important;
+}
+.search-bar .search-bar-inner {
+  position: absolute !important;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  max-width: 560px !important;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--glass-xs);
+  border: 1px solid var(--glass-lo) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text-faint);
+}
+/* REDESIGN v3 fix : .search-bar-actions (feedback + settings) doit stacker
+   au-dessus de .search-bar-inner qui est absolute + 560px → sinon intercepte
+   les clics sur le bouton settings (bug constate 2026-06-06).
+   ET au-dessus de .titlebar (position:fixed z-index:9999 -webkit-app-region:drag,
+   couvre le haut 38px qui contient visuellement le bouton settings) — sinon le
+   drag region intercepte tous les clics. */
+.search-bar .search-bar-actions {
+  position: relative;
+  z-index: 10000;
+  -webkit-app-region: no-drag;
+}
+.search-bar .search-bar-actions button {
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 10000;
+}
+.search-bar .search-input {
+  background: transparent !important;
+  border: none !important;
+  outline: none;
+  color: var(--color-text);
+  font-family: var(--font-body) !important;
+  font-size: 11px !important;
+  flex: 1;
+  padding: 0 !important;
+}
+.search-bar .search-input::placeholder {
+  color: var(--color-text-faint);
+}
+.search-bar .search-icon {
+  position: absolute !important;
+  right: 12px !important;
+  color: var(--color-text-faint);
+  pointer-events: none;
+}
+
+/* Search results panel — glass dropdown */
+.search-bar .search-results-panel {
+  background: rgba(18, 18, 20, 0.96) !important;
+  backdrop-filter: blur(32px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(160%) !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* Feedback button — match .feedback-btn from proto */
+.search-bar .feedback-header-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px !important;
+  background: transparent !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text) !important;
+  font-family: var(--font-body) !important;
+  font-size: 11px !important;
+  letter-spacing: 0 !important;
+  white-space: nowrap;
+  transition: background var(--transition-fast);
+}
+.search-bar .feedback-header-btn:hover {
+  background: var(--glass-lo) !important;
+}
+.search-bar .feedback-header-btn .beta-badge {
+  font-size: 8px !important;
+  letter-spacing: 0.15em !important;
+  padding: 1px 5px !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: 3px !important;
+  color: var(--color-text-muted) !important;
+  background: transparent !important;
+}
+
+/* Settings gear — icon-btn-lg style */
+.search-bar .titlebar-settings-btn {
+  width: 32px;
+  height: 32px;
+  background: transparent !important;
+  border: none !important;
+  color: var(--color-text-muted) !important;
+  border-radius: var(--radius-sm) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  opacity: 1 !important;
+}
+.search-bar .titlebar-settings-btn:hover {
+  background: var(--glass-lo) !important;
+  color: var(--color-text) !important;
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 3 : Album page (hero + body + aside)
+   Markup change : views.js displayAlbumPage uses now .album-hero
+   + .album-body 2-col + .album-aside. Tracklist kept compatible
+   (existing .album-track-item rows) for now.
+   ============================================================ */
+
+/* Reset .album-page-container padding/margin: prototype uses .album-page */
+.album-page-container.album-page {
+  padding: 0 !important;
+}
+
+/* Header strip with back button only */
+.album-page-container.album-page .album-page-header {
+  padding: 16px 32px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03) !important;
+  display: flex;
+  align-items: center;
+  margin-bottom: 0 !important;
+}
+.album-page-container.album-page .btn-back-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px !important;
+  background: transparent;
+  border: 1px solid var(--glass-lo) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text-muted) !important;
+  font-family: var(--font-body);
+  font-size: 10px !important;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+.album-page-container.album-page .btn-back-nav:hover {
+  background: var(--glass-lo);
+  color: var(--color-text);
+  border-color: var(--glass-md);
+}
+
+/* Hero — REDESIGN v3 : cover reduit a 280px (etait 360px). La taille
+   precedente affichait flou sur les covers embedded (~500-600px) en
+   retina. 280px tient dans la resolution native sans up-scale. */
+.album-page-container.album-page .album-hero {
+  position: relative;
+  padding: 56px 64px 48px !important;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 56px;
+  align-items: start;
+  overflow: hidden;
+}
+.album-page-container.album-page .album-hero-halo {
+  position: absolute;
+  top: -200px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1200px;
+  height: 1000px;
+  border-radius: 50%;
+  filter: blur(140px);
+  opacity: 0.3;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(circle at center,
+    rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.55) 0%,
+    transparent 70%);
+}
+.album-page-container.album-page .hero-watermark {
+  position: absolute;
+  left: 16px;
+  top: -40px;
+  font-family: var(--font-sans);
+  font-size: clamp(120px, 18vw, 240px);
+  font-weight: 900;
+  letter-spacing: -0.06em;
+  line-height: 0.85;
+  color: rgba(255, 255, 255, 0.02);
+  pointer-events: none;
+  z-index: 0;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+.album-page-container.album-page .album-cover-wrap,
+.album-page-container.album-page .album-meta {
+  position: relative;
+  z-index: 1;
+}
+.album-page-container.album-page .album-cover {
+  width: 280px;
+  height: 280px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  position: relative;
+}
+.album-page-container.album-page .album-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 30px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.album-page-container.album-page .album-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.album-page-container.album-page .album-cover .album-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 64px;
+  background: var(--color-bg-surface);
+  color: var(--color-text-faint);
+}
+
+/* Meta column */
+.album-page-container.album-page .album-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.album-page-container.album-page .album-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .album-title {
+  font-family: var(--font-sans) !important;
+  font-size: clamp(48px, 5.5vw, 84px) !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.045em !important;
+  line-height: 0.95 !important;
+  color: var(--color-text) !important;
+  text-wrap: balance;
+  margin: 0 !important;
+}
+.album-page-container.album-page .album-byline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+.album-page-container.album-page .album-byline .artist-link {
+  font-weight: 600;
+  color: var(--color-text);
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: -0.01em;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--transition-fast);
+  cursor: pointer;
+}
+.album-page-container.album-page .album-byline .artist-link:hover {
+  border-bottom-color: var(--color-text);
+}
+.album-page-container.album-page .album-byline .dot {
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .album-byline .num {
+  font-family: var(--font-body);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-faint);
+}
+
+/* Hallmark cells */
+.album-page-container.album-page .hallmark {
+  display: flex;
+  border: 1px solid var(--glass-md);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  width: fit-content;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.album-page-container.album-page .hallmark .cell {
+  padding: 10px 16px;
+  border-right: 1px solid var(--glass-md);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.album-page-container.album-page .hallmark .cell:last-child {
+  border-right: none;
+}
+.album-page-container.album-page .hallmark .cell-label {
+  font-family: var(--font-body);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .hallmark .cell-val {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* Actions — 4 buttons (Play primary + 3 ghosts) */
+.album-page-container.album-page .album-actions {
+  display: flex !important;
+  gap: 12px !important;
+  align-items: center;
+  margin-top: 12px !important;
+  flex-wrap: wrap;
+}
+.album-page-container.album-page .btn-primary {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px !important;
+  background: var(--color-text) !important;
+  color: #000 !important;
+  border: none !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  cursor: pointer;
+}
+.album-page-container.album-page .btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(255, 255, 255, 0.15);
+}
+.album-page-container.album-page .btn-primary:active {
+  transform: scale(0.97);
+}
+.album-page-container.album-page .btn-ghost {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px !important;
+  background: transparent !important;
+  color: var(--color-text-muted) !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+              transform var(--transition-fast), color var(--transition-fast),
+              box-shadow var(--transition-fast);
+  cursor: pointer;
+}
+.album-page-container.album-page .btn-ghost:hover {
+  background: var(--glass-lo) !important;
+  border-color: var(--glass-hi) !important;
+  color: var(--color-text) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(255, 255, 255, 0.08);
+}
+.album-page-container.album-page .btn-ghost:active {
+  transform: scale(0.97);
+}
+.album-page-container.album-page .btn-ghost svg {
+  transition: stroke var(--transition-fast);
+}
+/* Favorite : etat "actif" (rouge subtil) quand favorited */
+.album-page-container.album-page .btn-ghost.is-favorite {
+  color: #ff6b6b !important;
+  border-color: rgba(255, 107, 107, 0.4) !important;
+}
+.album-page-container.album-page .btn-ghost.is-favorite:hover {
+  background: rgba(255, 107, 107, 0.08) !important;
+  border-color: rgba(255, 107, 107, 0.6) !important;
+}
+
+/* Body (2 columns: tracks + aside) */
+.album-page-container.album-page .album-body {
+  padding: 24px 64px 56px !important;
+  display: grid !important;
+  grid-template-columns: 1fr 360px !important;
+  gap: 64px !important;
+}
+.album-page-container.album-page .album-tracks-wrap {
+  min-width: 0;
+}
+
+/* Aside */
+.album-page-container.album-page .album-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  min-width: 0;
+}
+.album-page-container.album-page .section-h-sm {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--glass-lo);
+  margin-bottom: 14px;
+}
+.album-page-container.album-page .section-h-sm .title {
+  font-family: var(--font-sans);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+}
+.album-page-container.album-page .section-h-sm .kicker {
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .album-credit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.album-page-container.album-page .credit-row {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 16px;
+  font-size: 12px;
+  align-items: baseline;
+}
+.album-page-container.album-page .credit-row .credit-label {
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.album-page-container.album-page .credit-row .credit-val {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-text);
+}
+
+/* Responsive : aside passes under body < 1100px */
+@media (max-width: 1100px) {
+  .album-page-container.album-page .album-body {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+  }
+  .album-page-container.album-page .album-hero {
+    grid-template-columns: 280px 1fr !important;
+    gap: 32px !important;
+    padding: 40px 32px 32px !important;
+  }
+  .album-page-container.album-page .album-cover {
+    width: 280px;
+    height: 280px;
+  }
+  .album-page-container.album-page .album-body {
+    padding: 24px 32px 40px !important;
+  }
+}
+@media (max-width: 720px) {
+  .album-page-container.album-page .album-hero {
+    grid-template-columns: 1fr !important;
+    padding: 32px 24px 24px !important;
+  }
+  .album-page-container.album-page .album-cover {
+    width: 100%;
+    max-width: 360px;
+    height: auto;
+    aspect-ratio: 1;
+  }
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 4 : Home carousels + section headers
+   CSS-only — markup existant .home-section / .home-section-title /
+   .home-carousel / .carousel-item / .carousel-cover preserve.
+   Mappe sur .section-h / .carousel-row / .carousel-card / .cover-shell.
+   ============================================================ */
+
+/* Section block spacing */
+.home-container.home-page .home-section {
+  margin-bottom: 56px !important;
+  position: relative;
+}
+.home-container.home-page .home-section:last-child {
+  margin-bottom: 0 !important;
+}
+
+/* Section title : oversized DM Sans 800 with bottom border (.section-h pattern).
+   REDESIGN v3 : kicker eyebrow Geist Mono AU-DESSUS du titre (proto Hean v3
+   style — coherent avec .page-eyebrow et le pattern eyebrow→title du site).
+   Markup : <h2 class="home-section-title" data-eyebrow="Recent">Recently Added</h2>
+   Eyebrow rendu via ::before content: attr(data-eyebrow). */
+.home-container.home-page .home-section-title {
+  display: flex !important;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  font-family: var(--font-sans) !important;
+  font-size: clamp(32px, 3.5vw, 48px) !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.04em !important;
+  line-height: 0.95 !important;
+  color: var(--color-text) !important;
+  padding-bottom: 20px !important;
+  border-bottom: 1px solid var(--glass-lo) !important;
+  margin-bottom: 28px !important;
+  margin-top: 0 !important;
+}
+.home-container.home-page .home-section-title[data-eyebrow]::before {
+  content: attr(data-eyebrow);
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+  line-height: 1;
+}
+
+/* Home carousel : horizontal scroll, hide scrollbar */
+.home-container.home-page .home-carousel {
+  display: flex !important;
+  gap: 16px !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+}
+.home-container.home-page .home-carousel::-webkit-scrollbar {
+  height: 6px;
+}
+.home-container.home-page .home-carousel::-webkit-scrollbar-track {
+  background: transparent;
+}
+.home-container.home-page .home-carousel::-webkit-scrollbar-thumb {
+  background: var(--glass-md);
+  border-radius: 3px;
+}
+.home-container.home-page .home-carousel::-webkit-scrollbar-thumb:hover {
+  background: var(--glass-hi);
+}
+
+/* Carousel cards (.carousel-item maps to .carousel-card) */
+.home-container.home-page .carousel-item {
+  flex: 0 0 180px !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  cursor: pointer;
+  transition: transform var(--transition-normal) var(--ease-out-expo);
+}
+.home-container.home-page .carousel-item:hover {
+  transform: translateY(-4px);
+}
+.home-container.home-page .carousel-cover {
+  width: 180px !important;
+  height: 180px !important;
+  border-radius: var(--radius-md) !important;
+  overflow: hidden;
+  position: relative;
+  background: var(--color-bg-surface) !important;
+  margin-bottom: 12px !important;
+  transition: filter var(--transition-normal);
+}
+.home-container.home-page .carousel-item:hover .carousel-cover {
+  filter: brightness(1.06);
+}
+.home-container.home-page .carousel-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 30px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 1;
+}
+.home-container.home-page .carousel-cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.home-container.home-page .carousel-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  color: var(--color-text-faint);
+  background: var(--color-bg-surface);
+}
+
+/* Artist carousel (round cover) */
+.home-container.home-page .artist-carousel-item .carousel-cover {
+  border-radius: 50% !important;
+}
+.home-container.home-page .artist-carousel-item .carousel-cover::after {
+  border-radius: 50%;
+}
+
+/* Card text */
+.home-container.home-page .carousel-item .carousel-title,
+.home-container.home-page .carousel-item .carousel-album-title {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--color-text);
+  margin-top: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-container.home-page .carousel-item .carousel-artist,
+.home-container.home-page .carousel-item .carousel-meta {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Recent played grid (3×2 alt layout) */
+.home-container.home-page .recent-grid,
+.home-container.home-page .home-recent-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+@media (max-width: 1100px) {
+  .home-container.home-page .recent-grid,
+  .home-container.home-page .home-recent-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 720px) {
+  .home-container.home-page .recent-grid,
+  .home-container.home-page .home-recent-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Recent track item */
+.home-container.home-page .recent-track-item,
+.home-container.home-page .recent-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition-fast);
+}
+.home-container.home-page .recent-track-item:hover,
+.home-container.home-page .recent-row:hover {
+  background: var(--glass-xs);
+}
+.home-container.home-page .recent-track-cover,
+.home-container.home-page .recent-cover {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--color-bg-surface);
+  position: relative;
+  flex-shrink: 0;
+}
+.home-container.home-page .recent-track-title {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-container.home-page .recent-track-artist {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Home page outer padding aligned with proto */
+.home-container.home-page {
+  padding: 32px 48px 48px !important;
+}
+@media (max-width: 900px) {
+  .home-container.home-page {
+    padding: 24px 32px 32px !important;
+  }
+}
+@media (max-width: 600px) {
+  .home-container.home-page {
+    padding: 20px 20px 24px !important;
+  }
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 5 : Artist page (hero + body + aside)
+   ============================================================ */
+
+.artist-page-container {
+  padding: 0 !important;
+}
+.artist-page-container .album-page-header {
+  padding: 16px 32px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03) !important;
+  display: flex;
+  align-items: center;
+  margin-bottom: 0 !important;
+}
+.artist-page-container .btn-back-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px !important;
+  background: transparent !important;
+  border: 1px solid var(--glass-lo) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text-muted) !important;
+  font-family: var(--font-body) !important;
+  font-size: 10px !important;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+.artist-page-container .btn-back-nav:hover {
+  background: var(--glass-lo);
+  color: var(--color-text);
+  border-color: var(--glass-md);
+}
+
+/* Artist hero */
+.artist-page-container .artist-hero {
+  position: relative;
+  padding: 64px 64px 48px;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 56px;
+  align-items: end;
+  overflow: hidden;
+}
+.artist-page-container .artist-hero-halo {
+  position: absolute;
+  top: -200px;
+  left: 30%;
+  width: 1100px;
+  height: 900px;
+  border-radius: 50%;
+  filter: blur(140px);
+  opacity: 0.25;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(circle at center,
+    rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.5) 0%,
+    transparent 70%);
+}
+.artist-page-container .hero-watermark {
+  position: absolute;
+  right: -32px;
+  top: 32px;
+  font-family: var(--font-sans);
+  font-size: clamp(120px, 16vw, 200px);
+  font-weight: 900;
+  letter-spacing: -0.06em;
+  line-height: 0.85;
+  color: rgba(255, 255, 255, 0.018);
+  pointer-events: none;
+  z-index: 0;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+.artist-page-container .artist-portrait,
+.artist-page-container .artist-meta-col {
+  position: relative;
+  z-index: 1;
+}
+.artist-page-container .artist-portrait {
+  width: 220px !important;
+  height: 220px !important;
+  border-radius: 50% !important;
+  overflow: hidden;
+  position: relative;
+  background: var(--color-bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-weight: 800;
+  font-size: 72px;
+  color: rgba(255, 255, 255, 0.92);
+  letter-spacing: -0.04em;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.artist-page-container .artist-portrait::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.4), inset 0 2px 0 rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+}
+.artist-page-container .artist-portrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+.artist-page-container .artist-photo-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.artist-page-container .artist-meta-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 16px;
+  min-width: 0;
+}
+.artist-page-container .artist-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+.artist-page-container .artist-name-xl,
+.artist-page-container .artist-name-xl.album-page-title {
+  font-family: var(--font-sans) !important;
+  font-size: clamp(72px, 7.5vw, 120px) !important;
+  font-weight: 900 !important;
+  letter-spacing: -0.05em !important;
+  line-height: 0.9 !important;
+  color: var(--color-text) !important;
+  text-wrap: balance;
+  margin: 0 !important;
+}
+.artist-page-container .artist-stats {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--glass-md);
+  border-radius: var(--radius-sm);
+  width: fit-content;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.artist-page-container .artist-stats .stat {
+  padding: 10px 18px;
+  border-right: 1px solid var(--glass-md);
+}
+.artist-page-container .artist-stats .stat:last-child {
+  border-right: none;
+}
+.artist-page-container .artist-stats .stat-val {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.artist-page-container .artist-stats .stat-label {
+  font-family: var(--font-body);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+  margin-top: 3px;
+}
+
+.artist-page-container .artist-actions {
+  display: flex !important;
+  gap: 12px !important;
+  margin-top: 12px !important;
+  flex-wrap: wrap;
+}
+.artist-page-container .btn-primary {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px !important;
+  background: var(--color-text) !important;
+  color: #000 !important;
+  border: none !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.artist-page-container .btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(255, 255, 255, 0.15);
+}
+.artist-page-container .btn-ghost {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px !important;
+  background: transparent !important;
+  color: var(--color-text) !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.artist-page-container .btn-ghost:hover {
+  background: var(--glass-lo) !important;
+  border-color: var(--glass-hi) !important;
+}
+
+/* Artist body */
+.artist-page-container .artist-body {
+  padding: 24px 64px 56px;
+  min-width: 0;
+}
+
+/* Responsive */
+@media (max-width: 1100px) {
+  .artist-page-container .artist-hero {
+    grid-template-columns: 180px 1fr;
+    gap: 32px;
+    padding: 48px 32px 32px;
+  }
+  .artist-page-container .artist-portrait {
+    width: 180px !important;
+    height: 180px !important;
+    font-size: 56px;
+  }
+  .artist-page-container .artist-body {
+    padding: 24px 32px 40px;
+  }
+}
+@media (max-width: 720px) {
+  .artist-page-container .artist-hero {
+    grid-template-columns: 1fr;
+    align-items: start;
+    padding: 32px 24px 24px;
+  }
+  .artist-page-container .artist-portrait {
+    width: 140px !important;
+    height: 140px !important;
+    font-size: 44px;
+  }
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 6 : Playlist view header (CSS only)
+   Markup .playlist-view-header / .playlist-header-info / .playlist-
+   header-buttons / .playlist-cover-grid-lg preserve.
+   ============================================================ */
+
+.playlist-view-header {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 32px;
+  padding: 48px 64px 32px !important;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+  border-bottom: 1px solid var(--glass-lo);
+  margin-bottom: 32px;
+}
+.playlist-view-header::before {
+  content: "";
+  position: absolute;
+  top: -150px;
+  left: 30%;
+  width: 800px;
+  height: 600px;
+  border-radius: 50%;
+  filter: blur(120px);
+  opacity: 0.22;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(circle at center,
+    rgba(var(--color-ambient-r, 100), var(--color-ambient-g, 100), var(--color-ambient-b, 100), 0.5) 0%,
+    transparent 70%);
+}
+.playlist-view-header > * {
+  position: relative;
+  z-index: 1;
+}
+.playlist-view-header .playlist-header-left {
+  display: contents;
+}
+.playlist-view-header .playlist-cover-grid-lg {
+  width: 240px !important;
+  height: 240px !important;
+  border-radius: var(--radius-md) !important;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  position: relative;
+}
+.playlist-view-header .playlist-cover-grid-lg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 30px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 2;
+}
+.playlist-view-header .playlist-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.playlist-view-header .playlist-header-info h2 {
+  font-family: var(--font-sans) !important;
+  font-size: clamp(40px, 4.5vw, 72px) !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.04em !important;
+  line-height: 0.95 !important;
+  color: var(--color-text) !important;
+  margin: 0 !important;
+  text-wrap: balance;
+}
+.playlist-view-header .playlist-header-info p {
+  font-family: var(--font-body) !important;
+  font-size: 12px !important;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted) !important;
+  margin: 0;
+}
+.playlist-view-header .playlist-header-info .playlist-detail-ornament {
+  font-family: var(--font-body);
+  font-size: 10px;
+  color: var(--color-text-faint);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.playlist-view-header .playlist-header-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+  grid-column: 2;
+  align-self: end;
+}
+.playlist-view-header .btn-primary-small {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 22px !important;
+  background: var(--color-text) !important;
+  color: #000 !important;
+  border: none !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.playlist-view-header .btn-primary-small:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(255, 255, 255, 0.15);
+}
+.playlist-view-header .btn-sort-playlist {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px !important;
+  background: transparent !important;
+  color: var(--color-text) !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: 999px !important;
+  font-family: var(--font-body);
+  font-size: 11px !important;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.playlist-view-header .btn-sort-playlist:hover {
+  background: var(--glass-lo) !important;
+  border-color: var(--glass-hi) !important;
+}
+@media (max-width: 1100px) {
+  .playlist-view-header {
+    padding: 32px 32px 24px !important;
+    grid-template-columns: 200px 1fr;
+    gap: 24px;
+  }
+  .playlist-view-header .playlist-cover-grid-lg {
+    width: 200px !important;
+    height: 200px !important;
+  }
+}
+@media (max-width: 720px) {
+  .playlist-view-header {
+    grid-template-columns: 1fr;
+    padding: 24px 24px 20px !important;
+  }
+  .playlist-view-header .playlist-cover-grid-lg {
+    width: 160px !important;
+    height: 160px !important;
+  }
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 7 : Tracks library + Albums grids titles
+   ============================================================ */
+
+/* Albums view header — big editorial title */
+.albums-view .view-header h2,
+.albums-view .view-title,
+.albums-view h2 {
+  font-family: var(--font-sans) !important;
+  font-size: clamp(32px, 3.5vw, 48px) !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.04em !important;
+  line-height: 0.95 !important;
+  color: var(--color-text) !important;
+  padding-bottom: 16px !important;
+  border-bottom: 1px solid var(--glass-lo) !important;
+  margin-bottom: 24px !important;
+}
+
+/* Tracks view : same treatment + kicker for track count */
+.albums-view.tracks-mode .view-header h2,
+.albums-view.tracks-mode .view-title {
+  margin-bottom: 8px !important;
+}
+
+/* Sort selects */
+.albums-view .sort-select {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid var(--glass-md) !important;
+  font-family: var(--font-body) !important;
+  font-size: 11px !important;
+  letter-spacing: 0.04em !important;
+  padding: 7px 12px !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text) !important;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.albums-view .sort-select:hover {
+  border-color: var(--glass-hi) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 8 : Settings drawer (anchored in window)
+   README: anchored INSIDE .window (position: absolute), glass blur 40px.
+   ============================================================ */
+
+/* Anchor the .app container to host position:absolute drawer */
+.app {
+  position: relative !important;
+}
+
+.settings-panel {
+  position: absolute !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: clamp(380px, 30vw, 440px) !important;
+  background: linear-gradient(135deg, rgba(14, 14, 14, 0.92) 0%, rgba(18, 18, 22, 0.88) 100%) !important;
+  backdrop-filter: blur(40px) saturate(1.6) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(1.6) !important;
+  border-left: 1px solid var(--glass-md) !important;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0 !important;
+  box-shadow: -20px 0 60px rgba(0, 0, 0, 0.4) !important;
+  transform: translateX(105%) !important;
+  transition: transform 0.4s var(--ease-out-expo) !important;
+  z-index: 520;
+}
+.settings-panel.open {
+  transform: translateX(0) !important;
+}
+
+/* Settings header */
+.settings-panel .settings-header {
+  padding: 20px 24px !important;
+  border-bottom: 1px solid var(--glass-md) !important;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.settings-panel .settings-header h3 {
+  font-family: var(--font-body) !important;
+  font-size: 10px !important;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  color: var(--color-text) !important;
+  margin: 0;
+}
+
+/* Settings sections */
+.settings-panel .settings-content {
+  padding: 0 !important;
+}
+.settings-panel .settings-section {
+  padding: 24px !important;
+  border-bottom: 1px solid var(--glass-md) !important;
+}
+.settings-panel .settings-section:last-child {
+  border-bottom: none !important;
+}
+.settings-panel .settings-section-title {
+  font-family: var(--font-body) !important;
+  font-size: 10px !important;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  color: var(--color-text-faint) !important;
+  text-transform: uppercase;
+  margin-bottom: 20px !important;
+}
+
+/* Settings rows */
+.settings-panel .settings-row {
+  min-height: 40px !important;
+  margin-bottom: 18px !important;
+}
+.settings-panel .settings-label {
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--color-text) !important;
+}
+.settings-panel .settings-description {
+  font-family: var(--font-body) !important;
+  font-size: 11px !important;
+  color: var(--color-text-faint) !important;
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+/* ============================================================
+   REDESIGN v3 — Step 10 : Context menu + heart burst + a11y
+   Final polish from prototype context-menu.jsx + animations.
+   ============================================================ */
+
+/* Context menu — glass deeper, tighter padding */
+.context-menu {
+  background: rgba(20, 20, 20, 0.92) !important;
+  backdrop-filter: blur(24px) !important;
+  -webkit-backdrop-filter: blur(24px) !important;
+  border: 1px solid var(--glass-md) !important;
+  border-radius: var(--radius-md) !important;
+  padding: 4px !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6) !important;
+  min-width: 240px !important;
+}
+.context-menu .context-menu-item {
+  padding: 8px 12px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  border-radius: var(--radius-sm) !important;
+  transition: background 0.1s ease !important;
+}
+.context-menu .context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+}
+.context-menu .context-menu-item svg {
+  width: 16px;
+  height: 16px;
+  opacity: 0.8;
+}
+.context-menu .context-menu-separator {
+  margin: 4px 6px !important;
+  background: var(--glass-md) !important;
+  height: 1px;
+}
+.context-menu .context-menu-item-danger {
+  color: var(--color-error-muted, #ff6b6b) !important;
+}
+.context-menu .context-menu-item-danger:hover {
+  background: rgba(255, 107, 107, 0.1) !important;
+}
+
+/* Heart burst micro-animations (ready to be triggered by panels.js
+   toggleFavorite when a .heart-burst element is inserted in the
+   .track-favorite-btn or .track-add-favorite wrapper). */
+.heart-burst {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+.heart-burst svg {
+  width: 100%;
+  height: 100%;
+}
+.heart-burst-add {
+  animation-name: heart-burst-add;
+  animation-duration: 0.7s;
+  animation-timing-function: var(--ease-out-expo);
+  animation-fill-mode: forwards;
+}
+@keyframes heart-burst-add {
+  0%   { transform: scale(0.6) translateY(0); opacity: 0; }
+  20%  { transform: scale(1.2) translateY(-2px); opacity: 1; }
+  60%  { transform: scale(1.0) translateY(-12px); opacity: 0.7; }
+  100% { transform: scale(0.9) translateY(-24px); opacity: 0; }
+}
+.heart-burst-remove {
+  animation-name: heart-burst-remove;
+  animation-duration: 0.8s;
+  animation-timing-function: var(--ease-out-expo);
+  animation-fill-mode: forwards;
+}
+@keyframes heart-burst-remove {
+  0%   { transform: rotate(0deg) translateY(0); opacity: 1; }
+  40%  { transform: rotate(-8deg) translateY(8px); opacity: 0.8; }
+  100% { transform: rotate(-16deg) translateY(28px); opacity: 0; }
+}
+
+/* A11y — focus visible rings on key interactive elements */
+.now-strip .btn-play-strip:focus-visible,
+.album-page-container.album-page .btn-primary:focus-visible,
+.album-page-container.album-page .btn-ghost:focus-visible,
+.artist-page-container .btn-primary:focus-visible,
+.artist-page-container .btn-ghost:focus-visible,
+.playlist-view-header .btn-primary-small:focus-visible,
+aside.sidebar .nav-item:focus-visible,
+.search-bar .feedback-header-btn:focus-visible,
+.search-bar .titlebar-settings-btn:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 2px;
+}
+
+/* Global reduced-motion coverage */
+@media (prefers-reduced-motion: reduce) {
+  .home-page .home-section,
+  .albums-view h2,
+  .album-page-container.album-page .album-cover,
+  .artist-page-container .artist-portrait,
+  .playlist-view-header .playlist-cover-grid-lg,
+  .heart-burst-add,
+  .heart-burst-remove {
+    animation: none !important;
+    transition: none !important;
   }
 }
