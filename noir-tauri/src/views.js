@@ -714,6 +714,11 @@ async function generateDiscoveryMixes() {
     console.warn('[Discovery] Failed to cache mixes:', e)
   }
 
+  // Peupler le cache memoire dans la branche froide aussi (sinon prochaine
+  // navigation re-passe par localStorage.getItem + rebuild coverCandidates).
+  _discoveryMixesMemCache = discoveryMixes
+  _discoveryMixesMemCacheAt = Date.now()
+
   console.log(`[Discovery] Generated ${discoveryMixes.length} mixes`)
   return discoveryMixes
 }
@@ -918,8 +923,32 @@ export function displayAlbumPage(albumKey) {
     ? `<span class="quality-tag ${quality.class}">${quality.label}</span>`
     : ''
 
+  // REDESIGN v3 \u2014 hallmark cells from firstTrack metadata
+  let hallmarkHtml = ''
+  if (firstTrack?.metadata) {
+    const m = firstTrack.metadata
+    const codec = m.codec || getCodecFromPath(firstTrack.path)
+    const bitDepth = m.bitDepth ? `${m.bitDepth}-bit` : ''
+    const sampleRate = m.sampleRate ? `${(m.sampleRate / 1000).toFixed(1).replace('.0', '')} kHz` : ''
+    const cells = []
+    if (bitDepth) cells.push(`<div class="cell"><span class="cell-label">Bit depth</span><span class="cell-val">${bitDepth}</span></div>`)
+    if (sampleRate) cells.push(`<div class="cell"><span class="cell-label">Sample rate</span><span class="cell-val">${sampleRate}</span></div>`)
+    if (codec) cells.push(`<div class="cell"><span class="cell-label">Format</span><span class="cell-val">${escapeHtml(codec.toUpperCase())}</span></div>`)
+    if (cells.length > 0) hallmarkHtml = `<div class="hallmark">${cells.join('')}</div>`
+  }
+
+  // Year + label fallback for eyebrow
+  const albumYear = firstTrack?.metadata?.year || ''
+  const albumLabel = firstTrack?.metadata?.label || ''
+  const eyebrowParts = ['Album']
+  if (albumYear) eyebrowParts.push(`${albumYear}`)
+  if (albumLabel) eyebrowParts.push(escapeHtml(albumLabel))
+  const eyebrowHtml = eyebrowParts.map((p, i) =>
+    i === 0 ? `<span>${p}</span>` : `<span style="color: var(--color-text-dimmed)">\u00B7</span><span>${p}</span>`
+  ).join('')
+
   const pageContainer = document.createElement('div')
-  pageContainer.className = 'album-page-container'
+  pageContainer.className = 'album-page-container album-page'
 
   pageContainer.innerHTML = `
     <div class="album-page-header">
@@ -929,42 +958,73 @@ export function displayAlbumPage(albumKey) {
           <path d="M12 19l-7-7 7-7"/>
         </svg>
       </button>
-      <h1 class="album-page-title">${album.album}</h1>
     </div>
-    <div class="album-page-content">
-      <div class="album-page-cover">
-        ${isValidImageSrc(cover)
-          ? `<img src="${cover}" alt="${album.album}">`
-          : '<div class="album-cover-placeholder">\u266A</div>'
-        }
+    <div class="album-hero">
+      <div class="album-hero-halo" aria-hidden="true"></div>
+      <div class="hero-watermark" aria-hidden="true">${escapeHtml(album.artist || '').toUpperCase()}</div>
+      <div class="album-cover-wrap">
+        <div class="cover-shell album-cover">
+          ${isValidImageSrc(cover)
+            ? `<img class="album-cover-img" src="${cover}" alt="${escapeHtml(album.album)}">`
+            : '<div class="album-cover-placeholder">\u266A</div>'
+          }
+        </div>
       </div>
-      <div class="album-page-info">
-        <p class="album-page-artist clickable-artist" data-artist="${escapeHtml(album.artist)}">${escapeHtml(album.artist)}</p>
-        <p class="album-page-meta">
-          ${album.tracks.length} tracks \u2022 ${formatTime(totalDuration)}${firstTrack?.metadata?.year ? ` \u2022 ${firstTrack.metadata.year}` : ''}
-          ${qualityTag ? `<span class="album-page-tags">${qualityTag}</span>` : ''}
-        </p>
-        <div class="album-page-buttons">
-          <button class="btn-primary-small play-album-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z"/>
-            </svg>
-            Play
+      <div class="album-meta">
+        <div class="album-eyebrow">${eyebrowHtml}</div>
+        <h1 class="album-title album-page-title">${escapeHtml(album.album)}</h1>
+        <div class="album-byline">
+          <button class="artist-link clickable-artist" type="button" data-artist="${escapeHtml(album.artist)}">${escapeHtml(album.artist)}</button>
+          <span class="dot">\u2022</span>
+          <span class="num">${album.tracks.length} ${album.tracks.length === 1 ? 'track' : 'tracks'}</span>
+          <span class="dot">\u2022</span>
+          <span class="num">${formatTime(totalDuration)}</span>
+        </div>
+        ${hallmarkHtml}
+        <div class="album-actions album-page-buttons">
+          <button class="btn-primary play-album-btn" type="button">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+            <span>Play album</span>
           </button>
-          <button class="btn-add-queue-album add-album-queue-btn" title="Add to queue">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
-            </svg>
+          <button class="btn-ghost shuffle-album-btn" type="button" title="Shuffle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+            <span>Shuffle</span>
+          </button>
+          <button class="btn-ghost add-album-queue-btn" type="button" title="Add to queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/></svg>
+            <span>Add to queue</span>
+          </button>
+          <button class="btn-ghost fav-album-btn" type="button" title="Favorite">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            <span>Favorite</span>
           </button>
         </div>
       </div>
     </div>
-    <div class="album-page-tracks"></div>
+    <div class="album-body">
+      <div class="album-tracks-wrap">
+        <div class="album-page-tracks"></div>
+      </div>
+      <aside class="album-aside">
+        <div class="aside-section">
+          <div class="section-h-sm">
+            <span class="title">Details</span>
+            <span class="kicker">Credits</span>
+          </div>
+          <div class="album-credit-list">
+            ${albumYear ? `<div class="credit-row"><span class="credit-label">Release</span><span class="credit-val">${albumYear}</span></div>` : ''}
+            ${albumLabel ? `<div class="credit-row"><span class="credit-label">Label</span><span class="credit-val">${escapeHtml(albumLabel)}</span></div>` : ''}
+            <div class="credit-row"><span class="credit-label">Tracks</span><span class="credit-val">${album.tracks.length} \u2022 ${formatTime(totalDuration)}</span></div>
+            ${qualityTag ? `<div class="credit-row"><span class="credit-label">Quality</span><span class="credit-val">${qualityTag}</span></div>` : ''}
+          </div>
+        </div>
+      </aside>
+    </div>
   `
 
   pageContainer.querySelector('.btn-back-nav').addEventListener('click', navigateBack)
 
-  const artistLink = pageContainer.querySelector('.album-page-artist.clickable-artist')
+  const artistLink = pageContainer.querySelector('.artist-link.clickable-artist')
   if (artistLink && library.artists[album.artist]) {
     artistLink.addEventListener('click', () => {
       navigateToArtistPage(album.artist)
@@ -975,9 +1035,22 @@ export function displayAlbumPage(albumKey) {
     app.playAlbum(albumKey)
   })
 
+  pageContainer.querySelector('.shuffle-album-btn').addEventListener('click', () => {
+    // Toggle shuffle ON then play album
+    if (!playback.shuffleMode) {
+      playback.shuffleMode = true
+      if (typeof app.updateShuffleButton === 'function') app.updateShuffleButton()
+    }
+    app.playAlbum(albumKey)
+  })
+
   pageContainer.querySelector('.add-album-queue-btn').addEventListener('click', () => {
     app.addAlbumToQueue(albumKey)
     app.showQueueNotification(`Album "${album.album}" added to queue`)
+  })
+
+  pageContainer.querySelector('.fav-album-btn').addEventListener('click', () => {
+    showToast('Album favorites coming soon')
   })
 
   const tracksContainer = pageContainer.querySelector('.album-page-tracks')
@@ -1077,7 +1150,7 @@ export function displayAlbumPage(albumKey) {
   dom.albumsGridDiv.appendChild(pageContainer)
 
   if (!isValidImageSrc(cover) && album.coverPath) {
-    const albumPageCoverContainer = pageContainer.querySelector('.album-page-cover')
+    const albumPageCoverContainer = pageContainer.querySelector('.album-cover')
     if (albumPageCoverContainer) {
       const hiddenImg = document.createElement('img')
       hiddenImg.style.display = 'none'
@@ -1091,6 +1164,7 @@ export function displayAlbumPage(albumKey) {
             const newImg = document.createElement('img')
             newImg.src = cachedSrc
             newImg.alt = album.album
+            newImg.className = 'album-cover-img'
             placeholder.replaceWith(newImg)
           }
           if (hiddenImg.parentNode) hiddenImg.remove()
@@ -1100,7 +1174,7 @@ export function displayAlbumPage(albumKey) {
   }
 
   // Extract ambient color from the displayed cover image (2026 Trend 1)
-  const coverContainer = dom.albumsGridDiv.querySelector('.album-page-cover')
+  const coverContainer = dom.albumsGridDiv.querySelector('.album-page-container.album-page .album-cover')
   const ambientFallback = album.coverPath || (album.tracks.length > 0 ? album.tracks[0].path : null)
   if (coverContainer) {
     watchForCoverAndApplyAmbient(coverContainer, ambientFallback, `Album: ${album.album}`)
@@ -1431,6 +1505,10 @@ export function updateNowPlayingHighlight() {
 // ============================================================
 
 export async function displayHomeView() {
+  // INSTRUMENTATION TEMPORAIRE — investigation perf home (2026-06-06).
+  // A retirer une fois le bottleneck identifie.
+  console.time('[HOME] total displayHomeView')
+  console.time('[HOME] step1 cache+invokes')
   dom.albumsGridDiv.classList.remove('tracks-mode')
 
   const existingNav = document.querySelector('.alphabet-nav')
@@ -1438,18 +1516,38 @@ export async function displayHomeView() {
 
   const now = Date.now()
   const cacheValid = caches.homeDataCache.isValid && (now - caches.homeDataCache.lastFetch < HOME_CACHE_TTL)
+  // Stale-while-revalidate : si on a des anciennes data (meme invalidees par un
+  // play, scan, etc), on les utilise immediatement et on refresh en background.
+  // Evite le freeze 10s quand NAS lent / SQL froid au retour sur home apres play.
+  const hasStaleData = caches.homeDataCache.lastFetch > 0
 
   let lastPlayed, recentTracks, allPlayedAlbums, topArtists
 
-  if (cacheValid) {
-    // Cache chaud → rendu instantané sans attendre les invoke Rust
+  if (cacheValid || hasStaleData) {
+    // Cache chaud OU stale → rendu instantane
     lastPlayed = caches.homeDataCache.lastPlayed
-    recentTracks = caches.homeDataCache.recentTracks
-    allPlayedAlbums = caches.homeDataCache.allPlayedAlbums
-    topArtists = caches.homeDataCache.topArtists
+    recentTracks = caches.homeDataCache.recentTracks || []
+    allPlayedAlbums = caches.homeDataCache.allPlayedAlbums || []
+    topArtists = caches.homeDataCache.topArtists || []
+
+    // Si stale, refresh en background (fire-and-forget) pour le prochain affichage
+    if (!cacheValid) {
+      Promise.all([
+        invoke('get_last_played').catch(() => null),
+        invoke('get_recent_albums', { days: 30 }).catch(() => []),
+        invoke('get_all_played_albums').catch(() => []),
+        invoke('get_top_artists', { limit: 20 }).catch(() => [])
+      ]).then(([lp, rt, apa, ta]) => {
+        caches.homeDataCache.lastPlayed = lp
+        caches.homeDataCache.recentTracks = rt || []
+        caches.homeDataCache.allPlayedAlbums = apa || []
+        caches.homeDataCache.topArtists = ta || []
+        caches.homeDataCache.lastFetch = Date.now()
+        caches.homeDataCache.isValid = true
+      }).catch(() => {})
+    }
   } else {
-    // Cache froid (démarrage, après scan_complete, TTL expiré) → bloquer et
-    // attendre les données Rust pour garantir un rendu non-vide dès le premier affichage
+    // Cold start (jamais charge) → bloquant, sinon rendu vide
     try {
       const [lastPlayedResult, recentTracksResult, allPlayedAlbumsResult, topArtistsResult] = await Promise.all([
         invoke('get_last_played').catch(() => null),
@@ -1477,10 +1575,23 @@ export async function displayHomeView() {
     }
   }
 
+  console.timeEnd('[HOME] step1 cache+invokes')
+  console.time('[HOME] step2 generateDiscoveryMixes')
   await generateDiscoveryMixes()
+  console.timeEnd('[HOME] step2 generateDiscoveryMixes')
+  console.time('[HOME] step3 build DOM')
 
   const homeContainer = document.createElement('div')
-  homeContainer.className = 'home-container'
+  homeContainer.className = 'home-container home-page'
+
+  // === 0. Page eyebrow (greeting) — REDESIGN v3 ===
+  const _eyebrow = document.createElement('div')
+  _eyebrow.className = 'page-eyebrow'
+  const _now = new Date()
+  const _dateLine = _now.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) +
+    ' · ' + _now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase()
+  _eyebrow.innerHTML = `<span class="live-dot"></span><span>Hean · ${_dateLine}</span><span class="hairline"></span>`
+  homeContainer.appendChild(_eyebrow)
 
   // === 1. Now Playing / Resume tile ===
   // hasActiveTrack = une track est chargée (en lecture OU en pause)
@@ -1495,12 +1606,11 @@ export async function displayHomeView() {
 
   if (displayTrack) {
     const resumeSection = document.createElement('section')
-    resumeSection.className = 'home-section home-resume-section'
+    resumeSection.className = `now-strip np-anim-eq${isCurrentlyPlaying ? ' is-playing' : ''}`
     resumeSection.id = 'home-now-playing-section'
-
-    const resumeTile = document.createElement('div')
-    resumeTile.className = 'home-resume-tile'
-    resumeTile.dataset.trackPath = displayTrack.path
+    resumeSection.dataset.trackPath = displayTrack.path
+    // Backward-compat alias for any legacy code that still queries .home-resume-tile
+    const resumeTile = resumeSection
 
     const title = currentTrack?.metadata?.title || currentTrack?.name || displayTrack.title || 'Titre inconnu'
     const artist = currentTrack?.metadata?.artist || displayTrack.artist || 'Unknown Artist'
@@ -1508,47 +1618,51 @@ export async function displayHomeView() {
     // Label "Now Playing" dès qu'une track est chargée, "Resume Playback" seulement si rien de chargé
     const label = hasActiveTrack ? 'Now Playing' : 'Resume Playback'
 
-    let specsTagsHtml = ''
+    let hallmarkHtml = ''
     if (currentTrack?.metadata) {
-      const meta = currentTrack.metadata
-      const codec = meta.codec || getCodecFromPath(currentTrack.path)
-      const bitDepth = meta.bitDepth ? `${meta.bitDepth}-bit` : ''
-      const sampleRate = meta.sampleRate ? `${(meta.sampleRate / 1000).toFixed(1).replace('.0', '')}kHz` : ''
-      const duration = meta.duration ? formatTime(meta.duration) : ''
-
-      const tags = []
-      if (bitDepth) tags.push(`<span class="resume-spec-tag bitdepth">${bitDepth}</span>`)
-      if (sampleRate) tags.push(`<span class="resume-spec-tag samplerate">${sampleRate}</span>`)
-
-      const textParts = []
-      if (codec) textParts.push(codec.toUpperCase())
-      if (duration) textParts.push(duration)
-      const textSpecs = textParts.length > 0 ? `<span class="resume-specs-text">${textParts.join(' \u2022 ')}</span>` : ''
-
-      if (tags.length > 0 || textSpecs) {
-        specsTagsHtml = `<div class="resume-specs-container">${tags.join('')}${textSpecs}</div>`
+      const m = currentTrack.metadata
+      const codec = m.codec || getCodecFromPath(currentTrack.path)
+      const bitDepth = m.bitDepth ? `${m.bitDepth}-bit` : ''
+      const sampleRate = m.sampleRate ? `${(m.sampleRate / 1000).toFixed(1).replace('.0', '')} kHz` : ''
+      const cells = []
+      if (bitDepth) cells.push(`<div class="cell"><span class="cell-label">Bit depth</span><span class="cell-val">${bitDepth}</span></div>`)
+      if (sampleRate) cells.push(`<div class="cell"><span class="cell-label">Sample</span><span class="cell-val">${sampleRate}</span></div>`)
+      if (codec) cells.push(`<div class="cell"><span class="cell-label">Format</span><span class="cell-val">${escapeHtml(codec.toUpperCase())}</span></div>`)
+      // Bit-perfect cell only when actually bit-perfect (source rate == output rate, no resampling).
+      // Flag set by updateAudioSpecs in playback.js — emis par Rust apres start de lecture.
+      if (playback.isBitPerfect) {
+        cells.push(`<div class="cell bp-cell"><span class="bp-mark" aria-hidden="true"></span><span class="cell-val">Bit perfect</span></div>`)
       }
+      hallmarkHtml = `<div class="strip-hallmark">${cells.join('')}</div>`
     }
+    const eqOrDotHtml = (isCurrentlyPlaying
+      ? '<span class="eq-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>'
+      : '<span class="live-dot" aria-hidden="true"></span>')
 
     resumeTile.innerHTML = `
-      <div class="resume-cover">
+      <div class="strip-bg" aria-hidden="true"></div>
+      <div class="strip-halo" aria-hidden="true"></div>
+      <div class="cover-shell c-200 strip-cover" role="button" tabindex="0">
         <img class="resume-cover-img" style="display: none;" alt="">
         <div class="resume-cover-placeholder">\u266A</div>
       </div>
-      <div class="resume-info">
-        <span class="resume-label${hasActiveTrack ? ' resume-label-active' : ''}">${label}</span>
-        <span class="resume-title">${escapeHtml(title)}</span>
-        <span class="resume-artist">${escapeHtml(artist)}</span>
-        ${albumName ? `<span class="resume-album">${escapeHtml(albumName)}</span>` : ''}
-        ${specsTagsHtml}
+      <div class="strip-meta">
+        <div class="strip-eyebrow">${eqOrDotHtml}<span>${label}</span></div>
+        <div class="strip-track">${escapeHtml(title)}</div>
+        <h1 class="strip-title"><button class="strip-link" type="button">${escapeHtml(albumName || title)}</button></h1>
+        <div class="strip-artist"><button class="strip-link" type="button">${escapeHtml(artist)}</button></div>
+        ${hallmarkHtml}
       </div>
-      <button class="resume-play-btn">${isCurrentlyPlaying ? '\u23F8' : '\u25B6'}</button>
+      <div class="strip-controls">
+        <button class="btn-play-strip resume-play-btn" type="button" aria-label="${isCurrentlyPlaying ? 'Pause' : 'Play'}">${isCurrentlyPlaying ? '\u23F8' : '\u25B6'}</button>
+      </div>
     `
 
-    // Particle animation si une track est chargée (lecture ou pause)
-    if (hasActiveTrack) {
-      createParticleCanvas(resumeTile)
-    }
+    // REDESIGN v3 : pas de particle canvas sur la now-strip (legacy v2
+    // home-resume-tile). Le canvas causait un growth-loop offsetWidth ↔
+    // canvas.style.width qui freezait l'app. Le proto v3 n'a pas de
+    // particles — seulement le strip-bg drift + halo.
+    // if (hasActiveTrack) createParticleCanvas(resumeTile)
 
     const coverPath = currentTrack?.path || displayTrack.path
     const img = resumeTile.querySelector('.resume-cover-img')
@@ -1563,7 +1677,6 @@ export async function displayHomeView() {
       }
     }
 
-    resumeSection.appendChild(resumeTile)
     homeContainer.appendChild(resumeSection)
   }
 
@@ -1593,6 +1706,7 @@ export async function displayHomeView() {
 
       const newHeader = document.createElement('h2')
       newHeader.className = 'home-section-title'
+      newHeader.dataset.eyebrow = 'Recent'
       newHeader.textContent = 'Recently Added'
       newSection.appendChild(newHeader)
 
@@ -1621,6 +1735,7 @@ export async function displayHomeView() {
 
     const recentHeader = document.createElement('h2')
     recentHeader.className = 'home-section-title'
+    recentHeader.dataset.eyebrow = 'Played'
     recentHeader.textContent = 'Recently Played'
     recentSection.appendChild(recentHeader)
 
@@ -1740,6 +1855,7 @@ export async function displayHomeView() {
 
     const discoverHeader = document.createElement('h2')
     discoverHeader.className = 'home-section-title'
+    discoverHeader.dataset.eyebrow = 'Library'
     discoverHeader.textContent = 'Discover'
     discoverSection.appendChild(discoverHeader)
 
@@ -1765,6 +1881,7 @@ export async function displayHomeView() {
 
     const artistsHeader = document.createElement('h2')
     artistsHeader.className = 'home-section-title'
+    artistsHeader.dataset.eyebrow = 'Artists'
     artistsHeader.textContent = 'Your Favorite Artists'
     artistsSection.appendChild(artistsHeader)
 
@@ -1826,6 +1943,7 @@ export async function displayHomeView() {
 
     const hiResHeader = document.createElement('h2')
     hiResHeader.className = 'home-section-title'
+    hiResHeader.dataset.eyebrow = 'Hi-Res'
     hiResHeader.textContent = 'Audiophile Quality'
     hiResSection.appendChild(hiResHeader)
 
@@ -1901,6 +2019,7 @@ export async function displayHomeView() {
 
     const longHeader = document.createElement('h2')
     longHeader.className = 'home-section-title'
+    longHeader.dataset.eyebrow = 'Deep cuts'
     longHeader.textContent = 'Long Albums'
     longSection.appendChild(longHeader)
 
@@ -1970,6 +2089,7 @@ export async function displayHomeView() {
 
     const weekHeader = document.createElement('h2')
     weekHeader.className = 'home-section-title'
+    weekHeader.dataset.eyebrow = 'New'
     weekHeader.textContent = 'Added This Week'
     weekSection.appendChild(weekHeader)
 
@@ -2028,6 +2148,7 @@ export async function displayHomeView() {
 
     const mixHeader = document.createElement('h2')
     mixHeader.className = 'home-section-title'
+    mixHeader.dataset.eyebrow = 'Shuffle'
     mixHeader.textContent = 'Random Mix'
     mixSection.appendChild(mixHeader)
 
@@ -2055,6 +2176,7 @@ export async function displayHomeView() {
 
     const discoveryHeader = document.createElement('h2')
     discoveryHeader.className = 'home-section-title'
+    discoveryHeader.dataset.eyebrow = 'Discovery'
     discoveryHeader.textContent = 'Discovery Mix'
     discoverySection.appendChild(discoveryHeader)
 
@@ -2140,7 +2262,7 @@ export async function displayHomeView() {
         }
       } else {
         // Aucune track chargée cette session — trouver la track affichée dans la tuile et la jouer
-        const tile = playBtn.closest('.home-resume-tile')
+        const tile = playBtn.closest('.now-strip, .home-resume-tile')
         const trackPath = tile?.dataset.trackPath
         if (trackPath) {
           const trackIndex = library.tracks.findIndex(t => t.path === trackPath)
@@ -2150,7 +2272,49 @@ export async function displayHomeView() {
       return
     }
 
-    const resumeTile = e.target.closest('.home-resume-tile')
+    // Strip cover click → navigate to album page
+    const stripCover = e.target.closest('.now-strip .strip-cover')
+    if (stripCover) {
+      const tile = stripCover.closest('.now-strip')
+      const trackPath = tile?.dataset.trackPath
+      const track = trackPath ? library.tracksByPath?.get(trackPath) : null
+      const albumName = track?.track?.metadata?.album
+      const albumKey = albumName ? albumName.trim().normalize('NFC') : null
+      if (albumKey && library.albums[albumKey]) {
+        openAlbumFromHome(albumKey, library.albums[albumKey])
+        return
+      }
+    }
+
+    // Strip artist link → navigate to artist page
+    const stripArtistLink = e.target.closest('.now-strip .strip-artist .strip-link')
+    if (stripArtistLink) {
+      const tile = stripArtistLink.closest('.now-strip')
+      const trackPath = tile?.dataset.trackPath
+      const track = trackPath ? library.tracksByPath?.get(trackPath) : null
+      const artistName = track?.track?.metadata?.artist
+      if (artistName && library.artists[artistName]) {
+        openArtistFromHome(artistName)
+        return
+      }
+    }
+
+    // Strip title link → navigate to album page
+    const stripTitleLink = e.target.closest('.now-strip .strip-title .strip-link')
+    if (stripTitleLink) {
+      const tile = stripTitleLink.closest('.now-strip')
+      const trackPath = tile?.dataset.trackPath
+      const track = trackPath ? library.tracksByPath?.get(trackPath) : null
+      const albumName = track?.track?.metadata?.album
+      const albumKey = albumName ? albumName.trim().normalize('NFC') : null
+      if (albumKey && library.albums[albumKey]) {
+        openAlbumFromHome(albumKey, library.albums[albumKey])
+        return
+      }
+    }
+
+    // Fallback: click anywhere else on the now-strip → play the displayed track
+    const resumeTile = e.target.closest('.now-strip, .home-resume-tile')
     if (resumeTile) {
       const trackPath = resumeTile.dataset.trackPath
       if (trackPath) {
@@ -2263,7 +2427,11 @@ export async function displayHomeView() {
     }
   })
 
+  console.timeEnd('[HOME] step3 build DOM')
+  console.time('[HOME] step4 appendChild + reflow')
   dom.albumsGridDiv.appendChild(homeContainer)
+  console.timeEnd('[HOME] step4 appendChild + reflow')
+  console.timeEnd('[HOME] total displayHomeView')
 
   // Chargement différé des covers — APRÈS insertion DOM pour que isConnected === true
   requestAnimationFrame(() => {
@@ -2353,61 +2521,63 @@ export function updateHomeNowPlayingSection() {
   const currentTrack = playback.currentTrackIndex >= 0 ? library.tracks[playback.currentTrackIndex] : null
   if (!currentTrack) return
 
-  let resumeTile = section.querySelector('.home-resume-tile')
-  if (!resumeTile) {
-    resumeTile = document.createElement('div')
-    resumeTile.className = 'home-resume-tile'
-    section.appendChild(resumeTile)
-  }
+  // REDESIGN v3 : the section IS the now-strip (no nested .home-resume-tile)
+  const resumeTile = section
 
   const title = currentTrack.metadata?.title || currentTrack.name || 'Titre inconnu'
   const artist = currentTrack.metadata?.artist || 'Unknown Artist'
   const albumName = currentTrack.metadata?.album || ''
+  const isPlayingNow = playback.audioIsPlaying
 
-  let specsTagsHtml = ''
+  // Hallmark cells
+  let hallmarkHtml = ''
   if (currentTrack.metadata) {
-    const meta = currentTrack.metadata
-    const codec = meta.codec || getCodecFromPath(currentTrack.path)
-    const bitDepth = meta.bitDepth ? `${meta.bitDepth}-bit` : ''
-    const sampleRate = meta.sampleRate ? `${(meta.sampleRate / 1000).toFixed(1).replace('.0', '')}kHz` : ''
-    const duration = meta.duration ? formatTime(meta.duration) : ''
-
-    const tags = []
-    if (bitDepth) tags.push(`<span class="resume-spec-tag bitdepth">${bitDepth}</span>`)
-    if (sampleRate) tags.push(`<span class="resume-spec-tag samplerate">${sampleRate}</span>`)
-
-    const textParts = []
-    if (codec) textParts.push(codec.toUpperCase())
-    if (duration) textParts.push(duration)
-    const textSpecs = textParts.length > 0 ? `<span class="resume-specs-text">${textParts.join(' \u2022 ')}</span>` : ''
-
-    if (tags.length > 0 || textSpecs) {
-      specsTagsHtml = `<div class="resume-specs-container">${tags.join('')}${textSpecs}</div>`
+    const m = currentTrack.metadata
+    const codec = m.codec || getCodecFromPath(currentTrack.path)
+    const bitDepth = m.bitDepth ? `${m.bitDepth}-bit` : ''
+    const sampleRate = m.sampleRate ? `${(m.sampleRate / 1000).toFixed(1).replace('.0', '')} kHz` : ''
+    const cells = []
+    if (bitDepth) cells.push(`<div class="cell"><span class="cell-label">Bit depth</span><span class="cell-val">${bitDepth}</span></div>`)
+    if (sampleRate) cells.push(`<div class="cell"><span class="cell-label">Sample</span><span class="cell-val">${sampleRate}</span></div>`)
+    if (codec) cells.push(`<div class="cell"><span class="cell-label">Format</span><span class="cell-val">${escapeHtml(codec.toUpperCase())}</span></div>`)
+    if (playback.isBitPerfect) {
+      cells.push(`<div class="cell bp-cell"><span class="bp-mark" aria-hidden="true"></span><span class="cell-val">Bit perfect</span></div>`)
     }
+    hallmarkHtml = `<div class="strip-hallmark">${cells.join('')}</div>`
   }
+  const eqOrDotHtml = (isPlayingNow
+    ? '<span class="eq-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>'
+    : '<span class="live-dot" aria-hidden="true"></span>')
 
-  // Destroy previous particle animation before replacing innerHTML
+  // REDESIGN v3 : nettoyage defensif d'eventuels canvas legacy + plus de re-create.
   destroyParticleCanvas(resumeTile)
+
+  // Sync is-playing class on the now-strip section
+  if (isPlayingNow) section.classList.add('is-playing')
+  else section.classList.remove('is-playing')
 
   resumeTile.dataset.trackPath = currentTrack.path
 
   resumeTile.innerHTML = `
-    <div class="resume-cover">
+    <div class="strip-bg" aria-hidden="true"></div>
+    <div class="strip-halo" aria-hidden="true"></div>
+    <div class="cover-shell c-200 strip-cover" role="button" tabindex="0">
       <img class="resume-cover-img" style="display: none;" alt="">
       <div class="resume-cover-placeholder">\u266A</div>
     </div>
-    <div class="resume-info">
-      <span class="resume-label resume-label-active">Now Playing</span>
-      <span class="resume-title">${escapeHtml(title)}</span>
-      <span class="resume-artist">${escapeHtml(artist)}</span>
-      ${albumName ? `<span class="resume-album">${escapeHtml(albumName)}</span>` : ''}
-      ${specsTagsHtml}
+    <div class="strip-meta">
+      <div class="strip-eyebrow">${eqOrDotHtml}<span>Now playing</span></div>
+      <div class="strip-track">${escapeHtml(title)}</div>
+      <h1 class="strip-title"><button class="strip-link" type="button">${escapeHtml(albumName || title)}</button></h1>
+      <div class="strip-artist"><button class="strip-link" type="button">${escapeHtml(artist)}</button></div>
+      ${hallmarkHtml}
     </div>
-    <button class="resume-play-btn">${playback.audioIsPlaying ? '\u23F8' : '\u25B6'}</button>
+    <div class="strip-controls">
+      <button class="btn-play-strip resume-play-btn" type="button" aria-label="${isPlayingNow ? 'Pause' : 'Play'}">${isPlayingNow ? '\u23F8' : '\u25B6'}</button>
+    </div>
   `
 
-  // Start particle animation
-  createParticleCanvas(resumeTile)
+  // REDESIGN v3 : createParticleCanvas retire (cf. displayHomeView).
 
   const img = resumeTile.querySelector('.resume-cover-img')
   const placeholder = resumeTile.querySelector('.resume-cover-placeholder')
@@ -2618,8 +2788,9 @@ export function displayAlbumsGrid() {
     const key = card.dataset.albumKey
     const album = library.albums[key]
     if (!album) return
-    const cover = caches.coverCache.get(album.coverPath) || caches.thumbnailCache.get(album.coverPath)
-    showAlbumDetail(key, cover, card)
+    // REDESIGN v3 : navigate to full album page (consistent with home/artist clicks)
+    // instead of opening the legacy inline .album-detail panel (which has the old design).
+    navigateToAlbumPage(key)
   })
 
   gridContainer.addEventListener('contextmenu', (e) => {
@@ -2846,7 +3017,6 @@ export function displayArtistPage(artistKey) {
   pageContainer.dataset.artistName = artist.name
 
   pageContainer.innerHTML = `
-    <div class="artist-watermark" aria-hidden="true"><span class="artist-watermark-text">${escapeHtml(watermarkText)}</span></div>
     <div class="album-page-header">
       <button class="btn-back-nav" title="Back">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -2854,33 +3024,41 @@ export function displayArtistPage(artistKey) {
           <path d="M12 19l-7-7 7-7"/>
         </svg>
       </button>
-      <h1 class="album-page-title">${artist.name}</h1>
     </div>
-    <div class="artist-page-content">
-      <div class="artist-page-photo">
-        <img class="artist-page-photo-img" style="display: none;" alt="${artist.name}">
-        <div class="artist-photo-placeholder">\u266A</div>
+    <div class="artist-hero">
+      <div class="artist-hero-halo" aria-hidden="true"></div>
+      <div class="artist-watermark-v3 hero-watermark" aria-hidden="true">${escapeHtml(watermarkText)}</div>
+      <div class="artist-portrait">
+        <img class="artist-page-photo-img" style="display: none;" alt="${escapeHtml(artist.name)}">
+        <div class="artist-photo-placeholder">${escapeHtml((artist.name || '?').charAt(0).toUpperCase())}</div>
       </div>
-      <div class="artist-page-info">
-        <p class="artist-page-meta">
-          ${metaParts.join(' \u2022 ')}
-        </p>
-        <div class="artist-page-buttons">
-          <button class="btn-primary-small play-artist-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z"/>
-            </svg>
-            Play All
+      <div class="artist-meta-col">
+        <div class="artist-eyebrow"><span>Artist</span></div>
+        <h1 class="artist-name-xl album-page-title">${escapeHtml(artist.name)}</h1>
+        <div class="artist-stats">
+          <div class="stat"><div class="stat-val">${fullAlbumsCount}</div><div class="stat-label">Albums</div></div>
+          <div class="stat"><div class="stat-val">${totalTracks}</div><div class="stat-label">Tracks</div></div>
+          <div class="stat"><div class="stat-val">${formatTime(totalDuration)}</div><div class="stat-label">Total</div></div>
+        </div>
+        <div class="artist-actions artist-page-buttons">
+          <button class="btn-primary play-artist-btn" type="button">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+            <span>Play top tracks</span>
           </button>
-          <button class="btn-add-queue-album add-artist-queue-btn" title="Add to queue">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>
-            </svg>
+          <button class="btn-ghost shuffle-artist-btn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+            <span>Shuffle</span>
+          </button>
+          <button class="btn-ghost add-artist-queue-btn" type="button" title="Add to queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/></svg>
+            <span>Add to queue</span>
           </button>
         </div>
       </div>
     </div>
-    <div class="artist-albums-grid"></div>
+    <div class="artist-body">
+      <div class="artist-albums-grid"></div>
+    </div>
   `
 
   pageContainer.querySelector('.btn-back-nav').addEventListener('click', navigateBack)
@@ -2905,6 +3083,23 @@ export function displayArtistPage(artistKey) {
     app.showQueueNotification(`${artist.tracks.length} tracks added to queue`)
   })
 
+  const shuffleArtistBtn = pageContainer.querySelector('.shuffle-artist-btn')
+  if (shuffleArtistBtn) {
+    shuffleArtistBtn.addEventListener('click', () => {
+      if (artist.tracks.length === 0) return
+      if (!playback.shuffleMode) {
+        playback.shuffleMode = true
+        if (typeof app.updateShuffleButton === 'function') app.updateShuffleButton()
+      }
+      const firstTrack = artist.tracks[0]
+      const globalIndex = library.tracks.findIndex(t => t.path === firstTrack.path)
+      if (globalIndex !== -1) {
+        const artistTrackPaths = artist.tracks.map(t => t.path)
+        app.playTrack(globalIndex, { type: 'mix', id: artist.name, tracks: artistTrackPaths })
+      }
+    })
+  }
+
   // Load artist photo
   const img = pageContainer.querySelector('.artist-page-photo-img')
   const placeholder = pageContainer.querySelector('.artist-photo-placeholder')
@@ -2919,7 +3114,7 @@ export function displayArtistPage(artistKey) {
   })
 
   // Extract ambient color from the displayed artist photo/cover (2026 Trend 1)
-  const artistPhotoContainer = pageContainer.querySelector('.artist-page-photo')
+  const artistPhotoContainer = pageContainer.querySelector('.artist-portrait')
   const ambientArtistFallback = fallbackCoverPath || artist.sample_path || (artist.tracks.length > 0 ? artist.tracks[0].path : null)
   if (artistPhotoContainer) {
     watchForCoverAndApplyAmbient(artistPhotoContainer, ambientArtistFallback, `Artist: ${artist.name}`)

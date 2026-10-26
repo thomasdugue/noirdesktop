@@ -597,7 +597,13 @@ async function loadSentryToggleState() {
 function initSettingsPanel() {
   const btnSettings = document.getElementById('btn-settings')
   if (btnSettings) {
-    btnSettings.addEventListener('click', toggleSettingsPanel)
+    console.log('[SETTINGS] Wiring btn-settings click handler', btnSettings)
+    btnSettings.addEventListener('click', (e) => {
+      console.log('[SETTINGS] Click received!', e.target)
+      toggleSettingsPanel()
+    })
+  } else {
+    console.warn('[SETTINGS] btn-settings element NOT FOUND in DOM')
   }
 
   const closeBtn = document.getElementById('close-settings')

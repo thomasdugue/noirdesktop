@@ -44,6 +44,9 @@ export const playback = {
   // Source audio specs (mis à jour par playback_audio_specs)
   currentSourceSampleRate: null,
   currentSourceBitDepth: null,
+  // Bit-perfect flag (lu par la now-strip pour conditionner l'affichage de "Bit perfect").
+  // !specs.is_mismatch — true si source rate == output rate (pas de resampling).
+  isBitPerfect: false,
   // Contexte de lecture : détermine le comportement en fin de track/album
   // 'album'   → joué depuis une vue album/artiste → s'arrête en fin d'album (pas de saut inter-album)
   // 'library' → joué depuis la vue liste complète → lecture séquentielle globale
