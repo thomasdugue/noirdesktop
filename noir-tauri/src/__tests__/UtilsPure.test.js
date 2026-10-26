@@ -125,4 +125,25 @@ describe('escapeHtml', () => {
   test('normal text → unchanged', () => {
     expect(escapeHtml('Hello World')).toBe('Hello World')
   })
+
+  // Régression S2 (diagnostic 2026-10-26) : un guillemet dans un tag tronquait
+  // value="..." dans les formulaires d'édition → tag réécrit tronqué dans le fichier.
+  test('escapes double quotes (attribute-safe)', () => {
+    expect(escapeHtml('Live at "Venue"')).toBe('Live at &quot;Venue&quot;')
+  })
+
+  test('escapes single quotes (attribute-safe)', () => {
+    expect(escapeHtml("Rock 'n' Roll")).toBe('Rock &#39;n&#39; Roll')
+  })
+
+  test('12" Singles survives a round-trip through an HTML attribute', () => {
+    const html = `<input value="${escapeHtml('12" Singles')}">`
+    expect(html).toBe('<input value="12&quot; Singles">')
+  })
+
+  test('numbers are stringified, falsy values → empty string', () => {
+    expect(escapeHtml(1999)).toBe('1999')
+    expect(escapeHtml(undefined)).toBe('')
+    expect(escapeHtml('')).toBe('')
+  })
 })

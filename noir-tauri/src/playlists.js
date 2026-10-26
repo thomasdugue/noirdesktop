@@ -106,7 +106,7 @@ export function getFavoriteButtonHtml(trackPath) {
   const isFavorite = favorites.tracks.has(trackPath)
   return `
     <button class="track-favorite-btn ${isFavorite ? 'active' : ''}"
-            data-track-path="${trackPath}"
+            data-track-path="${escapeHtml(trackPath)}"
             title="${isFavorite ? 'Remove from favorites' : 'Add to favorites'}">
       <svg width="14" height="14" viewBox="0 0 24 24"
            fill="${isFavorite ? 'currentColor' : 'none'}"
@@ -667,7 +667,7 @@ export function displayPlaylistView(playlist) {
       const artist = track.metadata?.artist || 'Unknown Artist'
       const duration = track.metadata?.duration ? formatTime(track.metadata.duration) : '-:--'
       return `
-        <div class="playlist-track-item" data-index="${index}" data-track-path="${track.path}">
+        <div class="playlist-track-item" data-index="${index}" data-track-path="${escapeHtml(track.path)}">
           ${getFavoriteButtonHtml(track.path)}
           <span class="playlist-track-number">${index + 1}</span>
           <div class="playlist-track-info">

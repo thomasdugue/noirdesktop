@@ -302,11 +302,14 @@ export function showToast(message, type, duration) {
 
 // === HTML HELPERS ===
 
+// Sûr en contenu ET en attribut (value="", data-*="", title=""). L'ancienne version
+// (textContent → innerHTML) n'échappait pas les guillemets : un tag `Live at "Venue"`
+// tronquait value="..." et le formulaire d'édition réécrivait le tag tronqué.
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+
 export function escapeHtml(text) {
   if (!text) return ''
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
+  return String(text).replace(/[&<>"']/g, ch => HTML_ESCAPES[ch])
 }
 
 // === FORMATAGE ===

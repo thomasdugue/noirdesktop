@@ -166,7 +166,7 @@ export function updateQueueDisplay() {
 
   // Render the upcoming queue items
   queueList.innerHTML = queue.items.map((track, index) => `
-    <div class="queue-item" data-index="${index}" data-track-path="${track.path}">
+    <div class="queue-item" data-index="${index}" data-track-path="${escapeHtml(track.path)}">
       <span class="queue-drag-handle" title="Drag to reorder">⠿</span>
       <span class="queue-item-index">${index + 1}</span>
       <div class="queue-item-info">

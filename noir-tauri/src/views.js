@@ -929,12 +929,12 @@ export function displayAlbumPage(albumKey) {
           <path d="M12 19l-7-7 7-7"/>
         </svg>
       </button>
-      <h1 class="album-page-title">${album.album}</h1>
+      <h1 class="album-page-title">${escapeHtml(album.album)}</h1>
     </div>
     <div class="album-page-content">
       <div class="album-page-cover">
         ${isValidImageSrc(cover)
-          ? `<img src="${cover}" alt="${album.album}">`
+          ? `<img src="${cover}" alt="${escapeHtml(album.album)}">`
           : '<div class="album-cover-placeholder">\u266A</div>'
         }
       </div>
@@ -1144,13 +1144,13 @@ export function showAlbumDetail(albumKey, cover, clickedCard) {
     <div class="album-detail-header">
       <div class="album-detail-cover">
         ${isValidImageSrc(cover)
-          ? `<img src="${cover}" alt="${album.album}">`
+          ? `<img src="${cover}" alt="${escapeHtml(album.album)}">`
           : '<div class="album-cover-placeholder">\u266A</div>'
         }
       </div>
       <div class="album-detail-info">
-        <h2 class="album-detail-title">${album.album}</h2>
-        <p class="album-detail-artist">${album.artist}</p>
+        <h2 class="album-detail-title">${escapeHtml(album.album)}</h2>
+        <p class="album-detail-artist">${escapeHtml(album.artist)}</p>
         <p class="album-detail-meta">
           ${album.tracks.length} tracks \u2022 ${formatTime(totalDuration)}${firstTrack?.metadata?.year ? ` \u2022 ${firstTrack.metadata.year}` : ''}
           ${qualityTag ? `<span class="album-detail-tags">${qualityTag}</span>` : ''}
@@ -2473,7 +2473,7 @@ export function displayAlbumsGrid() {
           <path d="M12 19l-7-7 7-7"/>
         </svg>
       </button>
-      <h2>${ui.filteredArtist}</h2>
+      <h2>${escapeHtml(ui.filteredArtist)}</h2>
     `
     header.querySelector('.btn-back-nav').addEventListener('click', () => {
       ui.filteredArtist = null
@@ -2854,11 +2854,11 @@ export function displayArtistPage(artistKey) {
           <path d="M12 19l-7-7 7-7"/>
         </svg>
       </button>
-      <h1 class="album-page-title">${artist.name}</h1>
+      <h1 class="album-page-title">${escapeHtml(artist.name)}</h1>
     </div>
     <div class="artist-page-content">
       <div class="artist-page-photo">
-        <img class="artist-page-photo-img" style="display: none;" alt="${artist.name}">
+        <img class="artist-page-photo-img" style="display: none;" alt="${escapeHtml(artist.name)}">
         <div class="artist-photo-placeholder">\u266A</div>
       </div>
       <div class="artist-page-info">

@@ -3,7 +3,7 @@
 
 import { invoke, library } from './state.js'
 import { app } from './app.js'
-import { showToast } from './utils.js'
+import { showToast, escapeHtml } from './utils.js'
 
 // === ÉTAT DU MODULE ===
 let discoveryAbort = null
@@ -104,7 +104,7 @@ export async function populateNetworkSources() {
       item.dataset.sourceId = source.id
       item.innerHTML = `
         <div class="settings-network-status" data-status="${source.enabled ? 'connected' : 'disabled'}" title="${source.enabled ? 'Connected' : 'Disabled'}"></div>
-        <span class="settings-path-text" title="//${source.host}/${source.share}${source.remote_path}">
+        <span class="settings-path-text" title="//${escapeHtml(source.host)}/${escapeHtml(source.share)}${escapeHtml(source.remote_path)}">
           ${escapeHtml(source.name)} — //${escapeHtml(source.host)}/${escapeHtml(source.share)}
         </span>
         <button class="settings-network-sync" title="Re-index" data-source-id="${source.id}">
@@ -866,10 +866,3 @@ async function saveNetworkSource(modal, state) {
   }
 }
 
-// === HELPERS ===
-
-function escapeHtml(str) {
-  const div = document.createElement('div')
-  div.textContent = str
-  return div.innerHTML
-}

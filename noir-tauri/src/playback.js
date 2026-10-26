@@ -1433,7 +1433,7 @@ export async function loadAudioDevices() {
 
       item.innerHTML = `
         <div class="audio-output-item-info">
-          <div class="audio-output-item-name">${device.name}${transportBadge}</div>
+          <div class="audio-output-item-name">${escapeHtml(device.name)}${transportBadge}</div>
           <div class="audio-output-item-details">
             ${sampleRate}${supportedRatesHtml}${airplayWarning}${bpBadge}
           </div>

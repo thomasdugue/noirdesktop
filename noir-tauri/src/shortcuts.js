@@ -418,7 +418,7 @@ function showHeartAnimation() {
 // Update the favorite icon in the player for a given track
 function updatePlayerFavoriteIcon(trackPath, isFavorite) {
   // Find all visible favorite buttons for this track
-  const buttons = document.querySelectorAll(`.btn-favorite[data-track-path="${trackPath}"]`)
+  const buttons = document.querySelectorAll(`.btn-favorite[data-track-path="${CSS.escape(trackPath)}"]`)
   buttons.forEach(btn => {
     btn.classList.toggle('active', isFavorite)
     const svg = btn.querySelector('svg')

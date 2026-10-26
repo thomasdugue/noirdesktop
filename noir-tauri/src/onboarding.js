@@ -4,7 +4,7 @@
 
 import { library, dom, ui, invoke, listen } from './state.js'
 import { app } from './app.js'
-import { showToast } from './utils.js'
+import { showToast, escapeHtml as esc } from './utils.js'
 
 // === État local au module ===
 let onboardingActive = false
@@ -961,13 +961,4 @@ function skipOnboarding() {
   const openBtn = document.getElementById('open-folder-welcome')
   if (setupBtn) setupBtn.style.display = ''
   if (openBtn) openBtn.style.display = 'none'
-}
-
-// ==========================================
-// Utility
-// ==========================================
-function esc(str) {
-  const div = document.createElement('div')
-  div.textContent = str || ''
-  return div.innerHTML
 }

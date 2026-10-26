@@ -51,12 +51,13 @@ globalThis.document = {
     return {
       get textContent() { return _text },
       set textContent(v) { _text = String(v ?? '') },
+      // Fidèle au navigateur : la sérialisation d'un nœud texte n'échappe que & < >
+      // (PAS les guillemets). L'ancien stub échappait " et masquait le bug escapeHtml.
       get innerHTML() {
         return _text
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
       },
       set innerHTML(v) { _text = v },
       classList: { add() {}, remove() {}, toggle() {}, contains() { return false } },
