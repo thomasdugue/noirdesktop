@@ -12,7 +12,7 @@ import { invoke } from './state.js'
 import { app } from './app.js'
 
 // Utilitaires
-import { showToast } from './utils.js'
+import { showToast, escapeHtml } from './utils.js'
 
 // Auto-update
 import { initAutoUpdate } from './auto-update.js'
@@ -406,8 +406,8 @@ async function populateSettingsLibraryPaths() {
       const item = document.createElement('div')
       item.className = 'settings-path-item'
       item.innerHTML = `
-        <span class="settings-path-text" title="${p}">${p}</span>
-        <button class="settings-path-remove" title="Remove this folder" data-path="${p}">
+        <span class="settings-path-text" title="${escapeHtml(p)}">${escapeHtml(p)}</span>
+        <button class="settings-path-remove" title="Remove this folder" data-path="${escapeHtml(p)}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
           </svg>

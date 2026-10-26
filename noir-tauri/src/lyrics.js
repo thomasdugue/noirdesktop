@@ -3,6 +3,7 @@
 
 import { ui, playback, library } from './state.js'
 import { app } from './app.js'
+import { escapeHtml } from './utils.js'
 
 // === STATE INTERNE ===
 
@@ -243,10 +244,6 @@ function renderLyrics(result) {
   const fsEl = document.getElementById('fs-lyrics-lines')
   if (panelEl) panelEl.innerHTML = html
   if (fsEl) fsEl.innerHTML = html
-}
-
-function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 // === SYNC EN TEMPS RÉEL ===
