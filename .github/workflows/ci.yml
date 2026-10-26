@@ -1,0 +1,76 @@
+name: CI
+
+# Filet anti-régression : syntaxe JS + Jest + cargo test sur chaque PR vers main.
+# Les noms de jobs (js, rust) sont référencés par la protection de branche — ne pas les renommer.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  js:
+    name: js
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: noir-tauri
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: noir-tauri/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check (node --check)
+        run: for f in src/*.js; do node --check "$f" || exit 1; done
+
+      - name: Jest
+        run: npm test -- --watchAll=false --ci
+
+  rust:
+    name: rust
+    # macOS obligatoire : coreaudio-rs / coreaudio-sys / souvlaki sont cfg(target_os = "macos")
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: noir-tauri/src-tauri
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install libsmbclient (pavao-sys via pkg-config)
+        run: brew install samba
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          workspaces: noir-tauri/src-tauri
+
+      # Toutes les cibles : tests unitaires + les 8 fichiers d'intégration de tests/.
+      # Aucun secret requis : option_env!() renvoie None → Sentry / worker inactifs.
+      - name: cargo test
+        run: cargo test --locked
