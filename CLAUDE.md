@@ -53,6 +53,9 @@ for f in src/*.js; do node --check "$f" && echo "OK: $f"; done
 npm test -- --watchAll=false                                    # All
 npm test -- --watchAll=false --testPathPattern=FormatDisplay     # Single file
 
+# CI (.github/workflows/ci.yml) — à chaque PR vers main : node --check + Jest (ubuntu) + cargo test (macOS)
+# main est protégée : merge uniquement si les checks `js` et `rust` sont verts
+
 # Worker Cloudflare (proxy feedback + Sentry)
 cd scripts && wrangler deploy        # Re-deploy après modif cloudflare-worker.js
 wrangler secret put SENTRY_AUTH_TOKEN # Set/update les secrets côté Cloudflare (idem GITHUB_TOKEN, NOIR_SECRET)

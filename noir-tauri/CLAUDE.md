@@ -19,12 +19,14 @@ for f in src/*.js; do node --check "$f" && echo "OK: $f"; done
 There is no JS linter config and no bundler. The frontend is served as-is from `src/` (`tauri.conf.json` → `frontendDist: "../src"`).
 
 ```bash
-# JS tests (Jest, 4 test files in src/__tests__/)
+# JS tests (Jest, 13 test files in src/__tests__/)
 npm test -- --watchAll=false          # Run once
 npm test -- --watchAll=false --testPathPattern=FormatDisplay  # Single test file
 ```
 
-Test files: `FormatDisplay.test.js`, `Navigation.test.js`, `PlayerControls.test.js`, `AlbumView.test.js`. Many tests are skipped (require Tauri `invoke` which isn't available in Node test environment).
+13 test files (137 pass / 14 skipped au 2026-10-26). `Navigation.test.js`, `PlayerControls.test.js`, `AlbumView.test.js` sont entièrement skippés (require Tauri `invoke` which isn't available in Node test environment).
+
+**CI** : `.github/workflows/ci.yml` lance `node --check` + Jest (ubuntu) et `cargo test --locked` (macOS, avec `brew install samba` pour pavao) sur chaque PR vers `main`.
 
 The `.claude/launch.json` entry (name: `"noir-tauri"`) runs `npm run tauri dev` with env vars sourced from `scripts/.env.local`. Used by `preview_start` to start the dev server in Claude sessions. The native window opens; there is no browser URL to preview.
 
