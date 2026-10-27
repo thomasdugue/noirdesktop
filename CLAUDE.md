@@ -18,6 +18,8 @@ noir-tauri/             Main app (all development happens here)
   scripts/              Build scripts (dev.sh, release.sh, cloudflare-worker.js), .env.local (gitignored — compile-time secrets)
   CLAUDE.md             ⚠️ Guide de travail (sommaire court) — READ THIS FIRST for any code work
   .claude/skills/       Skills Hean : hean-invariants, hean-audio, hean-smb, hean-frontend, hean-ops, hean-release
+.claude/agents/         Agents projet : test-runner (tests + résumé), invariant-guardian (relecture du diff vs invariants)
+.claude/hooks/          invariant-reminder.sh (hook Stop : propose une nouvelle règle quand du code change)
 docs/                   Specs, beta launch guide, archived features, BETA_TESTERS_GUIDE.md, BETA_KNOWN_ISSUES.md, HISTORY.md (historique des sessions)
 docs/index.html         Dev dashboard (GitHub Pages → thomasdugue.github.io/noirdesktop/) — Sentry + GitHub issues mergées avec workflows Plan détaillé
 .github/workflows/      feedback-agent.yml, sprint-plan.yml, sprint-synthesis.yml (utilisent secret repo NOIR_GITHUB_TOKEN)
@@ -89,7 +91,8 @@ Key routing rules:
 - Bugs, errors, "why is this broken", 500 errors → invoke investigate
 - Ship, deploy, push, create PR → invoke ship
 - QA, test the site, find bugs → invoke qa
-- Code review, check my diff → invoke review
+- Code review, check my diff → invoke review + agent invariant-guardian
+- Lancer / vérifier les tests → agent test-runner
 - Update docs after shipping → invoke document-release
 - Weekly retro → invoke retro
 - Design system, brand → invoke design-consultation

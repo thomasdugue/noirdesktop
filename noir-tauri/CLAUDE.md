@@ -13,6 +13,8 @@ Guide de travail pour Claude Code sur Hean. Ce fichier est volontairement **cour
 | Feedback, Sentry, logs, worker Cloudflare, dashboard, workflows GitHub | `hean-ops` |
 | Build release, signature, notarisation, updater | `hean-release` |
 
+**Agents** (`.claude/agents/` à la racine du repo) : `test-runner` (lance tous les tests, résumé court, ne corrige rien) · `invariant-guardian` (relit un diff contre `hean-invariants`, verdict BLOQUANT / AVERTISSEMENT / OK, lecture seule).
+
 Historique des sessions : [`docs/HISTORY.md`](../docs/HISTORY.md).
 
 ## Commands
@@ -28,7 +30,7 @@ npm test -- --watchAll=false           # Jest (13 fichiers, src/__tests__/)
 npm test -- --watchAll=false --testPathPattern=FormatDisplay      # un seul fichier
 ```
 
-Pas de bundler, pas de linter JS : `src/` est servi tel quel (`frontendDist: "../src"`). Pas de devUrl : `preview_start` (`.claude/launch.json`, entrée `"noir-tauri"`) ouvre une fenêtre macOS native, pas une URL navigateur. Jest : 137 pass / 14 skipped (2026-10-26) — `Navigation`, `PlayerControls`, `AlbumView` sont skippés (besoin de `invoke` Tauri). **CI** (`.github/workflows/ci.yml`) : `node --check` + Jest (ubuntu) et `cargo test --locked` (macOS) sur chaque PR vers `main`.
+Pas de bundler, pas de linter JS : `src/` est servi tel quel (`frontendDist: "../src"`). Pas de devUrl : `preview_start` (`.claude/launch.json`, entrée `"noir-tauri"`) ouvre une fenêtre macOS native, pas une URL navigateur. Jest : 141 pass / 14 skipped (2026-10-27) — `Navigation`, `PlayerControls`, `AlbumView` sont skippés (besoin de `invoke` Tauri). **CI** (`.github/workflows/ci.yml`) : `node --check` + Jest (ubuntu) et `cargo test --locked` (macOS) sur chaque PR vers `main`.
 
 ## Architecture
 
@@ -126,9 +128,9 @@ await transitionView(async () => { await displayHomeView() })  // async ; render
 
 ## Protocole de session
 
-**Début** : (1) lire ce fichier + le skill de la zone · (2) `cargo check` · (3) `cargo test` · (4) `npm test -- --watchAll=false` · (5) `node --check` sur `src/*.js` — noter X pass / Y fail. Si des tests échouent AVANT de commencer → le signaler, on corrige d'abord.
+**Début** : (1) lire ce fichier + le skill de la zone · (2) lancer l'agent `test-runner` (node --check, Jest, cargo test) — noter X pass / Y fail. Si des tests échouent AVANT de commencer → le signaler, on corrige d'abord.
 
-**Fin** : relancer `cargo test` + `npm test` et comparer au début. Un test qui passait et échoue = RÉGRESSION → corriger avant de terminer. Mettre à jour « Bugs connus » ci-dessous, ajouter une entrée dans `docs/HISTORY.md`, et si une nouvelle règle est née, l'ajouter à `hean-invariants` (+ une ligne au résumé ci-dessus). Un hook Stop (`.claude/hooks/invariant-reminder.sh`) le rappelle automatiquement quand du code a changé sans que `hean-invariants` ait bougé. Commit « [tâche du jour] terminée ».
+**Fin** : relancer `test-runner` et comparer au début, puis `invariant-guardian` sur le diff (un verdict BLOQUANT = corriger avant la PR). Un test qui passait et échoue = RÉGRESSION → corriger avant de terminer. Mettre à jour « Bugs connus » ci-dessous, ajouter une entrée dans `docs/HISTORY.md`, et si une nouvelle règle est née, l'ajouter à `hean-invariants` (+ une ligne au résumé ci-dessus). Un hook Stop (`.claude/hooks/invariant-reminder.sh`) le rappelle automatiquement quand du code a changé sans que `hean-invariants` ait bougé. Commit « [tâche du jour] terminée ».
 
 ## Specs détaillées
 

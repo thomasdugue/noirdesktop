@@ -34,7 +34,29 @@ Source de vérité des invariants (le CLAUDE.md n'en garde qu'un résumé d'une 
 
 ## Gravité (utilisée pour décider si un diff peut être mergé)
 
-<!-- TODO(human): classer chaque invariant ci-dessus en BLOQUANT (le merge est refusé) ou AVERTISSEMENT (on signale, Thomas décide). -->
+Classement décidé par Thomas le 2026-10-27. Critère : ce que vit le testeur si la règle casse. Perte de données, app inutilisable, risque légal ou sécurité → BLOQUANT. Défaut visuel ou gênant mais réparable → AVERTISSEMENT. Une nouvelle règle ajoutée sans gravité est BLOQUANT par défaut jusqu'à ce que Thomas la classe.
+
+**🔴 BLOQUANT** — le merge est refusé :
+- **Un album = une seule entrée dans `library.albums`** (un album coupé en deux est inacceptable pour les testeurs)
+- **SMB : connexion périmée = retry automatique**
+- **SMB : credentials = gestion d'erreur explicite** (mot de passe vide → risque de verrouillage du compte NAS)
+- **Suppression de tracks = PERMANENTE**
+- **Métadonnées éditées = écrites dans le fichier audio**
+- **METADATA_CACHE : UPDATE, jamais REMOVE**
+- **`start_background_scan()` : re-application METADATA_CACHE**
+- **METADATA_CACHE : jamais de stale data**
+- **Sentry `before_send` drop les events si `SENTRY_ENABLED` est false** (RGPD)
+- **`option_env!()` pour TOUS les secrets compile-time**
+- **`dylibbundler` suivi du fix LC_RPATH dupliqués** (sinon crash au lancement)
+
+**🟡 AVERTISSEMENT** — signalé, Thomas décide :
+- **Pas de duplication visuelle sur la homepage**
+- **SMB : propagation d'erreur du thread de download** (seul le message d'erreur se dégrade)
+- **Playlist mosaic covers : déduplication par album seul**
+- **Playlist mosaic covers : fallback internet OBLIGATOIRE**
+- **Playlist mosaic sidebar : positionnement absolu (pas Grid) pour le 28×28**
+- **Playlist mosaic sidebar : rebuild automatique après chargement async**
+- **Boutons 'Add to Queue' / 'Add to Playlist' au survol** (toujours accessibles par clic droit)
 
 ## Décisions techniques actées
 
