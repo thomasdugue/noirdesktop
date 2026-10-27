@@ -267,6 +267,9 @@ static COVER_CACHE: Lazy<Mutex<CoverCache>> = Lazy::new(|| {
 
 // Flag pour savoir si le cache a été modifié
 static CACHE_DIRTY: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
+// Sérialise les écritures de tags : write_metadata tourne hors main thread, deux
+// sauvegardes rapides de la même piste ne doivent jamais écrire le fichier en parallèle.
+static WRITE_METADATA_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 // Cache des pochettes non trouvées sur Internet
 static INTERNET_NOT_FOUND_CACHE: Lazy<Mutex<InternetCoverNotFoundCache>> = Lazy::new(|| {
@@ -2218,8 +2221,29 @@ fn refresh_metadata(path: &str) -> Metadata {
 // pour garantir la persistance même si l'utilisateur quitte l'app rapidement
 // ou si l'écriture NAS échoue. Cela permet au pattern fire-and-forget côté JS
 // de fonctionner correctement : le cache disque a toujours les bonnes métadonnées.
+//
+// Commande async (thread bloquant) : pour une piste NAS, le corps lit le mot de passe
+// dans le Keychain (dialogue macOS possible), télécharge puis ré-uploade le fichier
+// complet. Sur le main thread, l'UI restait gelée pendant toute l'opération.
 #[tauri::command]
-fn write_metadata(
+async fn write_metadata(
+    path: String,
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    year: Option<u32>,
+    track_number: Option<u32>,
+    genre: Option<String>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let _guard = WRITE_METADATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        write_metadata_internal(path, title, artist, album, year, track_number, genre)
+    })
+    .await
+    .map_err(|e| format!("write_metadata task failed: {}", e))?
+}
+
+fn write_metadata_internal(
     path: String,
     title: Option<String>,
     artist: Option<String>,
@@ -2493,8 +2517,19 @@ fn get_cover_smb(smb_path: &str) -> Option<String> {
 }
 
 // Obtenir la pochette (depuis le cache ou lecture fichier)
+//
+// Commande async : le corps tourne sur un thread bloquant, PAS sur le main thread.
+// Une commande Tauri non-async s'exécute sur le main thread → pour une piste NAS,
+// get_cover_smb fait une résolution mDNS + connexion SMB ; NAS éteint = ~5 s de
+// timeout par pochette pendant lesquelles toute l'UI est gelée.
 #[tauri::command]
-fn get_cover(path: &str) -> Option<String> {
+async fn get_cover(path: String) -> Option<String> {
+    tokio::task::spawn_blocking(move || get_cover_internal(&path))
+        .await
+        .unwrap_or(None)
+}
+
+fn get_cover_internal(path: &str) -> Option<String> {
     // Délègue aux fonctions SMB pour les paths réseau
     if path.starts_with("smb://") {
         return get_cover_smb(path);
@@ -2860,7 +2895,7 @@ async fn fetch_artist_image(artist: String, fallback_album: Option<String>, fall
     // 4. Dernier fallback: pochette locale (déjà en cache depuis le fichier audio)
     if let Some(cover_path) = fallback_cover_path {
         // Essaie de récupérer la pochette depuis le cache local ou le fichier audio
-        if let Some(cover) = get_cover(&cover_path) {
+        if let Some(cover) = get_cover_internal(&cover_path) {
             return Some(cover);
         }
     }
