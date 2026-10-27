@@ -47,8 +47,14 @@ const SOURCE_BRANCH     = 'main'
 const args      = process.argv.slice(2)
 const planFlag  = args.indexOf('--plan')
 const synthFlag = args.indexOf('--synth')
+const modelFlag = args.indexOf('--model')
 const planMode  = planFlag !== -1
 const synthMode = synthFlag !== -1
+
+// --model <id> → set FORCE_MODEL pour que pickModel() le respecte.
+if (modelFlag !== -1 && args[modelFlag + 1]) {
+  process.env.FORCE_MODEL = args[modelFlag + 1].trim()
+}
 
 function parsePlanIds(raw) {
   if (!raw) return []
@@ -342,9 +348,62 @@ Réponds UNIQUEMENT en JSON strict (sans markdown) :
   }
 }
 
+// ── Router de modèle par complexité ───────────────────────────────────────────
+// Score 0-100 → Haiku (trivial) / Sonnet (standard) / Opus (complexe).
+// Overridable via env FORCE_MODEL ou CLI --model (lu dans main()).
+
+const COMPLEXITY_LABELS = new Set([
+  'crash', 'security', 'rust', 'audio', 'refactor', 'architecture', 'multi-module',
+  'performance', 'high-risk',
+])
+const COMPLEXITY_KEYWORDS = [
+  'refactor', 'rewrite', 'migrate', 'migration', 'redesign', 'architecture',
+  'overhaul', 'breaking change', 'major rework',
+]
+
+function scoreComplexity(issues) {
+  let score = 0
+  score += Math.min(issues.length * 8, 32)
+  const totalBody = issues.reduce((a, i) => a + (i.body?.length || 0), 0)
+  score += Math.min(totalBody / 200, 25)
+  const sentryCount = issues.filter(i => i._isSentry).length
+  score += Math.min(sentryCount * 10, 20)
+  const hasHighLabel = issues.some(i =>
+    (i.labels || []).some(l => COMPLEXITY_LABELS.has((l.name || l || '').toLowerCase()))
+  )
+  if (hasHighLabel) score += 20
+  const hasKeyword = issues.some(i => {
+    const txt = ((i.title || '') + ' ' + (i.body || '')).toLowerCase()
+    return COMPLEXITY_KEYWORDS.some(k => txt.includes(k))
+  })
+  if (hasKeyword) score += 15
+  return Math.round(Math.min(score, 100))
+}
+
+function pickModel(issues) {
+  const forced = process.env.FORCE_MODEL?.trim()
+  const score = scoreComplexity(issues)
+  const auto = score <= 20 ? 'claude-haiku-4-5'
+            : score <= 50 ? 'claude-sonnet-4-7'
+            : 'claude-opus-4-7'
+  const model = forced || auto
+  const parts = [`${issues.length} issue${issues.length > 1 ? 's' : ''}`]
+  const sentry = issues.filter(i => i._isSentry).length
+  if (sentry) parts.push(`${sentry} Sentry`)
+  const kb = Math.round(issues.reduce((a,i) => a + (i.body?.length||0), 0) / 1024)
+  if (kb >= 1) parts.push(`${kb}KB`)
+  const labels = [...new Set(
+    issues.flatMap(i => (i.labels || []).map(l => (l.name || l || '').toLowerCase()))
+         .filter(l => COMPLEXITY_LABELS.has(l))
+  )]
+  if (labels.length) parts.push(`labels:${labels.slice(0,3).join(',')}`)
+  const reason = `score ${score}/100 — ${parts.join(', ')}`
+  return { model, auto, score, forced: !!forced, reason }
+}
+
 // ── MODE 2 : Plan d'implémentation détaillé ───────────────────────────────────
 
-async function detailedPlan(issue) {
+async function detailedPlan(issue, model = 'claude-opus-4-7') {
   const idLine = issue._isSentry
     ? `Crash Sentry [${issue.number}] : ${issue.title}`
     : `Issue #${issue.number} : ${issue.title}`
@@ -403,15 +462,15 @@ Réponds UNIQUEMENT en JSON strict (pas de markdown, pas de texte avant/après).
 }`
 
   try {
+    const isOpus = model.startsWith('claude-opus-')
     const msg = await anthropic.messages.create({
-      model: 'claude-opus-4-7',
+      model,
       max_tokens: 16000,
-      // Adaptive thinking : Opus 4.7 décide quand/combien réfléchir.
-      // Sur 4.7, c'est le seul mode supporté (budget_tokens = 400).
-      thinking: { type: 'adaptive' },
-      // xhigh = recommandé par Anthropic pour les tâches de coding/agentic
-      // (entre high et max). Effort matters more sur 4.7 que sur tout Opus précédent.
-      output_config: { effort: 'xhigh' },
+      // Adaptive thinking + effort xhigh : features Opus 4.7-spécifiques.
+      // Sonnet/Haiku ne supportent pas output_config, et leur thinking est 'enabled' avec budget.
+      ...(isOpus
+        ? { thinking: { type: 'adaptive' }, output_config: { effort: 'xhigh' } }
+        : {}),
       messages: [{
         role: 'user',
         content: [
@@ -634,12 +693,15 @@ async function main() {
       process.exit(1)
     }
 
-    console.log(`\n🧠 Plans détaillés (claude-opus-4-7 + adaptive thinking) pour ${targets.length} issues...`)
+    const picked = pickModel(targets)
+    const sourceLabel = picked.forced ? 'forcé' : 'auto'
+    console.log(`\n🧠 Modèle : ${picked.model} (${sourceLabel}, ${picked.reason})`)
+    console.log(`   Plans détaillés pour ${targets.length} issue(s)...`)
     const planResults = []
     for (const issue of targets) {
       const tag = issue._isSentry ? `[Sentry ${issue.number}]` : `#${issue.number}`
       console.log(`  → ${tag} : ${issue.title.slice(0,60)}`)
-      const plan = await detailedPlan(issue)
+      const plan = await detailedPlan(issue, picked.model)
       planResults.push({ issue, plan })
       if (plan) console.log(`    ✅ ${plan.steps.length} étapes`)
       await new Promise(r => setTimeout(r, 500))

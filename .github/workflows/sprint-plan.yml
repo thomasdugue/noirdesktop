@@ -6,6 +6,16 @@ on:
       issues:
         description: "Issue numbers (comma-separated, e.g. 8,12,13)"
         required: true
+      model:
+        description: "Modèle (auto = détection par complexité ; sinon override)"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - claude-haiku-4-5
+          - claude-sonnet-4-7
+          - claude-opus-4-7
 
 jobs:
   plan:
@@ -33,7 +43,13 @@ jobs:
           NOIR_FEEDBACK_REPO: thomasdugue/noir-feedback
           NOIR_WORKER_SECRET: ${{ secrets.NOIR_WORKER_SECRET }}
           ISSUES_INPUT: ${{ github.event.inputs.issues }}
-        run: node sprint-planner.js --plan "$ISSUES_INPUT"
+          MODEL_INPUT: ${{ github.event.inputs.model }}
+        run: |
+          if [ -n "$MODEL_INPUT" ] && [ "$MODEL_INPUT" != "auto" ]; then
+            node sprint-planner.js --plan "$ISSUES_INPUT" --model "$MODEL_INPUT"
+          else
+            node sprint-planner.js --plan "$ISSUES_INPUT"
+          fi
         working-directory: noir-tauri/scripts
 
       - name: Upload SPRINT.md
