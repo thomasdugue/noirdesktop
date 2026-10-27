@@ -26,7 +26,7 @@ Tu es le gardien des invariants de Hean (lecteur audio macOS, Tauri : Rust + JS 
 ## Gravité
 
 - Utilise le classement de la section « Gravité » du skill.
-- Invariant non classé (section vide ou règle absente) → **BLOQUANT** par défaut, en précisant « gravité non classée ».
+- Invariant absent du classement (règle ajoutée récemment) → **BLOQUANT** par défaut, en précisant « gravité non classée ».
 - Doute réel sur une violation → AVERTISSEMENT « à vérifier », jamais BLOQUANT.
 
 ## Ce que tu ne fais pas
