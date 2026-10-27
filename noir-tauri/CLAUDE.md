@@ -128,7 +128,7 @@ await transitionView(async () => { await displayHomeView() })  // async ; render
 
 **Début** : (1) lire ce fichier + le skill de la zone · (2) `cargo check` · (3) `cargo test` · (4) `npm test -- --watchAll=false` · (5) `node --check` sur `src/*.js` — noter X pass / Y fail. Si des tests échouent AVANT de commencer → le signaler, on corrige d'abord.
 
-**Fin** : relancer `cargo test` + `npm test` et comparer au début. Un test qui passait et échoue = RÉGRESSION → corriger avant de terminer. Mettre à jour « Bugs connus » ci-dessous, ajouter une entrée dans `docs/HISTORY.md`, et si une nouvelle règle est née, l'ajouter à `hean-invariants` (+ une ligne au résumé ci-dessus). Commit « [tâche du jour] terminée ».
+**Fin** : relancer `cargo test` + `npm test` et comparer au début. Un test qui passait et échoue = RÉGRESSION → corriger avant de terminer. Mettre à jour « Bugs connus » ci-dessous, ajouter une entrée dans `docs/HISTORY.md`, et si une nouvelle règle est née, l'ajouter à `hean-invariants` (+ une ligne au résumé ci-dessus). Un hook Stop (`.claude/hooks/invariant-reminder.sh`) le rappelle automatiquement quand du code a changé sans que `hean-invariants` ait bougé. Commit « [tâche du jour] terminée ».
 
 ## Specs détaillées
 
