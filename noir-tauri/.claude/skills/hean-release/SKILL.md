@@ -5,6 +5,45 @@ description: Use when building, signing, notarizing, or shipping a Hean release/
 
 # hean-release — orchestration build & beta launch
 
+> ⚠️ **Pipeline actuel = section ci-dessous (source de vérité, ex-CLAUDE.md).** Les étapes 0 à 5 plus bas datent d'avant le Cloudflare Worker : `NOIR_GITHUB_FEEDBACK_TOKEN` n'existe plus (le code lit `NOIR_WORKER_URL` + `NOIR_WORKER_SECRET`), et il ne faut **jamais** lancer `npm run tauri build` à nu — passer par `scripts/release.sh`, puis dylibbundler + fix LC_RPATH + notarisation du DMG. En cas de conflit, la section ci-dessous l'emporte.
+
+## Release pipeline — Apple signing + notarisation + updater
+
+**Scripts wrappers** :
+- `scripts/dev.sh` : source `.env.local`, vérifie le DSN chargé, relance `npm install` si `node_modules` absent, lance `npm run tauri dev`. Évite le piège `option_env!` silencieux en mode dev.
+- `scripts/release.sh` : source `.env.local`, valide les **6 vars requises** (`HEAN_SENTRY_DSN`, `APPLE_*`, `TAURI_SIGNING_PRIVATE_KEY`), vérifie le certificat Apple dans Keychain, run cargo + JS tests, build release. Vérifie codesign + spctl à la fin.
+
+**Pipeline complet (dans l'ordre, 6 étapes)** :
+1. `cargo build --release` (LTO, ~5 min) → produit `Hean.app`
+2. **Bundle dylibs externes** via `dylibbundler -b -x <bin> -d <Frameworks/> -p @executable_path/../Frameworks/ -cd`. Embarque ~92 dylibs Samba dépendances de `libsmbclient` (sinon l'app crash sur les Macs sans Homebrew).
+3. **Fix doublons LC_RPATH** : `dylibbundler` ajoute un rpath à chaque dylib mais certaines en avaient déjà un de Homebrew → doublons → macOS dyld refuse (depuis Big Sur). Boucle `install_name_tool -delete_rpath @executable_path/../Frameworks/` sur les ~66 dylibs concernées.
+4. Re-sign chaque dylib + l'app entière avec `--force --sign $APPLE_SIGNING_IDENTITY --options runtime --timestamp`
+5. **Notariser l'app** via `xcrun notarytool submit ... --wait` (~2-5 min) puis `xcrun stapler staple`
+6. Créer DMG via `hdiutil create -volname "Hean" -format UDZO`, signer le DMG, **notariser le DMG aussi** (sinon Gatekeeper refuse même si l'app à l'intérieur est notarisée), stapler
+7. Tarball updater : `tar -czf Hean.app.tar.gz Hean.app` + `tauri signer sign --private-key $TAURI_SIGNING_PRIVATE_KEY --password $TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+8. Publier sur GitHub Releases : DMG, `.app.tar.gz`, `.app.tar.gz.sig`, `latest.json` (le fichier consulté par l'updater)
+
+**Tauri updater** :
+- Endpoint : `https://github.com/thomasdugue/noirdesktop/releases/latest/download/latest.json` (typo `tdugue/noir-desktop` corrigée 2026-05-01)
+- Pubkey minisign dans `tauri.conf.json` doit matcher la clé privée dans `~/.tauri/hean.key` (regénérée 2026-05-01 sans password — l'ancienne avait un password inconnu)
+- Si on régénère la clé : il faut **rebuilder l'app** pour que la nouvelle pubkey soit embarquée, sinon les futurs updates signés seront rejetés par les apps déjà installées
+
+**`.env.local` requis** (`scripts/.env.local`, gitignored) :
+```
+HEAN_SENTRY_DSN=...
+NOIR_WORKER_URL=https://noir-feedback.<sub>.workers.dev
+NOIR_WORKER_SECRET=...
+APPLE_SIGNING_IDENTITY="Developer ID Application: Thomas Dugué (XXXXXXXXXX)"
+APPLE_TEAM_ID=...
+APPLE_ID=thomas.dugue@gmail.com
+APPLE_PASSWORD=xxxx-xxxx-xxxx-xxxx          # App-Specific Password Apple, pas le mdp Apple ID
+TAURI_SIGNING_PRIVATE_KEY=...               # contenu du fichier ~/.tauri/hean.key
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD=...      # password de la clé minisign si chiffrée
+```
+
+⚠️ **NE JAMAIS commit `.env.local`** (gitignored par `.env*` racine + `*.local` dans `noir-tauri/.gitignore`). Permissions `chmod 600` recommandé.
+
+
 ## Pourquoi ce skill existe
 
 Hean injecte **6 secrets à la compile-time** via `option_env!()`. Une variable absente ou mal nommée → `option_env!()` retourne `None` **silencieusement** : le binaire est livré sans Sentry, sans feedback token, sans signature. Ce skill empêche ce piège.

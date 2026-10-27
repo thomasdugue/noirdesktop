@@ -16,15 +16,16 @@ noir-tauri/             Main app (all development happens here)
   src-tauri/            Rust backend — Tauri commands, audio engine, observability
   src-tauri/src/        Core Rust source (lib.rs = Tauri commands, audio/, network/, sentry_init.rs, logging.rs)
   scripts/              Build scripts (dev.sh, release.sh, cloudflare-worker.js), .env.local (gitignored — compile-time secrets)
-  CLAUDE.md             ⚠️ DETAILED architecture guide — READ THIS FIRST for any code work
-docs/                   Specs, beta launch guide, archived features, BETA_TESTERS_GUIDE.md, BETA_KNOWN_ISSUES.md
+  CLAUDE.md             ⚠️ Guide de travail (sommaire court) — READ THIS FIRST for any code work
+  .claude/skills/       Skills Hean : hean-invariants, hean-audio, hean-smb, hean-frontend, hean-ops, hean-release
+docs/                   Specs, beta launch guide, archived features, BETA_TESTERS_GUIDE.md, BETA_KNOWN_ISSUES.md, HISTORY.md (historique des sessions)
 docs/index.html         Dev dashboard (GitHub Pages → thomasdugue.github.io/noirdesktop/) — Sentry + GitHub issues mergées avec workflows Plan détaillé
 .github/workflows/      feedback-agent.yml, sprint-plan.yml, sprint-synthesis.yml (utilisent secret repo NOIR_GITHUB_TOKEN)
 .github/ISSUE_TEMPLATE/ beta-bug-report.md
 research/               Market analysis, feature assessments
 ```
 
-**The detailed CLAUDE.md is at `noir-tauri/CLAUDE.md`.** It contains architecture, state management patterns, critical invariants, audio pipeline details, observability stack (Sentry + tracing), Apple signing pipeline, and session history. Always read it before making changes.
+**The detailed CLAUDE.md is at `noir-tauri/CLAUDE.md`.** C'est un sommaire court (architecture, state, patterns critiques, résumé des invariants, protocole de session) qui indique quel skill `hean-*` charger selon la zone touchée. Le détail (audio, SMB, UI, ops, release, invariants complets) vit dans `noir-tauri/.claude/skills/`. Always read it before making changes.
 
 ## Build commands
 
@@ -38,7 +39,7 @@ npm run tauri dev                    # À nu — risque que les secrets compile-
 # Release signé + notarisé (recommandé pour distribution)
 ./scripts/release.sh                 # Valide les 6 env vars requises, signe, notarise app+DMG, vérifie spctl
                                      # Étapes manuelles APRÈS : dylibbundler + fix LC_RPATH + tarball updater
-                                     # (voir noir-tauri/CLAUDE.md → "Release pipeline")
+                                     # (voir skill hean-release → "Release pipeline")
 
 # Rust only (from noir-tauri/src-tauri/)
 cargo check                          # Type-check (fast)
