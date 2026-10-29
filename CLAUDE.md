@@ -19,7 +19,7 @@ noir-tauri/             Main app (all development happens here)
   CLAUDE.md             ⚠️ Guide de travail (sommaire court) — READ THIS FIRST for any code work
   .claude/skills/       Skills Hean : hean-invariants, hean-audio, hean-smb, hean-frontend, hean-ops, hean-release
 .claude/agents/         Agents projet : test-runner (tests + résumé), invariant-guardian (relecture du diff vs invariants)
-.claude/hooks/          invariant-reminder.sh (hook Stop : propose une nouvelle règle quand du code change)
+.claude/hooks/          invariant-reminder.sh (Stop : propose une nouvelle règle), guard-secrets.sh (PreToolUse : bloque lecture/écriture de .env.local et des clés), js-syntax-check.sh (PostToolUse : node --check après chaque edit JS), session-context.sh (SessionStart : état du workspace)
 docs/                   Specs, beta launch guide, archived features, BETA_TESTERS_GUIDE.md, BETA_KNOWN_ISSUES.md, HISTORY.md (historique des sessions)
 docs/index.html         Dev dashboard (GitHub Pages → thomasdugue.github.io/noirdesktop/) — Sentry + GitHub issues mergées avec workflows Plan détaillé
 .github/workflows/      feedback-agent.yml, sprint-plan.yml, sprint-synthesis.yml (utilisent secret repo NOIR_GITHUB_TOKEN)
