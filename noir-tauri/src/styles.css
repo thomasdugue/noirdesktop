@@ -3925,17 +3925,31 @@ body.player-visible .app {
   height: 18px;
 }
 
+/* L'icône ⤮ reste centrée et immobile ; le badge de statut (A / ∞) est hors du
+   flux (position absolue) avec une largeur fixe → même emplacement pour tous les modes */
+.shuffle-icon {
+  line-height: 1;
+  pointer-events: none;
+}
+
 .shuffle-badge {
   position: absolute;
   bottom: 2px;
   right: 2px;
+  min-width: 11px;
+  text-align: center;
   font-size: 9px;
   font-weight: 500;
   color: var(--color-text);
   background: var(--color-bg);
-  padding: 0 3px;
+  padding: 0 2px;
   border-radius: var(--radius-sm);
   line-height: 1.2;
+  pointer-events: none;
+}
+
+.shuffle-badge[hidden] {
+  display: none;
 }
 
 /* Volume */

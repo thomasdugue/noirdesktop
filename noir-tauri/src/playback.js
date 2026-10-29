@@ -4,7 +4,7 @@
 import { playback, library, queue, caches, dom, ui } from './state.js'
 import { invoke, listen } from './state.js'
 import { app } from './app.js'
-import { formatTime, formatQuality, showToast, isValidImageSrc, escapeHtml, getCodecFromPath } from './utils.js'
+import { formatTime, formatQuality, showToast, isValidImageSrc, escapeHtml, getCodecFromPath, getShuffleButtonState } from './utils.js'
 import { isDragging } from './drag.js'
 import { isFullscreenOpen, updateFullscreenData, setFullscreenPlayState, setFullscreenRms, updateAmbientColor } from './fullscreen-player.js'
 
@@ -1208,6 +1208,35 @@ export async function initRustAudioListeners() {
   console.log('Rust audio listeners initialized (with smooth 60fps interpolation)')
 }
 
+// === SHUFFLE BUTTON UI ===
+
+// Met à jour l'UI du bouton shuffle selon le mode actuel.
+// Ne touche jamais à l'icône (.shuffle-icon) : seul le badge change, pour que
+// l'icône reste au même endroit (clic souris et raccourci clavier passent ici).
+export function updateShuffleButtonUI() {
+  if (!dom.shuffleBtn) return
+
+  const { badge, title, active } = getShuffleButtonState(playback.shuffleMode)
+  dom.shuffleBtn.classList.toggle('active', active)
+  dom.shuffleBtn.title = title
+  const badgeEl = dom.shuffleBtn.querySelector('.shuffle-badge')
+  if (badgeEl) {
+    badgeEl.textContent = badge
+    badgeEl.hidden = !badge
+  }
+}
+
+// Cycle : off → album → library → off. Retourne le nouveau mode.
+export function cycleShuffleMode() {
+  // Reset l'historique des tracks joués à chaque changement de mode
+  playback.shufflePlayedTracks.clear()
+
+  const next = { off: 'album', album: 'library', library: 'off' }
+  playback.shuffleMode = next[playback.shuffleMode] || 'off'
+  updateShuffleButtonUI()
+  return playback.shuffleMode
+}
+
 // === REPEAT BUTTON UI ===
 
 // Met à jour l'UI du bouton repeat selon le mode actuel
@@ -1771,27 +1800,7 @@ export function initPlayback() {
   })
 
   // === Shuffle ===
-  dom.shuffleBtn.addEventListener('click', () => {
-    // Reset l'historique des tracks joués à chaque changement de mode
-    playback.shufflePlayedTracks.clear()
-
-    // Cycle : off → album → library → off
-    if (playback.shuffleMode === 'off') {
-      playback.shuffleMode = 'album'
-      dom.shuffleBtn.classList.add('active')
-      dom.shuffleBtn.textContent = '⤮ᴬ'
-      dom.shuffleBtn.title = 'Shuffle (Album)'
-    } else if (playback.shuffleMode === 'album') {
-      playback.shuffleMode = 'library'
-      dom.shuffleBtn.textContent = '⤮∞'
-      dom.shuffleBtn.title = 'Shuffle (Library)'
-    } else {
-      playback.shuffleMode = 'off'
-      dom.shuffleBtn.classList.remove('active')
-      dom.shuffleBtn.textContent = '⤮'
-      dom.shuffleBtn.title = 'Shuffle'
-    }
-  })
+  dom.shuffleBtn.addEventListener('click', () => cycleShuffleMode())
 
   // === Repeat ===
   dom.repeatBtn.addEventListener('click', () => {

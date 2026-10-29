@@ -119,6 +119,7 @@ await transitionView(async () => { await displayHomeView() })  // async ; render
 16. Tous les secrets compile-time via `option_env!()` ; ne jamais bypass `scripts/release.sh`.
 17. `dylibbundler` toujours suivi du fix LC_RPATH dupliqués + re-sign.
 18. Audio = coreaudio-rs, **jamais** revenir à CPAL. Bit-perfect = pas de resampling.
+19. Bouton shuffle : l'icône `⤮` ne change jamais, le statut va dans `.shuffle-badge` ; tout passe par `cycleShuffleMode()`, jamais `shuffleBtn.textContent`.
 
 ## Règles de travail
 

@@ -15,6 +15,8 @@ export const app = {
   loadAudioDevices: null,
   updateVolumeIcon: null,
   updateRepeatButtonUI: null,
+  updateShuffleButtonUI: null,
+  cycleShuffleMode: null,
 
   // === Views ===
   displayCurrentView: null,

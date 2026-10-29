@@ -521,34 +521,11 @@ function updateRepeatButtonUI() {
 
 // Toggle shuffle mode (cycle: off -> album -> library -> off)
 function toggleShuffleMode() {
-  // Reset shuffle history when changing mode
-  playback.shufflePlayedTracks.clear()
-
-  // Cycle between modes
-  if (playback.shuffleMode === 'off') {
-    playback.shuffleMode = 'album'
-    if (dom.shuffleBtn) {
-      dom.shuffleBtn.classList.add('active')
-      dom.shuffleBtn.textContent = '\u2922\u1D2C'
-      dom.shuffleBtn.title = 'Shuffle (Album)'
-    }
-    showToast('Shuffle (Album)')
-  } else if (playback.shuffleMode === 'album') {
-    playback.shuffleMode = 'library'
-    if (dom.shuffleBtn) {
-      dom.shuffleBtn.textContent = '\u2922\u221E'
-      dom.shuffleBtn.title = 'Shuffle (Library)'
-    }
-    showToast('Shuffle (Library)')
-  } else {
-    playback.shuffleMode = 'off'
-    if (dom.shuffleBtn) {
-      dom.shuffleBtn.classList.remove('active')
-      dom.shuffleBtn.textContent = '\u2922'
-      dom.shuffleBtn.title = 'Shuffle'
-    }
-    showToast('Shuffle disabled')
-  }
+  // M\u00EAme code que le clic souris (playback.js) \u2192 m\u00EAme ic\u00F4ne, m\u00EAme badge
+  const mode = app.cycleShuffleMode()
+  if (mode === 'album') showToast('Shuffle (Album)')
+  else if (mode === 'library') showToast('Shuffle (Library)')
+  else showToast('Shuffle disabled')
 }
 
 // === PUBLIC API ===

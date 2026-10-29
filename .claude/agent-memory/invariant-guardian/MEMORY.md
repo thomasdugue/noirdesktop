@@ -1,0 +1,1 @@
+- [Règle de zone : playback.js = UI](feedback_zone_rule_playback_js.md) — seuls les chemins Rust audio déclenchent la règle audio+UI
