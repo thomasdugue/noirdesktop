@@ -329,6 +329,17 @@ export function formatAlbumDuration(seconds) {
   return `${mins}m`
 }
 
+// Bouton shuffle : l'icône principale (⤮ U+292E) ne change jamais.
+// Seul le badge de statut varie — il est en position absolue (.shuffle-badge),
+// donc l'icône reste au même endroit quel que soit le mode.
+export const SHUFFLE_ICON = '⤮'
+
+export function getShuffleButtonState(mode) {
+  if (mode === 'album') return { badge: 'A', title: 'Shuffle (Album)', active: true }
+  if (mode === 'library') return { badge: '∞', title: 'Shuffle (Library)', active: true }
+  return { badge: '', title: 'Shuffle', active: false }
+}
+
 export function formatQuality(metadata, filePath = null) {
   if (!metadata) return { label: '-', class: '' }
 
