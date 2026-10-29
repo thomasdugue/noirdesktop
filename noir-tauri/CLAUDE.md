@@ -85,7 +85,7 @@ await transitionView(async () => { await displayHomeView() })  // async ; render
 
 ### Security conventions
 
-`write_metadata` canonicalise + `starts_with()` sur `library_paths` · `escapeHtml()` sur toute donnée affichée · `save_file_secure()` → 0600 · `println!` Rust sous `#[cfg(debug_assertions)]` · CSP dans `tauri.conf.json` · **jamais** commit `scripts/.env.local`.
+`write_metadata` canonicalise + `starts_with()` sur `library_paths` · `escapeHtml()` sur toute donnée affichée · `save_file_secure()` → 0600 · `println!` Rust sous `#[cfg(debug_assertions)]` · CSP dans `tauri.conf.json` · **jamais** commit `scripts/.env.local`. Le hook `guard-secrets.sh` interdit à Claude de lire ou modifier `.env.local`, `*.key` et `~/.tauri/` (seul `source scripts/.env.local` est permis, pour tester une variable sans l'afficher).
 
 ## Key constraints
 
@@ -128,7 +128,7 @@ await transitionView(async () => { await displayHomeView() })  // async ; render
 
 ## Protocole de session
 
-**Début** : (1) lire ce fichier + le skill de la zone · (2) lancer l'agent `test-runner` (node --check, Jest, cargo test) — noter X pass / Y fail. Si des tests échouent AVANT de commencer → le signaler, on corrige d'abord.
+**Début** : (1) lire ce fichier + le skill de la zone (le hook SessionStart affiche déjà branche, fichiers modifiés et présence des secrets) · (2) lancer l'agent `test-runner` (node --check, Jest, cargo test) — noter X pass / Y fail. Si des tests échouent AVANT de commencer → le signaler, on corrige d'abord.
 
 **Fin** : relancer `test-runner` et comparer au début, puis `invariant-guardian` sur le diff (un verdict BLOQUANT = corriger avant la PR). Un test qui passait et échoue = RÉGRESSION → corriger avant de terminer. Mettre à jour « Bugs connus » ci-dessous, ajouter une entrée dans `docs/HISTORY.md`, et si une nouvelle règle est née, l'ajouter à `hean-invariants` (+ une ligne au résumé ci-dessus). Un hook Stop (`.claude/hooks/invariant-reminder.sh`) le rappelle automatiquement quand du code a changé sans que `hean-invariants` ait bougé. Commit « [tâche du jour] terminée ».
 
