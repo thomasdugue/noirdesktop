@@ -60,7 +60,7 @@ import {
   playTrack, playAlbum, togglePlay, playNextTrack, playPreviousTrack,
   resetPlayerUI, getCurrentTrackDuration, triggerGaplessPreload,
   loadAudioDevices, updateVolumeIcon, updateHogModeStatus,
-  updateRepeatButtonUI, initPlayback, getNextTrackInfo, getCurrentTrackPath,
+  updateRepeatButtonUI, setShuffleMode, initPlayback, getNextTrackInfo, getCurrentTrackPath,
   performSeek, populateQueueFromContext, replenishQueue
 } from './playback.js'
 import {
@@ -219,6 +219,7 @@ app.triggerGaplessPreload = triggerGaplessPreload
 app.loadAudioDevices = loadAudioDevices
 app.updateVolumeIcon = updateVolumeIcon
 app.updateRepeatButtonUI = updateRepeatButtonUI
+app.setShuffleMode = setShuffleMode
 app.populateQueueFromContext = populateQueueFromContext
 app.replenishQueue = replenishQueue
 

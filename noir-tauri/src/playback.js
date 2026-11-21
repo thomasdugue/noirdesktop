@@ -138,6 +138,13 @@ export async function playTrack(index, context) {
     await invoke('audio_pause').catch(() => {}) // attendre l'arrêt confirmé
   }
 
+  // Fix queue panel "previous track" : currentTrackIndex DOIT etre set AVANT
+  // populateQueueFromContext (qui appelle updateQueueDisplay et lit l'index).
+  // Sinon le panel queue affiche l'ancienne track. Bug recurrent constate 2026-06-06.
+  playback.currentTrackIndex = index
+  // Nouvelle track : pas de "Bit perfect" tant que Rust ne l'a pas confirmé (updateAudioSpecs)
+  playback.isBitPerfect = false
+
   // Auto-queue : si un contexte est fourni, construire la queue automatiquement
   if (context) {
     const track = library.tracks[index]
@@ -158,8 +165,6 @@ export async function playTrack(index, context) {
       playback.currentPlaylistId = null
     }
   }
-
-  playback.currentTrackIndex = index
   const track = library.tracks[index]
 
   if (!track || !track.path) {
@@ -866,6 +871,13 @@ export function updateAudioSpecs(specs) {
   // Stocker les specs source pour le calcul bit-perfect des devices
   playback.currentSourceSampleRate = specs.source_sample_rate
   playback.currentSourceBitDepth = specs.source_bit_depth
+  // Flag bit-perfect partage avec la now-strip (cf. views.js updateHomeNowPlayingSection).
+  // Re-render de la now-strip seulement si le flag change (évite de recharger la cover à chaque event)
+  const isBitPerfect = !specs.is_mismatch
+  if (isBitPerfect !== playback.isBitPerfect) {
+    playback.isBitPerfect = isBitPerfect
+    if (app.updateHomeNowPlayingSection) app.updateHomeNowPlayingSection()
+  }
 
   // Formater les valeurs SOURCE
   sourceEl.textContent = `${formatSampleRate(specs.source_sample_rate)}/${specs.source_bit_depth}bit`
@@ -902,6 +914,7 @@ export function resetAudioSpecs() {
   stopBitPerfectAnimation()
   playback.currentSourceSampleRate = null
   playback.currentSourceBitDepth = null
+  playback.isBitPerfect = false
 
   const container = document.getElementById('audio-specs')
   const sourceEl = document.getElementById('source-specs')
@@ -1692,6 +1705,26 @@ export function initHogModeTooltip() {
 // === INITIALISATION ===
 
 // Wire all playback-related DOM event listeners
+// Change le mode shuffle ('off' | 'album' | 'library') et synchronise le bouton du player.
+// Point d'entrée unique : bouton shuffle du player + boutons Shuffle des pages album/artiste.
+const SHUFFLE_BUTTON_STATES = {
+  off: { text: '⤮', title: 'Shuffle' },
+  album: { text: '⤮ᴬ', title: 'Shuffle (Album)' },
+  library: { text: '⤮∞', title: 'Shuffle (Library)' }
+}
+
+export function setShuffleMode(mode) {
+  if (!SHUFFLE_BUTTON_STATES[mode]) return
+  // Reset l'historique des tracks joués à chaque changement de mode
+  playback.shufflePlayedTracks.clear()
+  playback.shuffleMode = mode
+  if (dom.shuffleBtn) {
+    dom.shuffleBtn.classList.toggle('active', mode !== 'off')
+    dom.shuffleBtn.textContent = SHUFFLE_BUTTON_STATES[mode].text
+    dom.shuffleBtn.title = SHUFFLE_BUTTON_STATES[mode].title
+  }
+}
+
 export function initPlayback() {
   // === Play / Pause ===
   dom.playPauseBtn.addEventListener('click', togglePlay)
@@ -1771,26 +1804,10 @@ export function initPlayback() {
   })
 
   // === Shuffle ===
+  // Cycle : off → album → library → off
   dom.shuffleBtn.addEventListener('click', () => {
-    // Reset l'historique des tracks joués à chaque changement de mode
-    playback.shufflePlayedTracks.clear()
-
-    // Cycle : off → album → library → off
-    if (playback.shuffleMode === 'off') {
-      playback.shuffleMode = 'album'
-      dom.shuffleBtn.classList.add('active')
-      dom.shuffleBtn.textContent = '⤮ᴬ'
-      dom.shuffleBtn.title = 'Shuffle (Album)'
-    } else if (playback.shuffleMode === 'album') {
-      playback.shuffleMode = 'library'
-      dom.shuffleBtn.textContent = '⤮∞'
-      dom.shuffleBtn.title = 'Shuffle (Library)'
-    } else {
-      playback.shuffleMode = 'off'
-      dom.shuffleBtn.classList.remove('active')
-      dom.shuffleBtn.textContent = '⤮'
-      dom.shuffleBtn.title = 'Shuffle'
-    }
+    const next = { off: 'album', album: 'library' }[playback.shuffleMode] || 'off'
+    setShuffleMode(next)
   })
 
   // === Repeat ===
