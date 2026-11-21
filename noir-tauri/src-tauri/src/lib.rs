@@ -35,6 +35,9 @@ mod network;
 // === DAP SYNC (SD Card / USB sync) ===
 mod dap_sync;
 
+// === WIFI SYNC (HTTP server for DAP browser sync) ===
+mod wifi_sync;
+
 // Structure pour un fichier audio
 #[derive(Serialize, Deserialize, Clone)]
 struct AudioTrack {
@@ -83,6 +86,10 @@ struct Config {
     /// Tracks explicitly excluded by the user (persist across restarts/scans)
     #[serde(default)]
     excluded_paths: Vec<String>,
+    /// User-configurable root folder name embedded in every WiFi Sync ZIP
+    /// (e.g. "HEAN" → Downloads/HEAN/Artist/Album/track.flac on the DAP).
+    #[serde(default)]
+    wifi_sync_root_prefix: Option<String>,
 }
 
 // Cache des métadonnées
@@ -93,8 +100,8 @@ struct MetadataCache {
 
 // Cache des pochettes
 #[derive(Serialize, Deserialize, Default, Clone)]
-struct CoverCache {
-    entries: HashMap<String, String>,
+pub(crate) struct CoverCache {
+    pub(crate) entries: HashMap<String, String>,
 }
 
 // Structure pour une playlist
@@ -254,7 +261,7 @@ static METADATA_CACHE: Lazy<Mutex<MetadataCache>> = Lazy::new(|| {
     Mutex::new(load_metadata_cache_from_file())
 });
 
-static COVER_CACHE: Lazy<Mutex<CoverCache>> = Lazy::new(|| {
+pub(crate) static COVER_CACHE: Lazy<Mutex<CoverCache>> = Lazy::new(|| {
     Mutex::new(load_cover_cache_from_file())
 });
 
@@ -301,6 +308,11 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .connect_timeout(std::time::Duration::from_secs(3))
         .build()
         .unwrap_or_else(|_| Client::new())
+});
+
+// === WIFI SYNC SERVER STATE ===
+static WIFI_SYNC_STATE: Lazy<Mutex<Option<wifi_sync::WifiSyncState>>> = Lazy::new(|| {
+    Mutex::new(None)
 });
 
 // === CHEMINS DES FICHIERS ===
@@ -2423,7 +2435,7 @@ fn get_added_dates() -> HashMap<String, u64> {
 
 /// Parse un URI SMB en (source_id, share, remote_path)
 /// Format : smb://{source_id}/{share}/{remote_path}
-fn parse_smb_uri(uri: &str) -> Option<(String, String, String)> {
+pub(crate) fn parse_smb_uri(uri: &str) -> Option<(String, String, String)> {
     let without_scheme = uri.strip_prefix("smb://")?;
     let mut parts = without_scheme.splitn(3, '/');
     let source_id = parts.next()?.to_string();
@@ -4080,7 +4092,200 @@ fn update_media_playback_state(is_playing: bool) {
 /// Sur macOS, la croix rouge cache la fenêtre — cette commande permet de vraiment quitter.
 #[tauri::command]
 fn quit_app(app_handle: tauri::AppHandle) {
+    // Stop WiFi sync server if running
+    if let Ok(mut state) = WIFI_SYNC_STATE.lock() {
+        if let Some(ws) = state.take() {
+            let _ = ws.shutdown_tx.send(());
+            ws.server_handle.abort();
+            if let Some(mdns) = ws.mdns_daemon {
+                let _ = mdns.shutdown();
+            }
+        }
+    }
     app_handle.exit(0);
+}
+
+// === WIFI SYNC COMMANDS ===
+
+/// Start the WiFi sync HTTP server + mDNS registration.
+/// Returns server info (URL, IP, token) for the frontend to display.
+#[tauri::command]
+async fn start_wifi_sync_server(dest_id: i64) -> Result<wifi_sync::WifiSyncInfo, String> {
+    // Stop existing server if any
+    if let Ok(mut state) = WIFI_SYNC_STATE.lock() {
+        if let Some(ws) = state.take() {
+            ws.axum_handle.graceful_shutdown(Some(std::time::Duration::from_secs(2)));
+            let _ = ws.shutdown_tx.send(());
+            ws.server_handle.abort();
+            if let Some(mdns) = ws.mdns_daemon {
+                let _ = mdns.shutdown();
+            }
+        }
+    }
+
+    // Build allowed files (legacy v1 view — kept so the desktop status
+    // panel still shows accurate counts even before any DAP connects).
+    let (allowed_files, album_count, total_size_bytes) =
+        wifi_sync::build_allowed_files(dest_id)?;
+
+    let file_count = allowed_files.len();
+    // Persist the token across restarts so an open WebUI tab survives a
+    // server stop/start. See `wifi_sync::load_or_create_token`.
+    let token = wifi_sync::load_or_create_token()?;
+    let ip = wifi_sync::get_local_ip()?;
+    let port: u16 = 8443; // HTTPS — 443 needs root
+
+    // Ensure the self-signed cert exists on disk (generated lazily on
+    // first launch — see wifi_sync/tls.rs).
+    let (cert_path, key_path) = wifi_sync::tls::ensure_cert()?;
+
+    // Load configurable target folder from config (default "HEAN").
+    let root_prefix = load_config().wifi_sync_root_prefix.unwrap_or_else(|| "HEAN".to_string());
+
+    // Reset throughput counters for a clean session.
+    wifi_sync::reset_throughput();
+
+    #[cfg(debug_assertions)]
+    println!("[WiFi Sync] Starting HTTPS server: {} files, {} albums, {} bytes (prefix={})",
+        file_count, album_count, total_size_bytes, root_prefix);
+
+    // Create shared server state
+    let server_state = std::sync::Arc::new(wifi_sync::server::ServerState {
+        token: token.clone(),
+        dest_id,
+        root_prefix: root_prefix.clone(),
+    });
+
+    // Legacy shutdown channel — still used by other parts of the lifecycle.
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(());
+
+    // Start HTTPS server
+    let (server_handle, axum_handle) = wifi_sync::server::start_server(
+        server_state,
+        port,
+        cert_path.clone(),
+        key_path.clone(),
+    ).await?;
+
+    // Register mDNS
+    let mdns_daemon = wifi_sync::server::register_mdns(&ip, port).ok();
+
+    // IP-based URL: most DAP browsers can't resolve `hean.local` (no mDNS).
+    // mDNS is still registered for desktops/iOS that support it.
+    let info = wifi_sync::WifiSyncInfo {
+        url: format!("https://{}:{}/", ip, port),
+        ip: ip.clone(),
+        token: token.clone(),
+        port,
+    };
+
+    // Store state
+    if let Ok(mut state) = WIFI_SYNC_STATE.lock() {
+        *state = Some(wifi_sync::WifiSyncState {
+            token,
+            allowed_files,
+            album_count,
+            total_size_bytes,
+            file_count,
+            shutdown_tx,
+            server_handle,
+            mdns_daemon,
+            dest_id,
+            ip,
+            port,
+            cert_path,
+            key_path,
+            root_prefix,
+            axum_handle,
+        });
+    }
+
+    Ok(info)
+}
+
+/// Stop the WiFi sync HTTP server + mDNS.
+#[tauri::command]
+async fn stop_wifi_sync_server() -> Result<(), String> {
+    if let Ok(mut state) = WIFI_SYNC_STATE.lock() {
+        if let Some(ws) = state.take() {
+            ws.axum_handle.graceful_shutdown(Some(std::time::Duration::from_secs(2)));
+            let _ = ws.shutdown_tx.send(());
+            ws.server_handle.abort();
+            if let Some(mdns) = ws.mdns_daemon {
+                let _ = mdns.shutdown();
+            }
+            wifi_sync::reset_throughput();
+            #[cfg(debug_assertions)]
+            println!("[WiFi Sync] Server stopped");
+        }
+    }
+    Ok(())
+}
+
+/// Update the configurable root folder name (e.g. `"HEAN"` → `"MyMusic"`).
+/// Persisted to config.json + applied immediately to the running server.
+#[tauri::command]
+fn set_wifi_sync_root_prefix(prefix: String) -> Result<(), String> {
+    // Sanitize: allow letters, digits, hyphen, underscore, space; trim.
+    let cleaned: String = prefix
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == ' ')
+        .collect::<String>()
+        .trim()
+        .to_string();
+    let final_prefix = if cleaned.is_empty() {
+        "HEAN".to_string()
+    } else {
+        cleaned
+    };
+
+    // Persist to config.json
+    let mut cfg = load_config();
+    cfg.wifi_sync_root_prefix = Some(final_prefix.clone());
+    save_config(&cfg);
+
+    // Hot-update the running server state
+    if let Ok(mut state) = WIFI_SYNC_STATE.lock() {
+        if let Some(ws) = state.as_mut() {
+            ws.root_prefix = final_prefix;
+        }
+    }
+
+    Ok(())
+}
+
+/// Reset wifi sync state for a single device (admin button in settings).
+#[tauri::command]
+fn wifi_sync_reset_device(device_uuid: String) -> Result<usize, String> {
+    wifi_sync::db::clear_device(&device_uuid)
+}
+
+/// Rotate the persisted access token. Returns the new token.
+/// The new value only takes effect after the server is restarted (the live
+/// `Arc<ServerState>.token` is immutable). The frontend should call
+/// `stop_wifi_sync_server` followed by `start_wifi_sync_server` after this.
+#[tauri::command]
+fn wifi_sync_rotate_token() -> Result<String, String> {
+    wifi_sync::rotate_token()
+}
+
+/// User-friendly alias for `wifi_sync_rotate_token` — surfaced in the UI as
+/// "Reset access code". Same semantics: regenerate the token on disk and
+/// require a server restart for the live state to pick it up.
+#[tauri::command]
+fn wifi_sync_reset_access_code() -> Result<String, String> {
+    wifi_sync::rotate_token()
+}
+
+/// Get current WiFi sync status (avoids CSP issues — no direct HTTP fetch from frontend).
+#[tauri::command]
+fn get_wifi_sync_status() -> Result<Option<wifi_sync::WifiSyncStatus>, String> {
+    if let Ok(state) = WIFI_SYNC_STATE.lock() {
+        if let Some(ref ws) = *state {
+            return Ok(Some(wifi_sync::build_status(ws)));
+        }
+    }
+    Ok(None)
 }
 
 #[tauri::command]
@@ -4991,6 +5196,11 @@ pub fn run() {
             // Lance le watcher de volumes pour détecter montage/démontage USB/SD
             dap_sync::watcher::start_volume_watcher(app_handle);
 
+            // Initialise la table SQLite wifi_sync_synced (idempotent —
+            // CREATE TABLE IF NOT EXISTS). Évite une race au premier
+            // appel concurrent venant de plusieurs DAPs.
+            wifi_sync::db::ensure_initialized();
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -5110,6 +5320,14 @@ pub fn run() {
             dap_mtp_send_file,
             dap_mtp_list_files,
             dap_mtp_test,
+            // WiFi Sync (HTTP server for DAP browser sync)
+            start_wifi_sync_server,
+            stop_wifi_sync_server,
+            get_wifi_sync_status,
+            set_wifi_sync_root_prefix,
+            wifi_sync_reset_device,
+            wifi_sync_rotate_token,
+            wifi_sync_reset_access_code,
             // Application
             quit_app
         ])

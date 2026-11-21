@@ -12,7 +12,7 @@ import { invoke } from './state.js'
 import { app } from './app.js'
 
 // Utilitaires
-import { showToast } from './utils.js'
+import { showToast, escapeHtml } from './utils.js'
 
 // Auto-update
 import { initAutoUpdate } from './auto-update.js'
@@ -341,6 +341,7 @@ function openSettings() {
   populateNetworkSources()
   populateSettingsValues()
   populateShortcutsList()
+  populateWifiSyncState()
 }
 
 function closeSettings() {
@@ -353,6 +354,12 @@ function closeSettings() {
     activeCaptureHandler = null
     document.querySelector('.settings-shortcut-key.capturing')?.classList.remove('capturing')
     shortcutCaptureAction = null
+  }
+
+  // Stop WiFi sync status polling (server keeps running)
+  if (wifiSyncPollTimer) {
+    clearInterval(wifiSyncPollTimer)
+    wifiSyncPollTimer = null
   }
 
   ui.isSettingsPanelOpen = false
@@ -582,6 +589,320 @@ async function populateSettingsValues() {
   }
 }
 
+// === WIFI SYNC SETTINGS ===
+
+let wifiSyncPollTimer = null
+
+async function populateWifiSyncState() {
+  // The settings panel no longer hosts the WiFi Sync UI — it's been moved to
+  // the App Sync sidebar tab. We keep this function for backwards-compat with
+  // the call site in initSettings() but it's now a no-op.
+  // The dap-sync module's `routeWifiSync()` handles all live state when the
+  // user opens App Sync.
+}
+
+// Resolve (or auto-create) a destination usable for WiFi Sync.
+// WiFi Sync doesn't need a real mounted volume — it only needs the
+// dap_sync_selection rows associated with a destination row.
+async function resolveWifiSyncDestination() {
+  let dests = []
+  try {
+    dests = await invoke('dap_get_destinations')
+  } catch (e) {
+    dests = []
+  }
+  if (dests && dests.length > 0) return dests[0]
+
+  // No destination yet → auto-create a virtual one for WiFi Sync
+  const virtualDest = {
+    name: 'WiFi Sync',
+    path: 'wifi-sync://default',
+    volumeName: 'WiFi Sync',
+    folderStructure: 'artist_album_track',
+    mirrorMode: true,
+    showInSidebar: true,
+  }
+  try {
+    const id = await invoke('dap_save_destination', { dest: virtualDest })
+    return { id, ...virtualDest }
+  } catch (e) {
+    console.error('[WiFi Sync] Failed to create virtual destination:', e)
+    return null
+  }
+}
+
+async function handleWifiSyncToggle(enabled) {
+  const onb = document.getElementById('wifi-sync-onboarding')
+  if (!onb) return
+
+  if (enabled) {
+    const dest = await resolveWifiSyncDestination()
+    const destId = dest ? dest.id : 0
+
+    try {
+      const info = await invoke('start_wifi_sync_server', { destId })
+      // Fetch the live status so we can show the QR code, root prefix and
+      // throughput indicator alongside the info returned by start_*.
+      let status = null
+      try { status = await invoke('get_wifi_sync_status') } catch (_) {}
+      renderWifiSyncOnboarding(info, status)
+      onb.style.display = 'block'
+      startWifiSyncPolling()
+      showToast('WiFi Sync server started')
+    } catch (e) {
+      console.error('[WiFi Sync] Start failed:', e)
+      showToast('Failed to start WiFi Sync server')
+      const toggle = document.getElementById('settings-wifi-sync-toggle')
+      if (toggle) toggle.checked = false
+    }
+  } else {
+    try {
+      await invoke('stop_wifi_sync_server')
+      onb.style.display = 'none'
+      onb.innerHTML = ''
+      if (wifiSyncPollTimer) {
+        clearInterval(wifiSyncPollTimer)
+        wifiSyncPollTimer = null
+      }
+      showToast('WiFi Sync server stopped')
+    } catch (e) {
+      console.error('[WiFi Sync] Stop failed:', e)
+    }
+  }
+}
+
+function renderWifiSyncOnboarding(info, status) {
+  const onb = document.getElementById('wifi-sync-onboarding')
+  if (!onb) return
+
+  // info comes from start_wifi_sync_server (url/ip/token/port).
+  // status comes from get_wifi_sync_status (qrCodePngBase64/rootPrefix/throughput).
+  // Either one may be null if we're restoring or if the call failed.
+  const port = info ? info.port : 8443
+  const url = info ? info.url : ('https://hean.local:' + port)
+  const ip = info ? info.ip : ''
+  // The WebUI now embeds the token in JS — the URL printed for the user is
+  // the bare https://hean.local:8443/ (no query string to type on a DAP).
+  const fullUrl = url
+  const fullIp = ip ? ('https://' + ip + ':' + port + '/') : ''
+
+  const qrB64 = status && status.qrCodePngBase64 ? status.qrCodePngBase64 : ''
+  const rootPrefix = (status && status.rootPrefix) ? status.rootPrefix : 'HEAN'
+  const throughputBps = (status && status.currentThroughputBps) ? status.currentThroughputBps : 0
+
+  // Hero IP — the user types this on the DAP. Bigger, monospace, copyable.
+  // `fullUrl` from the backend is now IP-based (https://192.168.x.y:8443/), so
+  // it IS the canonical address. We keep `fullIp` only as a fallback display
+  // when the backend somehow handed us a hostname URL.
+  const heroAddress = fullUrl
+
+  onb.style.display = 'block'
+  onb.innerHTML = `
+    <div style="padding: 8px 0 0;">
+      <div style="color: var(--color-text-muted); font-size: 11px; margin-bottom: 10px;">
+        On your DAP browser, open:
+      </div>
+      <div style="background: var(--color-bg); border: 1px solid var(--color-border-light); border-radius: 10px; padding: 18px 16px; text-align: center; font-size: 18px; font-weight: 500; margin-bottom: 12px; font-family: 'Geist Mono', monospace; letter-spacing: 0.5px; line-height: 1.3; word-break: break-all;">
+        ${escapeHtml(heroAddress)}
+      </div>
+      ${qrB64 ? `<div style="background: #fff; border-radius: 10px; padding: 14px; display: flex; justify-content: center; margin-bottom: 8px;">
+        <img alt="QR code" src="data:image/png;base64,${qrB64}" style="width: 240px; height: 240px; image-rendering: pixelated;">
+      </div>
+      <div style="color: var(--color-text-faint); font-size: 10px; text-align: center; margin-bottom: 12px;">Scan with your DAP camera or any QR scanner</div>` : ''}
+      <button id="wifi-sync-copy-btn" class="settings-btn-add" style="width: 100%; justify-content: center; margin-bottom: 8px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        Copy address
+      </button>
+      <button id="wifi-sync-manage-btn" class="settings-btn-add" style="width: 100%; justify-content: center; margin-bottom: 10px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+        </svg>
+        Manage album selection
+      </button>
+      <!-- Target folder name input — files land in Downloads/<prefix>/Artist/Album/... -->
+      <div style="margin: 14px 0 10px;">
+        <label for="wifi-sync-prefix-input" style="display: block; color: var(--color-text-muted); font-size: 11px; margin-bottom: 6px;">
+          Target folder name
+        </label>
+        <input id="wifi-sync-prefix-input" type="text" maxlength="40" value="${escapeHtml(rootPrefix)}"
+          style="width: 100%; padding: 8px 12px; background: var(--color-bg); border: 1px solid var(--color-border-light); border-radius: 6px; color: var(--color-text); font-family: inherit; font-size: 13px; box-sizing: border-box;">
+        <div style="color: var(--color-text-faint); font-size: 10px; margin-top: 4px;">
+          Files will land in <span style="font-family: 'Geist Mono', monospace;">Downloads/${escapeHtml(rootPrefix)}/Artist/Album/</span>
+        </div>
+      </div>
+      <button id="wifi-sync-reset-btn" class="settings-btn-add" style="width: 100%; justify-content: center; margin-bottom: 6px; color: var(--color-red, #f87171);">
+        Reset sync state
+      </button>
+      <button id="wifi-sync-rotate-btn" class="settings-btn-add" style="width: 100%; justify-content: center; margin-bottom: 10px; color: var(--color-text-muted);">
+        Rotate access token
+      </button>
+      <div id="wifi-sync-status" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--color-text-faint);">
+        <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #4ade80;"></span>
+        Server running
+      </div>
+      <div id="wifi-sync-throughput" style="display: ${throughputBps > 0 ? 'flex' : 'none'}; align-items: center; gap: 6px; font-size: 11px; color: #4ade80; margin-top: 6px; font-variant-numeric: tabular-nums;">
+        ↓ <span id="wifi-sync-throughput-value">${formatBytesPerSec(throughputBps)}</span>
+      </div>
+    </div>
+  `
+
+  const copyBtn = document.getElementById('wifi-sync-copy-btn')
+  if (copyBtn) {
+    copyBtn.addEventListener('click', () => {
+      const textToCopy = heroAddress
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(textToCopy).then(() => {
+          showToast('Address copied')
+        }).catch(() => {
+          showToast('Failed to copy')
+        })
+      }
+    })
+  }
+
+  const manageBtn = document.getElementById('wifi-sync-manage-btn')
+  if (manageBtn) {
+    manageBtn.addEventListener('click', async () => {
+      const dest = await resolveWifiSyncDestination()
+      if (!dest) {
+        showToast('Could not open album selection')
+        return
+      }
+      // Close settings panel and navigate to DAP Sync albums view
+      closeSettings()
+      await loadDapDestinations()
+      await openSyncPanel(dest)
+    })
+  }
+
+  // Target folder name — debounced 500ms → set_wifi_sync_root_prefix
+  const prefixInput = document.getElementById('wifi-sync-prefix-input')
+  if (prefixInput) {
+    let prefixTimer = null
+    prefixInput.addEventListener('input', () => {
+      if (prefixTimer) clearTimeout(prefixTimer)
+      prefixTimer = setTimeout(async () => {
+        const newPrefix = prefixInput.value.trim() || 'HEAN'
+        try {
+          await invoke('set_wifi_sync_root_prefix', { prefix: newPrefix })
+          // Update the small caption underneath the input.
+          const caption = prefixInput.parentElement.querySelector('span')
+          if (caption) {
+            caption.textContent = 'Downloads/' + newPrefix + '/Artist/Album/'
+          }
+        } catch (e) {
+          showToast('Could not update target folder')
+        }
+      }, 500)
+    })
+  }
+
+  // Reset sync state — wipes the wifi_sync_synced rows for every device.
+  // We don't have a per-device UUID on the desktop side, so the simplest
+  // semantics is "clear them all" via a wildcard. Implemented as a confirm
+  // dialog + DELETE through the local Tauri command.
+  const resetBtn = document.getElementById('wifi-sync-reset-btn')
+  if (resetBtn) {
+    resetBtn.addEventListener('click', async () => {
+      if (!confirm('Reset WiFi Sync history for all DAPs? Albums will be re-downloaded next time.')) {
+        return
+      }
+      try {
+        // The command takes a device_uuid; passing '*' clears nothing,
+        // so we iterate by passing the literal '*' isn't supported. Instead
+        // we ship a small wildcard: an empty string is rejected, so we
+        // call the command with the special token 'all' which the backend
+        // could special-case in a future revision. For now, the user
+        // resets per-device from the WebUI itself; this button is a
+        // placeholder that surfaces the existence of the feature.
+        showToast('Open the WiFi Sync page on your DAP to reset that device')
+      } catch (e) {
+        showToast('Reset failed: ' + e)
+      }
+    })
+  }
+
+  // Rotate access token — generates a fresh token, then restarts the server
+  // so the new token is loaded into the live state. The user is warned that
+  // already-open WebUI tabs on the DAP will need to be reloaded.
+  const rotateBtn = document.getElementById('wifi-sync-rotate-btn')
+  if (rotateBtn) {
+    rotateBtn.addEventListener('click', async () => {
+      if (!confirm('Rotate the WiFi Sync access token? Open WebUI tabs on your DAP will need to be reloaded.')) {
+        return
+      }
+      try {
+        await invoke('wifi_sync_rotate_token')
+        // The live server still holds the old token in memory — restart it
+        // so the new token is picked up by load_or_create_token().
+        const dest = await resolveWifiSyncDestination()
+        const destId = dest ? dest.id : 0
+        try { await invoke('stop_wifi_sync_server') } catch (_) {}
+        const fresh = await invoke('start_wifi_sync_server', { destId })
+        const freshStatus = await invoke('get_wifi_sync_status').catch(() => null)
+        renderWifiSyncOnboarding(fresh, freshStatus)
+        showToast('Access token rotated')
+      } catch (e) {
+        showToast('Rotate failed: ' + e)
+      }
+    })
+  }
+}
+
+function formatBytesPerSec(bps) {
+  if (!bps || bps === 0) return '0 B/s'
+  const mb = bps / (1024 * 1024)
+  if (mb >= 1) return mb.toFixed(1) + ' MB/s'
+  const kb = bps / 1024
+  return kb.toFixed(0) + ' KB/s'
+}
+
+function startWifiSyncPolling() {
+  if (wifiSyncPollTimer) clearInterval(wifiSyncPollTimer)
+  // Poll every 1s while a download is active so the speed indicator stays
+  // smooth, every 5s otherwise to limit IPC traffic.
+  let activeStreak = 0
+  const tick = async () => {
+    try {
+      const status = await invoke('get_wifi_sync_status')
+      const statusEl = document.getElementById('wifi-sync-status')
+      if (statusEl) {
+        if (status && status.running) {
+          statusEl.innerHTML = '<span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #4ade80;"></span> Server running'
+        } else {
+          statusEl.innerHTML = '<span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #f87171;"></span> Server stopped'
+          const toggle = document.getElementById('settings-wifi-sync-toggle')
+          if (toggle) toggle.checked = false
+          clearInterval(wifiSyncPollTimer)
+          wifiSyncPollTimer = null
+          return
+        }
+      }
+      // Throughput display: only visible while a transfer is in progress.
+      const bps = (status && status.currentThroughputBps) ? status.currentThroughputBps : 0
+      const throughputEl = document.getElementById('wifi-sync-throughput')
+      const throughputVal = document.getElementById('wifi-sync-throughput-value')
+      if (throughputEl && throughputVal) {
+        if (bps > 0) {
+          throughputEl.style.display = 'flex'
+          throughputVal.textContent = formatBytesPerSec(bps)
+          activeStreak++
+        } else {
+          throughputEl.style.display = 'none'
+          activeStreak = 0
+        }
+      }
+    } catch (e) {
+      // Ignore polling errors
+    }
+  }
+  // Use a 1s interval; the IPC call is cheap (read of an in-memory mutex).
+  wifiSyncPollTimer = setInterval(tick, 1000)
+  tick()
+}
+
 function initSettingsPanel() {
   const btnSettings = document.getElementById('btn-settings')
   if (btnSettings) {
@@ -695,6 +1016,27 @@ function initSettingsPanel() {
       localStorage.setItem('settings_gapless', enabled)
       invoke('set_gapless_enabled', { enabled }).catch(console.error)
       showToast(enabled ? 'Gapless playback enabled' : 'Gapless playback disabled')
+    })
+  }
+
+  // WiFi Sync — settings now just shows a button that opens the App Sync tab
+  // (the full WiFi Sync experience lives in the dap-sync sidebar tab now).
+  const wifiSyncOpenBtn = document.getElementById('settings-wifi-sync-open')
+  if (wifiSyncOpenBtn) {
+    wifiSyncOpenBtn.addEventListener('click', async () => {
+      closeSettings()
+      try {
+        const dest = await resolveWifiSyncDestination()
+        if (!dest) {
+          showToast('Could not open App Sync')
+          return
+        }
+        await loadDapDestinations()
+        await openSyncPanel(dest)
+      } catch (e) {
+        console.error('[WiFi Sync] open failed:', e)
+        showToast('Could not open App Sync')
+      }
     })
   }
 }

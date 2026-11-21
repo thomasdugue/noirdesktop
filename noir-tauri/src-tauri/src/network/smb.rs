@@ -299,54 +299,93 @@ pub fn read_file(host: &str, share: &str, path: &str) -> Result<Vec<u8>, String>
     println!("[SMB TIMING] SMB+{}ms — CONNECTION lock acquired",
         t_smb.elapsed().as_millis());
 
-    // Détecte si la connexion est réutilisée ou nouvelle
-    let conn_reused = conn.as_ref().map(|c| c.host == host && c.share == share).unwrap_or(false);
-    println!("[SMB TIMING] SMB+{}ms — ensure_connection START (reuse={})",
-        t_smb.elapsed().as_millis(), conn_reused);
-
-    ensure_connection_with_guard(
-        &mut *conn,
-        host, share,
-        &stored.username, &stored.password,
-        stored.workgroup.as_deref(), stored.is_guest,
-    )?;
-    // ── [TIMING SMB-3] Connexion SMB établie/réutilisée ───────────────────
-    println!("[SMB TIMING] SMB+{}ms — ensure_connection DONE ({})",
-        t_smb.elapsed().as_millis(),
-        if conn_reused { "REUSED" } else { "NEW HANDSHAKE" });
-
-    let active = conn.as_ref()
-        .ok_or_else(|| format!("No active connection to {}", host))?;
-
     let clean_path = path.trim_start_matches('/');
     let file_path = format!("/{}", clean_path);
 
-    // ── [TIMING SMB-4] Ouverture du fichier distant ────────────────────────
-    let t_open = std::time::Instant::now();
-    let mut file = active.client.open_with(
-        &file_path,
-        SmbOpenOptions::default().read(true),
-    ).map_err(|e| format!("Failed to open SMB file {}: {}", file_path, e))?;
-    println!("[SMB TIMING] SMB+{}ms — open_with DONE: {}ms",
-        t_smb.elapsed().as_millis(), t_open.elapsed().as_millis());
+    // Retry loop : jusqu'à 2 tentatives. Une connexion SMB zombie (host
+    // l'a oubliée mais libsmbclient a encore le handle) peut faire passer
+    // open_with() avec succès puis hang sur read_to_end() jusqu'au timeout
+    // OS (60s). Quand ça arrive, on droppe la connexion et on retente
+    // avec un handshake frais. Couvre AUSSI les échecs sur open_with seul.
+    let mut last_err: Option<String> = None;
+    for attempt in 0..2 {
+        if attempt > 0 {
+            println!("[SMB TIMING] SMB+{}ms — RETRY attempt {} (forcing fresh connection)",
+                t_smb.elapsed().as_millis(), attempt);
+            *conn = None;
+        }
 
-    // ── [TIMING SMB-5] Début transfert (read_to_end) ───────────────────────
-    let t_read = std::time::Instant::now();
-    println!("[SMB TIMING] SMB+{}ms — read_to_end START",
-        t_smb.elapsed().as_millis());
+        // Détecte si la connexion est réutilisée ou nouvelle
+        let conn_reused = conn.as_ref().map(|c| c.host == host && c.share == share).unwrap_or(false);
+        println!("[SMB TIMING] SMB+{}ms — ensure_connection START (reuse={})",
+            t_smb.elapsed().as_millis(), conn_reused);
 
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)
-        .map_err(|e| format!("Failed to read SMB file {}: {}", file_path, e))?;
+        if let Err(e) = ensure_connection_with_guard(
+            &mut *conn,
+            host, share,
+            &stored.username, &stored.password,
+            stored.workgroup.as_deref(), stored.is_guest,
+        ) {
+            last_err = Some(format!("ensure_connection failed: {}", e));
+            continue;
+        }
+        // ── [TIMING SMB-3] Connexion SMB établie/réutilisée ───────────────
+        println!("[SMB TIMING] SMB+{}ms — ensure_connection DONE ({})",
+            t_smb.elapsed().as_millis(),
+            if conn_reused { "REUSED" } else { "NEW HANDSHAKE" });
 
-    // ── [TIMING SMB-6] Transfert terminé ──────────────────────────────────
-    let bytes = data.len();
-    let read_ms = t_read.elapsed().as_millis();
-    let speed_kbps = if read_ms > 0 { bytes as u128 / read_ms } else { 0 };
-    println!("[SMB TIMING] SMB+{}ms — read_to_end DONE: {} bytes in {}ms (~{} KB/s)",
-        t_smb.elapsed().as_millis(), bytes, read_ms, speed_kbps);
+        let active = match conn.as_ref() {
+            Some(a) => a,
+            None => {
+                last_err = Some(format!("No active connection to {}", host));
+                continue;
+            }
+        };
 
-    Ok(data)
+        // ── [TIMING SMB-4] Ouverture du fichier distant ────────────────────
+        let t_open = std::time::Instant::now();
+        let mut file = match active.client.open_with(
+            &file_path,
+            SmbOpenOptions::default().read(true),
+        ) {
+            Ok(f) => f,
+            Err(e) => {
+                last_err = Some(format!("Failed to open SMB file {}: {}", file_path, e));
+                println!("[SMB TIMING] SMB+{}ms — open_with FAILED: {}",
+                    t_smb.elapsed().as_millis(), last_err.as_ref().unwrap());
+                continue;
+            }
+        };
+        println!("[SMB TIMING] SMB+{}ms — open_with DONE: {}ms",
+            t_smb.elapsed().as_millis(), t_open.elapsed().as_millis());
+
+        // ── [TIMING SMB-5] Début transfert (read_to_end) ───────────────────
+        let t_read = std::time::Instant::now();
+        println!("[SMB TIMING] SMB+{}ms — read_to_end START",
+            t_smb.elapsed().as_millis());
+
+        let mut data = Vec::new();
+        match file.read_to_end(&mut data) {
+            Ok(_) => {
+                // ── [TIMING SMB-6] Transfert terminé ──────────────────────
+                let bytes = data.len();
+                let read_ms = t_read.elapsed().as_millis();
+                let speed_kbps = if read_ms > 0 { bytes as u128 / read_ms } else { 0 };
+                println!("[SMB TIMING] SMB+{}ms — read_to_end DONE: {} bytes in {}ms (~{} KB/s)",
+                    t_smb.elapsed().as_millis(), bytes, read_ms, speed_kbps);
+                return Ok(data);
+            }
+            Err(e) => {
+                last_err = Some(format!("Failed to read SMB file {}: {}", file_path, e));
+                println!("[SMB TIMING] SMB+{}ms — read_to_end FAILED: {}",
+                    t_smb.elapsed().as_millis(), last_err.as_ref().unwrap());
+                // file (SmbFile) sera droppé en sortant du match → conn libre pour mutation au prochain tour
+                continue;
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| format!("read_file failed for {} with no error captured", file_path)))
 }
 
 /// Écrit un fichier complet vers un share SMB (overwrite)

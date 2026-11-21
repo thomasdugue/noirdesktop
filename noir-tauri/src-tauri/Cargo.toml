@@ -77,6 +77,30 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 notify = { version = "6", features = ["macos_fsevent"] }
 # SHA-256 pour quick hash des fichiers (détection modifications)
 sha2 = "0.10"
+# === WIFI SYNC (HTTPS server for DAP browser sync) ===
+# HTTP server framework
+axum = "0.7"
+# axum-extra for TypedHeader<Range> parsing (Step 4 — Range support)
+axum-extra = { version = "0.9", features = ["typed-header"] }
+# HTTP Range / 206 Partial Content for resumable track downloads
+# (self-healing against Chromium FSA InvalidStateError mid-album)
+axum-range = "0.4"
+# HTTPS server with rustls (self-signed cert auto-generated for the LAN)
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = "0.23"
+rustls-pemfile = "2"
+# Self-signed certificate generation
+rcgen = "0.13"
+# Streaming ZIP writer (one ZIP per album, transfer-encoding: chunked)
+async_zip = { version = "0.0.17", features = ["tokio", "deflate"] }
+# QR code generation for friction-free URL access on the DAP
+qrcode = { version = "0.14", default-features = false }
+# Random token generation
+rand = "0.8"
+# Async streaming for chunked file serving
+async-stream = "0.3"
+# tokio_util for async-zip Compat traits
+tokio-util = { version = "0.7", features = ["compat", "io"] }
 # Unicode NFC normalization — exFAT requires NFC, macOS metadata often provides NFD
 unicode-normalization = "0.1"
 # ASCII transliteration — macOS exFAT driver corrupts dirs with accented chars (ô, ã, é)
@@ -86,6 +110,13 @@ tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+# `tower::ServiceExt::oneshot` lets the wifi_sync HTTP integration tests
+# drive the axum Router directly — no TLS, no socket, no port allocation,
+# no risk of two parallel tests colliding on port 8443. `http-body-util`
+# is the canonical helper for collecting axum 0.7 response bodies in
+# tests (axum 0.7 ships hyper 1 / http-body 1).
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 
 # === RELEASE PROFILE (Anti-reverse-engineering + Performance) ===
 [profile.release]

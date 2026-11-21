@@ -17,7 +17,11 @@ let syncPlan = null
 let isSyncing = false
 let mountedVolumes = new Set()
 let _externalVolumes = [] // Full ExternalVolume objects from last refresh
-let dapSubView = 'setup' // setup | albums | syncing | complete | disconnected | settings | first-sync | error
+let dapSubView = 'setup' // setup | albums | syncing | complete | disconnected | settings | first-sync | error | wifi-welcome | wifi-tutorial
+// WiFi Sync state — populated when the user opens App Sync on a wifi-sync:// destination
+let wifiSyncInfo = null      // { url, ip, port, token } from start_wifi_sync_server
+let wifiSyncStatus = null    // { qrCodePngBase64, rootPrefix, currentThroughputBps } from get_wifi_sync_status
+let wifiSyncRunning = false  // cached running flag (refreshed on open + after toggle)
 let syncProgress = { phase: '', current: 0, total: 0, currentFile: '', bytesCopied: 0, totalBytes: 0 }
 let syncResult = null
 let albumSearchFilter = ''
@@ -285,7 +289,33 @@ async function loadDestinations() {
     console.error('[DAP] Failed to load destinations:', e)
     destinations = []
   }
+  // Ensure the WiFi Sync virtual destination always exists. It's not tied to a
+  // mounted volume — it's the persistent home of the WiFi server's album
+  // selection — so we create it on first launch and keep it pinned in the
+  // sidebar regardless of mount state.
+  await ensureWifiSyncDestination()
   renderSidebarDestinations()
+}
+
+async function ensureWifiSyncDestination() {
+  const exists = destinations.some(d => d.path === 'wifi-sync://default')
+  if (exists) return
+  try {
+    await invoke('dap_save_destination', {
+      dest: {
+        name: 'WiFi Sync',
+        path: 'wifi-sync://default',
+        volumeName: 'WiFi Sync',
+        folderStructure: 'artist_album_track',
+        mirrorMode: true,
+        showInSidebar: true,
+      }
+    })
+    destinations = await invoke('dap_get_destinations')
+  } catch (e) {
+    // UNIQUE constraint races are fine — re-fetch and move on.
+    try { destinations = await invoke('dap_get_destinations') } catch (_) {}
+  }
 }
 
 function renderSidebarDestinations() {
@@ -293,18 +323,46 @@ function renderSidebarDestinations() {
   if (!container) return
   container.innerHTML = ''
 
-  if (destinations.length === 0) {
+  // WiFi Sync is always pinned at the top of the list — it's not a physical
+  // device, it's the persistent home of the WiFi server's selection.
+  const wifiDest = destinations.find(d => d.path === 'wifi-sync://default')
+  if (wifiDest) {
+    const isActive = wifiDest.id === currentDestinationId && ui.currentView === 'dap-sync'
+    const item = document.createElement('div')
+    item.className = 'sb-dap-device sb-dap-wifi' + (isActive ? ' active' : '')
+    item.innerHTML = `
+      <div class="dev-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+          <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+          <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+          <line x1="12" y1="20" x2="12.01" y2="20"/>
+        </svg>
+      </div>
+      <div class="dev-info">
+        <div class="dev-name">WiFi Sync</div>
+        <div class="dev-space">${wifiSyncRunning ? 'server on' : 'server off'}</div>
+      </div>
+    `
+    item.addEventListener('click', () => openSyncPanel(wifiDest))
+    container.appendChild(item)
+  }
+
+  // Filter out non-physical entries from the rest of the loop
+  const physical = destinations.filter(d =>
+    !d.path.startsWith('wifi-sync://') && !d.path.startsWith('mtp://')
+  )
+
+  if (physical.length === 0 && !wifiDest) {
     container.innerHTML = `
       <div class="sb-dap-empty">No device connected</div>
     `
     return
   }
 
-  for (const dest of destinations) {
-    // MTP destinations are rendered by renderMtpSidebar(), not here
-    if (dest.path.startsWith('mtp://')) continue
+  for (const dest of physical) {
     const isMounted = mountedVolumes.has(dest.path)
-    // Hide offline volumes — only show mounted devices
+    // Hide offline physical volumes — only show mounted devices.
     if (!isMounted) continue
     const isActive = dest.id === currentDestinationId && ui.currentView === 'dap-sync'
     const isSyncingDev = isSyncing && isActive
@@ -543,14 +601,58 @@ async function openSyncPanel(dest) {
     return
   }
 
-  const isMounted = mountedVolumes.has(dest.path)
-  if (!isMounted) {
-    dapSubView = 'disconnected'
-  } else {
-    dapSubView = 'albums'
+  // WiFi Sync destination — route through the welcome/tutorial flow
+  // before falling through to the standard albums selection screen.
+  // The "destination" for WiFi is a virtual one (wifi-sync://default) that
+  // exists only to give us a row in dap_destinations for selection storage.
+  if (dest.path && dest.path.startsWith('wifi-sync://')) {
     await loadSelections(dest.id)
+    await routeWifiSync()
+    return
   }
 
+  // Always open the albums view — even if the volume is not mounted —
+  // so the user can manage selection for WiFi Sync without a connected DAP.
+  // Sync-related actions (Sync Now, Eject, plan compute) gracefully degrade.
+  dapSubView = 'albums'
+  await loadSelections(dest.id)
+
+  navigateToDapSync()
+}
+
+// Decide which WiFi Sync screen to show based on server state + tutorial dismissal.
+// Called from openSyncPanel when the destination is wifi-sync://, and from
+// the welcome toggle / tutorial Continue button to re-route after a state change.
+async function routeWifiSync() {
+  // Refresh server status (cheap — just queries the local mutex via Tauri)
+  try {
+    wifiSyncStatus = await invoke('get_wifi_sync_status')
+  } catch (_) {
+    wifiSyncStatus = null
+  }
+  wifiSyncRunning = !!(wifiSyncStatus && wifiSyncStatus.running)
+
+  if (!wifiSyncRunning) {
+    // Server OFF → show welcome screen with the big toggle
+    dapSubView = 'wifi-welcome'
+    navigateToDapSync()
+    return
+  }
+
+  // Server ON → make sure we have the live info (URL/IP/port/token).
+  // start_wifi_sync_server is idempotent — calling it when already running
+  // just returns the current info object (see lib.rs).
+  if (!wifiSyncInfo) {
+    try {
+      wifiSyncInfo = await invoke('start_wifi_sync_server', { destId: currentDestinationId })
+    } catch (e) {
+      console.error('[WiFi Sync] failed to fetch info:', e)
+    }
+  }
+
+  // First-time vs returning user
+  const dismissed = localStorage.getItem('wifi_tutorial_dismissed') === 'true'
+  dapSubView = dismissed ? 'albums' : 'wifi-tutorial'
   navigateToDapSync()
 }
 
@@ -625,8 +727,412 @@ export function displayDapSyncView() {
     case 'settings': renderSettingsView(grid); break
     case 'error': renderErrorView(grid); break
     case 'first-sync': renderFirstSyncView(grid); break
+    case 'wifi-welcome': renderWifiWelcomeView(grid); break
+    case 'wifi-tutorial': renderWifiTutorialView(grid); break
     default: renderSetupView(grid); break
   }
+}
+
+// === WIFI SYNC: WELCOME SCREEN (server OFF) ===
+
+function renderWifiWelcomeView(grid) {
+  const div = document.createElement('div')
+  div.className = 'dap-wifi-welcome'
+  div.innerHTML = `
+    <div class="dap-wifi-bg-mesh" aria-hidden="true"></div>
+
+    <div class="dap-wifi-eyebrow" style="--stagger:0">
+      <span class="dap-wifi-eyebrow-dot"></span>
+      WIFI SYNC <span class="dap-wifi-eyebrow-sep">//</span> BETA
+    </div>
+
+    <h1 class="dap-wifi-title" style="--stagger:1">
+      Sync your music<br>
+      <span class="dap-wifi-title-accent">over WiFi.</span>
+    </h1>
+
+    <p class="dap-wifi-subtitle" style="--stagger:2">
+      Send albums to any DAP on your network<br>
+      without cables, MTP drivers, or SD cards.
+    </p>
+
+    <div class="dap-wifi-cta-wrap" style="--stagger:3">
+      <button id="dap-wifi-start-btn" class="dap-wifi-cta" type="button">
+        <span class="dap-wifi-cta-dot" aria-hidden="true"></span>
+        <span class="dap-wifi-cta-label">Go live on my network</span>
+        <svg class="dap-wifi-cta-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="5" y1="12" x2="19" y2="12"/>
+          <polyline points="12 5 19 12 12 19"/>
+        </svg>
+        <span class="dap-wifi-cta-glow" aria-hidden="true"></span>
+      </button>
+      <p class="dap-wifi-cta-hint">A QR code + address will appear so you can open HEAN on your DAP.</p>
+    </div>
+
+    <div class="dap-wifi-hero" style="--stagger:4">
+      <div class="dap-wifi-hero-icon" aria-hidden="true">
+        <span class="dap-wifi-ring dap-wifi-ring-1"></span>
+        <span class="dap-wifi-ring dap-wifi-ring-2"></span>
+        <span class="dap-wifi-ring dap-wifi-ring-3"></span>
+        <span class="dap-wifi-ring-halo"></span>
+        <svg class="dap-wifi-hero-glyph" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+          <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+          <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+          <line x1="12" y1="20" x2="12.01" y2="20"/>
+        </svg>
+      </div>
+    </div>
+
+    <div class="dap-wifi-benefits">
+      <div class="dap-wifi-benefit" style="--stagger:5">
+        <div class="dap-wifi-benefit-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="2" width="14" height="20" rx="2"/>
+            <line x1="12" y1="18" x2="12.01" y2="18"/>
+          </svg>
+        </div>
+        <div class="dap-wifi-benefit-title">Any DAP</div>
+        <div class="dap-wifi-benefit-desc">Works on any device with a browser</div>
+        <span class="dap-wifi-benefit-line"></span>
+      </div>
+      <div class="dap-wifi-benefit" style="--stagger:6">
+        <div class="dap-wifi-benefit-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+        </div>
+        <div class="dap-wifi-benefit-title">Fast</div>
+        <div class="dap-wifi-benefit-desc">Up to 5 MB/s on your local network</div>
+        <span class="dap-wifi-benefit-line"></span>
+      </div>
+      <div class="dap-wifi-benefit" style="--stagger:7">
+        <div class="dap-wifi-benefit-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        </div>
+        <div class="dap-wifi-benefit-title">Local only</div>
+        <div class="dap-wifi-benefit-desc">Files never leave your network</div>
+        <span class="dap-wifi-benefit-line"></span>
+      </div>
+    </div>
+  `
+  grid.appendChild(div)
+
+  const btn = div.querySelector('#dap-wifi-start-btn')
+  const labelEl = btn.querySelector('.dap-wifi-cta-label')
+  const arrowEl = btn.querySelector('.dap-wifi-cta-arrow')
+  btn.addEventListener('click', async () => {
+    btn.disabled = true
+    btn.classList.add('is-starting')
+    if (labelEl) labelEl.textContent = 'Starting…'
+    if (arrowEl) arrowEl.style.opacity = '0'
+    try {
+      wifiSyncInfo = await invoke('start_wifi_sync_server', { destId: currentDestinationId })
+      showToast('WiFi Sync server started')
+      // Force-show the tutorial on first start, even if previously dismissed —
+      // the user just turned the server ON, they probably want to see how it works.
+      localStorage.removeItem('wifi_tutorial_dismissed')
+      await routeWifiSync()
+    } catch (e) {
+      console.error('[WiFi Sync] start failed:', e)
+      showToast('Failed to start WiFi Sync: ' + e)
+      btn.disabled = false
+      btn.classList.remove('is-starting')
+      if (labelEl) labelEl.textContent = 'Go live on my network'
+      if (arrowEl) arrowEl.style.opacity = ''
+    }
+  })
+}
+
+// === WIFI SYNC: TUTORIAL SCREEN (server ON, first time) ===
+
+function renderWifiTutorialView(grid) {
+  const port = wifiSyncInfo ? wifiSyncInfo.port : 8443
+  const url = wifiSyncInfo ? wifiSyncInfo.url : `https://hean.local:${port}/`
+  const ip = wifiSyncInfo ? wifiSyncInfo.ip : ''
+  const qrB64 = wifiSyncStatus && wifiSyncStatus.qrCodePngBase64 ? wifiSyncStatus.qrCodePngBase64 : ''
+  const folderName = (wifiSyncStatus && wifiSyncStatus.rootPrefix) ? wifiSyncStatus.rootPrefix : 'HEAN'
+
+  const div = document.createElement('div')
+  div.className = 'dap-wifi-tutorial'
+  div.innerHTML = `
+    <div class="dap-wifi-bg-mesh" aria-hidden="true"></div>
+
+    <div class="dap-wifi-tut-header" style="--stagger:0">
+      <div class="dap-wifi-status-pill">
+        <span class="dap-wifi-status-dot"></span>
+        Server running
+      </div>
+      <div class="dap-wifi-folder-tag" title="Files will land in Downloads/${escapeHtml(folderName)}/">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+        ${escapeHtml(folderName)}
+      </div>
+      <button id="dap-wifi-settings-btn" class="dap-wifi-icon-btn" title="WiFi Sync settings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="dap-wifi-tut-eyebrow" style="--stagger:1">
+      <span class="dap-wifi-eyebrow-dot"></span>
+      <span>STEP // 01 OF 02</span>
+      <span class="dap-wifi-eyebrow-sep">/</span>
+      <span>CONNECT YOUR DAP</span>
+    </div>
+
+    <h1 class="dap-wifi-tut-title" style="--stagger:2">
+      Open this on your<br>
+      <span class="dap-wifi-title-accent">DAP browser</span>
+    </h1>
+
+    <div class="dap-wifi-tut-address-block" style="--stagger:3">
+      <div class="dap-wifi-tut-address-row">
+        <code class="dap-wifi-tut-address">${escapeHtml(url)}</code>
+        <button id="dap-wifi-copy-btn" class="dap-wifi-copy-btn" title="Copy address">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span>Copy</span>
+        </button>
+        <button id="dap-wifi-continue-btn" class="dap-wifi-cta dap-wifi-tut-cta-inline" type="button">
+          <span class="dap-wifi-cta-glow" aria-hidden="true"></span>
+          <span>Continue to Sync manager</span>
+          <svg class="dap-wifi-cta-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="dap-wifi-tut-grid" style="--stagger:4">
+      <div class="dap-wifi-tut-qr">
+        <div class="dap-wifi-qr-frame">
+          <div class="dap-wifi-qr-halo" aria-hidden="true"></div>
+          ${qrB64
+            ? `<img class="dap-wifi-qr-img" alt="QR code" src="data:image/png;base64,${qrB64}">`
+            : '<div class="dap-wifi-qr-placeholder">QR loading…</div>'}
+          <span class="dap-wifi-qr-corner dap-wifi-qr-corner-tl" aria-hidden="true"></span>
+          <span class="dap-wifi-qr-corner dap-wifi-qr-corner-tr" aria-hidden="true"></span>
+          <span class="dap-wifi-qr-corner dap-wifi-qr-corner-bl" aria-hidden="true"></span>
+          <span class="dap-wifi-qr-corner dap-wifi-qr-corner-br" aria-hidden="true"></span>
+        </div>
+        <div class="dap-wifi-qr-caption">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+          </svg>
+          Scan with your DAP camera
+        </div>
+      </div>
+
+      <ol class="dap-wifi-tut-steps">
+        <li class="dap-wifi-tut-step">
+          <span class="dap-wifi-step-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+          </span>
+          <div class="dap-wifi-step-body">
+            <div class="dap-wifi-step-title">Open the address</div>
+            <div class="dap-wifi-step-text">Type the URL above in your DAP's browser, or scan the QR code with its camera.</div>
+          </div>
+        </li>
+        <li class="dap-wifi-tut-step">
+          <span class="dap-wifi-step-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <path d="M9 12l2 2 4-4"/>
+            </svg>
+          </span>
+          <div class="dap-wifi-step-body">
+            <div class="dap-wifi-step-title">Bypass the security warning</div>
+            <div class="dap-wifi-step-text">Your DAP will say the connection is <em>"not secure"</em>. Tap <strong>Advanced</strong>, then <strong>Proceed</strong>. The server only runs on your WiFi, nothing leaves your network.</div>
+          </div>
+        </li>
+        <li class="dap-wifi-tut-step">
+          <span class="dap-wifi-step-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+          </span>
+          <div class="dap-wifi-step-body">
+            <div class="dap-wifi-step-title">Pick a destination folder</div>
+            <div class="dap-wifi-step-text">Choose where albums should land on your DAP. Your choice is remembered for next time.</div>
+          </div>
+        </li>
+        <li class="dap-wifi-tut-step">
+          <span class="dap-wifi-step-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 18V5l12-2v13"/>
+              <circle cx="6" cy="18" r="3"/>
+              <circle cx="18" cy="16" r="3"/>
+            </svg>
+          </span>
+          <div class="dap-wifi-step-body">
+            <div class="dap-wifi-step-title">Select your albums</div>
+            <div class="dap-wifi-step-text">Pick albums here on the desktop. Selections appear on the DAP in real time.</div>
+          </div>
+        </li>
+      </ol>
+    </div>
+
+    <div class="dap-wifi-tut-footer" style="--stagger:5">
+      <label class="dap-wifi-dismiss">
+        <input type="checkbox" id="dap-wifi-dismiss-cb">
+        <span class="dap-wifi-dismiss-box" aria-hidden="true">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </span>
+        <span>Don't show this tutorial again</span>
+      </label>
+    </div>
+  `
+  grid.appendChild(div)
+
+  // Copy address
+  div.querySelector('#dap-wifi-copy-btn').addEventListener('click', () => {
+    navigator.clipboard.writeText(url).then(() => showToast('Address copied'))
+      .catch(() => showToast('Copy failed'))
+  })
+
+  // Continue → albums view (persists dismiss flag if checkbox is checked)
+  div.querySelector('#dap-wifi-continue-btn').addEventListener('click', () => {
+    const dismissed = div.querySelector('#dap-wifi-dismiss-cb').checked
+    if (dismissed) localStorage.setItem('wifi_tutorial_dismissed', 'true')
+    dapSubView = 'albums'
+    navigateToDapSync()
+  })
+
+  // WiFi Settings popover
+  div.querySelector('#dap-wifi-settings-btn').addEventListener('click', (e) => {
+    e.stopPropagation()
+    showWifiSettingsPopover(e.currentTarget)
+  })
+}
+
+// === WIFI SYNC: SETTINGS POPOVER ===
+// Opens from the gear icon in the tutorial header (and from the albums header).
+// Hosts the rare operations: Reset access code, Change folder name, Stop server.
+
+let _wifiPopoverAbort = null
+
+function showWifiSettingsPopover(anchorEl) {
+  // Close any existing popover
+  if (_wifiPopoverAbort) { _wifiPopoverAbort.abort(); _wifiPopoverAbort = null }
+  document.querySelectorAll('.dap-wifi-popover').forEach(el => el.remove())
+
+  const folderName = (wifiSyncStatus && wifiSyncStatus.rootPrefix) ? wifiSyncStatus.rootPrefix : 'HEAN'
+
+  const pop = document.createElement('div')
+  pop.className = 'dap-wifi-popover'
+  pop.innerHTML = `
+    <div class="dap-wifi-pop-section">
+      <label class="dap-wifi-pop-label">Destination folder name</label>
+      <input id="dap-wifi-pop-folder" type="text" maxlength="40" value="${escapeHtml(folderName)}">
+      <div class="dap-wifi-pop-hint">Files land in <span class="mono">Downloads/<span id="dap-wifi-pop-folder-preview">${escapeHtml(folderName)}</span>/</span></div>
+    </div>
+    <div class="dap-wifi-pop-divider"></div>
+    <button id="dap-wifi-pop-reset" class="dap-wifi-pop-btn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+      </svg>
+      Reset access code
+      <span class="dap-wifi-pop-tip" title="Generate a new access code. Open WebUI tabs on your DAP will need to be rescanned. Use this if you suspect someone got access to the QR.">?</span>
+    </button>
+    <button id="dap-wifi-pop-stop" class="dap-wifi-pop-btn danger">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="6" width="12" height="12" rx="1"/>
+      </svg>
+      Stop the server
+    </button>
+  `
+
+  // Position below the anchor button
+  document.body.appendChild(pop)
+  const r = anchorEl.getBoundingClientRect()
+  pop.style.position = 'fixed'
+  pop.style.top = (r.bottom + 6) + 'px'
+  pop.style.right = Math.max(8, window.innerWidth - r.right) + 'px'
+
+  // Folder name debounced save
+  const folderInput = pop.querySelector('#dap-wifi-pop-folder')
+  const folderPreview = pop.querySelector('#dap-wifi-pop-folder-preview')
+  let folderTimer = null
+  folderInput.addEventListener('input', () => {
+    const v = folderInput.value.trim() || 'HEAN'
+    folderPreview.textContent = v
+    if (folderTimer) clearTimeout(folderTimer)
+    folderTimer = setTimeout(async () => {
+      try {
+        await invoke('set_wifi_sync_root_prefix', { prefix: v })
+        if (wifiSyncStatus) wifiSyncStatus.rootPrefix = v
+        // Update the header tag if visible
+        const tag = document.querySelector('.dap-wifi-folder-tag')
+        if (tag) tag.lastChild.textContent = ' ' + v
+        showToast('Folder name updated')
+      } catch (e) {
+        showToast('Failed to update folder name')
+      }
+    }, 500)
+  })
+
+  // Reset access code
+  pop.querySelector('#dap-wifi-pop-reset').addEventListener('click', async () => {
+    if (!confirm('Reset the access code?\n\nOpen WebUI tabs on your DAP will need to be rescanned. Use this only if you suspect someone got access to the QR code.')) return
+    try {
+      await invoke('wifi_sync_reset_access_code')
+      // Restart the server so the new code is loaded into the live state
+      try { await invoke('stop_wifi_sync_server') } catch (_) {}
+      wifiSyncInfo = await invoke('start_wifi_sync_server', { destId: currentDestinationId })
+      wifiSyncStatus = await invoke('get_wifi_sync_status').catch(() => null)
+      showToast('Access code reset')
+      closeWifiPopover()
+      // Re-render to show the new QR
+      navigateToDapSync()
+    } catch (e) {
+      showToast('Reset failed: ' + e)
+    }
+  })
+
+  // Stop the server
+  pop.querySelector('#dap-wifi-pop-stop').addEventListener('click', async () => {
+    if (!confirm('Stop the WiFi Sync server?\n\nYour DAP will no longer be able to download albums until you start it again.')) return
+    try {
+      await invoke('stop_wifi_sync_server')
+      wifiSyncInfo = null
+      wifiSyncStatus = null
+      wifiSyncRunning = false
+      showToast('WiFi Sync server stopped')
+      closeWifiPopover()
+      dapSubView = 'wifi-welcome'
+      navigateToDapSync()
+    } catch (e) {
+      showToast('Stop failed: ' + e)
+    }
+  })
+
+  // Close on outside click / Escape
+  _wifiPopoverAbort = new AbortController()
+  setTimeout(() => {
+    document.addEventListener('click', (e) => {
+      if (!pop.contains(e.target)) closeWifiPopover()
+    }, { signal: _wifiPopoverAbort.signal })
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeWifiPopover()
+    }, { signal: _wifiPopoverAbort.signal })
+  }, 0)
+}
+
+function closeWifiPopover() {
+  if (_wifiPopoverAbort) { _wifiPopoverAbort.abort(); _wifiPopoverAbort = null }
+  document.querySelectorAll('.dap-wifi-popover').forEach(el => el.remove())
 }
 
 // === SCREEN 1: SETUP ===
