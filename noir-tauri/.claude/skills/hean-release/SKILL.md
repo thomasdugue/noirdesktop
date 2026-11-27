@@ -35,8 +35,8 @@ NOIR_WORKER_URL=https://noir-feedback.<sub>.workers.dev
 NOIR_WORKER_SECRET=...
 APPLE_SIGNING_IDENTITY="Developer ID Application: Thomas Dugué (XXXXXXXXXX)"
 APPLE_TEAM_ID=...
-APPLE_ID=thomas.dugue@gmail.com
-APPLE_PASSWORD=xxxx-xxxx-xxxx-xxxx          # App-Specific Password Apple, pas le mdp Apple ID
+APPLE_ID=...
+APPLE_PASSWORD=...          # App-Specific Password Apple, pas le mdp Apple ID
 TAURI_SIGNING_PRIVATE_KEY=...               # contenu du fichier ~/.tauri/hean.key
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD=...      # password de la clé minisign si chiffrée
 ```
