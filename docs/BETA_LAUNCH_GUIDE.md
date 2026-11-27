@@ -25,7 +25,7 @@ Ajouter dans `noir-tauri/src-tauri/tauri.conf.json`, dans le bloc `"bundle"` :
   "targets": "all",
   "macOS": {
     "signing": {
-      "identity": "Developer ID Application: Thomas Dugue (984A3Q922B)"
+      "identity": "Developer ID Application: <TON NOM> (<TON_TEAM_ID>)"
     }
   },
   "icon": [...]
@@ -36,9 +36,9 @@ Remplacer `TEAM_ID` par ton Team ID Apple (visible sur https://developer.apple.c
 
 ### Etape 3 : Variables d'environnement pour la notarisation
 ```bash
-export APPLE_ID="thomas.dugue@gmail.com"
-export APPLE_PASSWORD="hinu-lcaw-jjty-gdxm"   # App-specific password
-export APPLE_TEAM_ID="984A3Q922B"
+export APPLE_ID="<TON_APPLE_ID>"
+export APPLE_PASSWORD="<APP_SPECIFIC_PASSWORD>"   # App-specific password
+export APPLE_TEAM_ID="<TON_TEAM_ID>"
 ```
 
 Pour generer un App-Specific Password : https://appleid.apple.com/account/manage → Security → App-Specific Passwords.
@@ -46,7 +46,7 @@ Pour generer un App-Specific Password : https://appleid.apple.com/account/manage
 ### Etape 4 : Build signe + notarise
 ```bash
 cd noir-tauri
-APPLE_SIGNING_IDENTITY="Developer ID Application: Thomas Dugue (984A3Q922B)" \
+APPLE_SIGNING_IDENTITY="Developer ID Application: <TON NOM> (<TON_TEAM_ID>)" \
   npm run tauri build
 ```
 
@@ -74,7 +74,7 @@ spctl -a -vvv src-tauri/target/release/bundle/macos/Hean.app
 ### Etape 1 : Creer un projet Sentry
 1. Creer un compte sur https://sentry.io
 2. Creer un projet : Platform = **Rust**, nom = `hean-desktop`
-3. Copier le **DSN** (format : `https://f37fb9ee81493aa3d37f5895cba7d69f@o4511016013463552.ingest.de.sentry.io/4511065962381392`)
+3. Copier le **DSN** (format : `https://<CLE_PUBLIQUE>@<ORG>.ingest.de.sentry.io/<ID_PROJET>`)
 
 ### Etape 2 : Ajouter la dependance
 ```bash
@@ -101,12 +101,12 @@ let _sentry_guard = sentry::init((
 
 ### Etape 4 : Injecter le DSN au build
 ```bash
-HEAN_SENTRY_DSN="https://f37fb9ee81493aa3d37f5895cba7d69f@o4511016013463552.ingest.de.sentry.io/4511065962381392" npm run tauri build
+HEAN_SENTRY_DSN="<TON_DSN_SENTRY>" npm run tauri build
 ```
 
 Ou dans `scripts/.env.local` :
 ```
-HEAN_SENTRY_DSN=https://f37fb9ee81493aa3d37f5895cba7d69f@o4511016013463552.ingest.de.sentry.io/4511065962381392
+HEAN_SENTRY_DSN=<TON_DSN_SENTRY>
 ```
 
 ### Etape 5 : Verifier

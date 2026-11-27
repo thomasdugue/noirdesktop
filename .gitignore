@@ -26,3 +26,7 @@ backups/
 .env*
 !.env.example
 .gstack/
+
+# Copie de travail heanV2 posee dans ce worktree : contient des secrets en clair,
+# ne doit jamais etre commitee dans ce depot public.
+heanv2-bootstrap/
